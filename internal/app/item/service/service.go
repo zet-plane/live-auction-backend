@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"strings"
 	"time"
 
@@ -155,7 +156,21 @@ func (s *Service) DeleteItem(current *usermodel.User, itemID string) error {
 }
 
 func (s *Service) PublishItem(current *usermodel.User, itemID string) error {
-	return s.transition(current, itemID, model.ItemDraft, model.ItemPublished)
+	item, rule, err := s.findMerchantItem(current, itemID)
+	if err != nil {
+		return err
+	}
+	if item.Status != model.ItemDraft {
+		return errorx.ErrInvalidRequest
+	}
+	item.Status = model.ItemPublished
+	if err := s.store.UpdateItemWithRule(item, rule); err != nil {
+		return err
+	}
+	if s.cache != nil {
+		_ = s.cache.PushToRoomQueue(context.Background(), item.RoomID, item.ID, float64(s.now().Unix()))
+	}
+	return nil
 }
 
 func (s *Service) StartItem(current *usermodel.User, itemID string) error {

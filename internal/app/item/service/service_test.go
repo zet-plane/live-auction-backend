@@ -267,6 +267,29 @@ func TestCreateItemStoresRoomID(t *testing.T) {
 	}
 }
 
+func TestPublishItemPushesToRoomQueue(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	svc := NewService(store, itemdto.AuctionPolicy{}, fc)
+	start := time.Date(2026, 5, 21, 20, 0, 0, 0, time.UTC)
+	end := start.Add(10 * time.Minute)
+
+	result, _ := svc.CreateItem(
+		&usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant},
+		itemdto.CreateItemInput{
+			RoomID: "room_abc",
+			Title:  "翡翠手镯",
+			Rule:   itemdto.RuleInput{BidIncrement: 100, StartTime: start, EndTime: end},
+		},
+	)
+	if err := svc.PublishItem(&usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}, result.ItemID); err != nil {
+		t.Fatalf("PublishItem failed: %v", err)
+	}
+	if len(fc.queues["room_abc"]) == 0 || fc.queues["room_abc"][0] != result.ItemID {
+		t.Fatalf("expected item in room queue, got %v", fc.queues["room_abc"])
+	}
+}
+
 func seedDraftItem(t *testing.T, svc *Service, merchantID string) string {
 	t.Helper()
 	start := time.Date(2026, 5, 21, 20, 0, 0, 0, time.UTC)
