@@ -174,7 +174,30 @@ func (s *Service) PublishItem(current *usermodel.User, itemID string) error {
 }
 
 func (s *Service) StartItem(current *usermodel.User, itemID string) error {
-	return s.transition(current, itemID, model.ItemPublished, model.ItemOngoing)
+	item, rule, err := s.findMerchantItem(current, itemID)
+	if err != nil {
+		return err
+	}
+	if item.Status != model.ItemPublished {
+		return errorx.ErrInvalidRequest
+	}
+	if s.cache != nil {
+		state := itemcache.AuctionState{
+			CurrentPrice: rule.StartPrice,
+			EndTime:      rule.EndTime,
+		}
+		if err := s.cache.InitAuctionState(context.Background(), item.ID, state); err != nil {
+			return err
+		}
+	}
+	item.Status = model.ItemOngoing
+	if err := s.store.UpdateItemWithRule(item, rule); err != nil {
+		if s.cache != nil {
+			_ = s.cache.DeleteAuctionState(context.Background(), item.ID)
+		}
+		return err
+	}
+	return nil
 }
 
 func (s *Service) CancelItem(current *usermodel.User, itemID string) error {
@@ -186,18 +209,6 @@ func (s *Service) CancelItem(current *usermodel.User, itemID string) error {
 		return errorx.ErrInvalidRequest
 	}
 	item.Status = model.ItemCancelled
-	return s.store.UpdateItemWithRule(item, rule)
-}
-
-func (s *Service) transition(current *usermodel.User, itemID string, from model.AuctionItemStatus, to model.AuctionItemStatus) error {
-	item, rule, err := s.findMerchantItem(current, itemID)
-	if err != nil {
-		return err
-	}
-	if item.Status != from {
-		return errorx.ErrInvalidRequest
-	}
-	item.Status = to
 	return s.store.UpdateItemWithRule(item, rule)
 }
 

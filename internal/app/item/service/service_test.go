@@ -14,8 +14,9 @@ import (
 )
 
 type fakeStore struct {
-	items map[string]*itemmodel.AuctionItem
-	rules map[string]*itemmodel.AuctionRule
+	items     map[string]*itemmodel.AuctionItem
+	rules     map[string]*itemmodel.AuctionRule
+	updateErr error
 }
 
 func newFakeStore() *fakeStore {
@@ -50,6 +51,9 @@ func (s *fakeStore) FindItemWithRule(itemID string) (*itemmodel.AuctionItem, *it
 }
 
 func (s *fakeStore) UpdateItemWithRule(item *itemmodel.AuctionItem, rule *itemmodel.AuctionRule) error {
+	if s.updateErr != nil {
+		return s.updateErr
+	}
 	if _, ok := s.items[item.ID]; !ok {
 		return errorx.ErrNotFound
 	}
@@ -288,6 +292,80 @@ func TestPublishItemPushesToRoomQueue(t *testing.T) {
 	if len(fc.queues["room_abc"]) == 0 || fc.queues["room_abc"][0] != result.ItemID {
 		t.Fatalf("expected item in room queue, got %v", fc.queues["room_abc"])
 	}
+}
+
+func TestStartItemInitializesRedisState(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	svc := NewService(store, itemdto.AuctionPolicy{}, fc)
+	itemID := seedPublishedItem(t, svc, "merchant_1", "room_abc")
+
+	if err := svc.StartItem(&usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}, itemID); err != nil {
+		t.Fatalf("StartItem failed: %v", err)
+	}
+	state, ok := fc.states[itemID]
+	if !ok {
+		t.Fatal("expected auction state in cache after StartItem")
+	}
+	if state.CurrentPrice != 1000 {
+		t.Fatalf("expected current_price 1000 (start_price), got %d", state.CurrentPrice)
+	}
+	if state.EndTime.IsZero() {
+		t.Fatal("expected non-zero end_time")
+	}
+}
+
+func TestStartItemFailsWhenRedisInitFails(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	fc.initErr = errors.New("redis down")
+	svc := NewService(store, itemdto.AuctionPolicy{}, fc)
+	itemID := seedPublishedItem(t, svc, "merchant_1", "room_abc")
+
+	if err := svc.StartItem(&usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}, itemID); err == nil {
+		t.Fatal("expected error when Redis init fails")
+	}
+	item := store.items[itemID]
+	if item.Status != itemmodel.ItemPublished {
+		t.Fatalf("expected MySQL status to remain published, got %q", item.Status)
+	}
+}
+
+func TestStartItemRollsBackRedisOnMySQLFailure(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	svc := NewService(store, itemdto.AuctionPolicy{}, fc)
+	itemID := seedPublishedItem(t, svc, "merchant_1", "room_abc")
+
+	store.updateErr = errors.New("mysql down")
+
+	if err := svc.StartItem(&usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}, itemID); err == nil {
+		t.Fatal("expected error when MySQL fails")
+	}
+	if _, ok := fc.states[itemID]; ok {
+		t.Fatal("expected Redis state to be rolled back after MySQL failure")
+	}
+}
+
+func seedPublishedItem(t *testing.T, svc *Service, merchantID, roomID string) string {
+	t.Helper()
+	start := time.Date(2026, 5, 21, 20, 0, 0, 0, time.UTC)
+	end := start.Add(10 * time.Minute)
+	result, err := svc.CreateItem(
+		&usermodel.User{ID: merchantID, Identity: usermodel.IdentityMerchant},
+		itemdto.CreateItemInput{
+			RoomID: roomID,
+			Title:  "Test Item",
+			Rule:   itemdto.RuleInput{BidIncrement: 100, StartPrice: 1000, StartTime: start, EndTime: end},
+		},
+	)
+	if err != nil {
+		t.Fatalf("CreateItem failed: %v", err)
+	}
+	if err := svc.PublishItem(&usermodel.User{ID: merchantID, Identity: usermodel.IdentityMerchant}, result.ItemID); err != nil {
+		t.Fatalf("PublishItem failed: %v", err)
+	}
+	return result.ItemID
 }
 
 func seedDraftItem(t *testing.T, svc *Service, merchantID string) string {
