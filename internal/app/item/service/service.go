@@ -76,8 +76,14 @@ func (s *Service) ListItems(query dto.ListItemsInput) (*dto.ItemListResult, erro
 	}
 	list := make([]dto.ItemListDTO, 0, len(items))
 	now := s.now()
-	for _, item := range items {
-		list = append(list, dto.NewItemListDTO(item.Item, item.Rule, s.policy, now))
+	for _, iwr := range items {
+		d := dto.NewItemListDTO(iwr.Item, iwr.Rule, s.policy, now)
+		if iwr.Item.Status == model.ItemOngoing && s.cache != nil {
+			if state, ok, _ := s.cache.GetAuctionState(context.Background(), iwr.Item.ID); ok {
+				applyStateToList(&d, state, now)
+			}
+		}
+		list = append(list, d)
 	}
 	return &dto.ItemListResult{
 		List:     list,
@@ -99,8 +105,23 @@ func (s *Service) ListMerchantItems(current *usermodel.User, query dto.ListItems
 	}
 	list := make([]dto.MerchantItemDTO, 0, len(items))
 	now := s.now()
-	for _, item := range items {
-		list = append(list, dto.NewMerchantItemDTO(item.Item, item.Rule, s.policy, now))
+	for _, iwr := range items {
+		d := dto.NewMerchantItemDTO(iwr.Item, iwr.Rule, s.policy, now)
+		if iwr.Item.Status == model.ItemOngoing && s.cache != nil {
+			if state, ok, _ := s.cache.GetAuctionState(context.Background(), iwr.Item.ID); ok {
+				d.Progress.CurrentPrice = state.CurrentPrice
+				d.Progress.LeaderUserID = state.LeaderUserID
+				d.Progress.BidCount = state.BidCount
+				d.Progress.ParticipantCount = state.ParticipantCount
+				d.Progress.IsExtended = state.IsExtended
+				remaining := state.EndTime.Sub(now).Milliseconds()
+				if remaining < 0 {
+					remaining = 0
+				}
+				d.Progress.RemainingMS = remaining
+			}
+		}
+		list = append(list, d)
 	}
 	return &dto.MerchantItemListResult{
 		List:     list,
@@ -115,7 +136,13 @@ func (s *Service) GetItem(itemID string) (*dto.ItemDetailDTO, error) {
 	if err != nil {
 		return nil, err
 	}
-	result := dto.NewItemDetailDTO(item, rule, s.policy, s.now())
+	now := s.now()
+	result := dto.NewItemDetailDTO(item, rule, s.policy, now)
+	if item.Status == model.ItemOngoing && s.cache != nil {
+		if state, ok, _ := s.cache.GetAuctionState(context.Background(), item.ID); ok {
+			applyStateToDetail(&result, state, now)
+		}
+	}
 	return &result, nil
 }
 
@@ -273,4 +300,28 @@ func normalizeListInput(query dto.ListItemsInput) dto.ListItemsInput {
 		query.PageSize = 10
 	}
 	return query
+}
+
+func applyStateToDetail(d *dto.ItemDetailDTO, state *itemcache.AuctionState, now time.Time) {
+	d.CurrentPrice = state.CurrentPrice
+	d.LeaderUserID = state.LeaderUserID
+	d.BidCount = state.BidCount
+	d.ParticipantCount = state.ParticipantCount
+	d.IsExtended = state.IsExtended
+	remaining := state.EndTime.Sub(now).Milliseconds()
+	if remaining < 0 {
+		remaining = 0
+	}
+	d.RemainingMS = remaining
+}
+
+func applyStateToList(d *dto.ItemListDTO, state *itemcache.AuctionState, now time.Time) {
+	d.CurrentPrice = state.CurrentPrice
+	d.BidCount = state.BidCount
+	d.ParticipantCount = state.ParticipantCount
+	remaining := state.EndTime.Sub(now).Milliseconds()
+	if remaining < 0 {
+		remaining = 0
+	}
+	d.RemainingMS = remaining
 }

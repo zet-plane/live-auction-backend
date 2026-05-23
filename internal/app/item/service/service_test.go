@@ -347,6 +347,51 @@ func TestStartItemRollsBackRedisOnMySQLFailure(t *testing.T) {
 	}
 }
 
+func TestGetItemEnrichesFromCacheWhenOngoing(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	svc := NewService(store, itemdto.AuctionPolicy{}, fc)
+	merchant := &usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}
+	itemID := seedPublishedItem(t, svc, "merchant_1", "room_abc")
+	_ = svc.StartItem(merchant, itemID)
+
+	fc.states[itemID] = &itemcache.AuctionState{
+		CurrentPrice: 5000,
+		LeaderUserID: "user_99",
+		EndTime:      time.Now().Add(time.Minute),
+		BidCount:     3,
+	}
+
+	detail, err := svc.GetItem(itemID)
+	if err != nil {
+		t.Fatalf("GetItem failed: %v", err)
+	}
+	if detail.CurrentPrice != 5000 {
+		t.Fatalf("expected current_price 5000 from Redis, got %d", detail.CurrentPrice)
+	}
+	if detail.LeaderUserID != "user_99" {
+		t.Fatalf("expected leader_user_id user_99, got %q", detail.LeaderUserID)
+	}
+}
+
+func TestGetItemFallsBackToMySQLWhenCacheMiss(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	svc := NewService(store, itemdto.AuctionPolicy{}, fc)
+	merchant := &usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}
+	itemID := seedPublishedItem(t, svc, "merchant_1", "room_abc")
+	_ = svc.StartItem(merchant, itemID)
+	delete(fc.states, itemID)
+
+	detail, err := svc.GetItem(itemID)
+	if err != nil {
+		t.Fatalf("GetItem should not fail on cache miss, got %v", err)
+	}
+	if detail.CurrentPrice == 0 {
+		t.Fatalf("expected MySQL start_price fallback, got %d", detail.CurrentPrice)
+	}
+}
+
 func TestCancelItemRemovesFromRoomQueueAndState(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()
