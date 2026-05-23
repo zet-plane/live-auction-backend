@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/zet-plane/live-auction-backend/internal/app"
+	"github.com/zet-plane/live-auction-backend/internal/app/item/cache"
 	"github.com/zet-plane/live-auction-backend/internal/app/item/dao"
 	"github.com/zet-plane/live-auction-backend/internal/app/item/dto"
 	"github.com/zet-plane/live-auction-backend/internal/app/item/handler"
@@ -50,7 +51,8 @@ func (i *Item) Load(engine *kernel.Engine) error {
 		policy.MaxTotalExtendSec = engine.Config.Auction.MaxTotalExtendSec
 	}
 
-	svc := service.NewService(store, policy, nil)
+	c := cache.NewRedisCache(engine.Cache)
+	svc := service.NewService(store, policy, c)
 	handler.Init(svc)
 	router.RegisterRoutes(engine.Flame)
 	return nil
