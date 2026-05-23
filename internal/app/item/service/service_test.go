@@ -244,6 +244,29 @@ func (c *fakeCache) RemoveFromRoomQueue(_ context.Context, roomID, itemID string
 	return nil
 }
 
+func TestCreateItemStoresRoomID(t *testing.T) {
+	store := newFakeStore()
+	svc := NewService(store, itemdto.AuctionPolicy{}, nil)
+	start := time.Date(2026, 5, 21, 20, 0, 0, 0, time.UTC)
+	end := start.Add(10 * time.Minute)
+
+	result, err := svc.CreateItem(
+		&usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant},
+		itemdto.CreateItemInput{
+			RoomID: "room_abc",
+			Title:  "翡翠手镯",
+			Rule:   itemdto.RuleInput{BidIncrement: 100, StartTime: start, EndTime: end},
+		},
+	)
+	if err != nil {
+		t.Fatalf("CreateItem failed: %v", err)
+	}
+	item := store.items[result.ItemID]
+	if item.RoomID != "room_abc" {
+		t.Fatalf("expected room_id room_abc, got %q", item.RoomID)
+	}
+}
+
 func seedDraftItem(t *testing.T, svc *Service, merchantID string) string {
 	t.Helper()
 	start := time.Date(2026, 5, 21, 20, 0, 0, 0, time.UTC)

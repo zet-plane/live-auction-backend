@@ -43,6 +43,7 @@ func (s *Service) CreateItem(current *usermodel.User, input dto.CreateItemInput)
 	item := &model.AuctionItem{
 		ID:          itemID,
 		MerchantID:  current.ID,
+		RoomID:      input.RoomID,
 		Title:       input.Title,
 		Description: input.Description,
 		ImageURL:    input.ImageURL,
