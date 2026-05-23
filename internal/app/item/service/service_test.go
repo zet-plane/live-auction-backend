@@ -347,6 +347,28 @@ func TestStartItemRollsBackRedisOnMySQLFailure(t *testing.T) {
 	}
 }
 
+func TestCancelItemRemovesFromRoomQueueAndState(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	svc := NewService(store, itemdto.AuctionPolicy{}, fc)
+	itemID := seedPublishedItem(t, svc, "merchant_1", "room_abc")
+	merchant := &usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}
+
+	_ = svc.StartItem(merchant, itemID)
+
+	if err := svc.CancelItem(merchant, itemID); err != nil {
+		t.Fatalf("CancelItem failed: %v", err)
+	}
+	if _, ok := fc.states[itemID]; ok {
+		t.Fatal("expected auction state deleted from cache")
+	}
+	for _, id := range fc.queues["room_abc"] {
+		if id == itemID {
+			t.Fatal("expected item removed from room queue")
+		}
+	}
+}
+
 func seedPublishedItem(t *testing.T, svc *Service, merchantID, roomID string) string {
 	t.Helper()
 	start := time.Date(2026, 5, 21, 20, 0, 0, 0, time.UTC)

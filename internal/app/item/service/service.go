@@ -209,7 +209,14 @@ func (s *Service) CancelItem(current *usermodel.User, itemID string) error {
 		return errorx.ErrInvalidRequest
 	}
 	item.Status = model.ItemCancelled
-	return s.store.UpdateItemWithRule(item, rule)
+	if err := s.store.UpdateItemWithRule(item, rule); err != nil {
+		return err
+	}
+	if s.cache != nil {
+		_ = s.cache.RemoveFromRoomQueue(context.Background(), item.RoomID, item.ID)
+		_ = s.cache.DeleteAuctionState(context.Background(), item.ID)
+	}
+	return nil
 }
 
 func (s *Service) findMerchantItem(current *usermodel.User, itemID string) (*model.AuctionItem, *model.AuctionRule, error) {
