@@ -1,0 +1,17 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug main.go",
+            "type": "go",
+            "request": "launch",
+            "mode": "debug",
+            "program": "${workspaceFolder}/main.go",
+            "output": "/tmp/live-auction-backend-debug-bin",
+            "env": {
+                "PATH": "/opt/homebrew/bin:${env:PATH}",
+                "GOTOOLCHAIN": "auto"
+            }
+        }
+    ]
+}

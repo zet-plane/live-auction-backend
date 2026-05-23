@@ -1,0 +1,25 @@
+mode: debug
+app:
+  name: live-auction-backend
+  version: 0.1.0
+http:
+  host: 127.0.0.1
+  port: "8080"
+database:
+  driver: mysql
+  dsn: live_auction:live_auction@tcp(127.0.0.1:3306)/live_auction?charset=utf8mb4&parseTime=True&loc=Local
+  max_idle_conns: 5
+  max_open_conns: 20
+  conn_max_lifetime: 30m
+redis:
+  addr: 127.0.0.1:6379
+  password: ""
+  db: 0
+auth:
+  token_secret: live-auction-development-secret
+  token_ttl: 24h
+auction:
+  extend_trigger_sec: 30
+  auto_extend_sec: 10
+  max_extend_count: 6
+  max_total_extend_sec: 300

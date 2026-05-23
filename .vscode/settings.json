@@ -1,0 +1,11 @@
+{
+    "go.goroot": "/opt/homebrew/Cellar/go/1.26.3/libexec",
+    "go.alternateTools": {
+        "go": "/opt/homebrew/bin/go",
+        "dlv": "/Users/echin/echin/go/bin/dlv"
+    },
+    "go.toolsEnvVars": {
+        "PATH": "/opt/homebrew/bin:${env:PATH}",
+        "GOTOOLCHAIN": "auto"
+    }
+}
