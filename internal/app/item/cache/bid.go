@@ -86,6 +86,8 @@ if price_cap > 0 and price >= price_cap then is_capped = 1 end
 return {0, bid_id, price, user_id, end_unix, is_extended, is_capped}
 `
 
+var bidScript = redis.NewScript(bidLuaScript)
+
 func rankingKey(itemID string) string {
 	return "auction:item:" + itemID + ":ranking"
 }
@@ -120,7 +122,7 @@ func (c *RedisCache) PlaceBidLua(ctx context.Context, itemID string, args BidLua
 		strconv.Itoa(args.IdempotencyTTL),
 	}
 
-	res, err := redis.NewScript(bidLuaScript).Run(ctx, c.client, keys, argv...).Slice()
+	res, err := bidScript.Run(ctx, c.client, keys, argv...).Slice()
 	if err != nil {
 		return nil, err
 	}
@@ -143,6 +145,9 @@ func (c *RedisCache) PlaceBidLua(ctx context.Context, itemID string, args BidLua
 }
 
 func (c *RedisCache) GetRanking(ctx context.Context, itemID string, offset, limit int) ([]dto.BidderPrice, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
 	members, err := c.client.ZRevRangeWithScores(ctx, rankingKey(itemID), int64(offset), int64(offset+limit-1)).Result()
 	if err != nil {
 		return nil, err

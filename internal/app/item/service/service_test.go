@@ -359,9 +359,9 @@ func (c *fakeCache) PlaceBidLua(_ context.Context, itemID string, args itemcache
 		state.EndTime = state.EndTime.Add(time.Duration(args.AutoExtendSec) * time.Second)
 		state.ExtendCount++
 		state.TotalExtendedSec += args.AutoExtendSec
-		state.IsExtended = true
 		isExtended = true
 	}
+	state.IsExtended = isExtended
 
 	isCapped := args.PriceCap > 0 && args.Price >= args.PriceCap
 	return &itemcache.BidLuaResult{
