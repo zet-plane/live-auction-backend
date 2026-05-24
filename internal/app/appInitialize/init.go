@@ -2,6 +2,7 @@ package appInitialize
 
 import (
 	"github.com/zet-plane/live-auction-backend/internal/app"
+	"github.com/zet-plane/live-auction-backend/internal/app/deposit"
 	"github.com/zet-plane/live-auction-backend/internal/app/item"
 	"github.com/zet-plane/live-auction-backend/internal/app/order"
 	"github.com/zet-plane/live-auction-backend/internal/app/payment"
@@ -14,6 +15,7 @@ var apps = []app.Module{
 	&room.Room{Name: "room"},
 	&order.Order{Name: "order"},
 	&payment.Payment{Name: "payment"},
+	&deposit.Deposit{Name: "deposit"},
 	&item.Item{Name: "item"},
 }
 
