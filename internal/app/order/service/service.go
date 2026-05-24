@@ -56,6 +56,10 @@ func (s *Service) Pay(current *usermodel.User, orderID string) error {
 	if order.UserID != current.ID {
 		return errorx.ErrUnauthorized
 	}
+	// reject payment if order is past its expiry
+	if s.now().After(order.ExpiredAt) {
+		return errorx.ErrInvalidRequest
+	}
 	ok, err := s.store.UpdateOrderStatus(orderID, model.OrderPending, model.OrderPaid)
 	if err != nil {
 		return err

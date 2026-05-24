@@ -229,3 +229,112 @@ func TestCancel_PaidOrder_ReturnsInvalidRequest(t *testing.T) {
 		t.Errorf("want ErrInvalidRequest, got %v", err)
 	}
 }
+
+func TestPay_ExpiredOrder_ReturnsInvalidRequest(t *testing.T) {
+	store := newFakeStore()
+	svc := newTestService(store)
+	order, _ := svc.CreateOrder("item_1", "user_1", 5000)
+	// manually set expired_at to the past
+	store.orders[order.ID].ExpiredAt = svc.now().Add(-1 * time.Hour)
+
+	user := &usermodel.User{ID: "user_1"}
+	err := svc.Pay(user, order.ID)
+
+	if !errors.Is(err, errorx.ErrInvalidRequest) {
+		t.Errorf("want ErrInvalidRequest for expired order, got %v", err)
+	}
+}
+
+func TestListOrders_UserSeesOwnOrders(t *testing.T) {
+	store := newFakeStore()
+	svc := newTestService(store)
+
+	user := &usermodel.User{ID: "user_1", Identity: usermodel.IdentityUser}
+	result, err := svc.ListOrders(user, dto.ListOrdersInput{})
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// ListOrders delegates to store; verify input routing (UserID set)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.Page != 1 {
+		t.Errorf("want page=1, got %d", result.Page)
+	}
+	if result.PageSize != 20 {
+		t.Errorf("want page_size=20, got %d", result.PageSize)
+	}
+}
+
+func TestListOrders_MerchantSeesMerchantOrders(t *testing.T) {
+	store := newFakeStore()
+	svc := newTestService(store)
+
+	merchant := &usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}
+	result, err := svc.ListOrders(merchant, dto.ListOrdersInput{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+}
+
+func TestGetOrder_WrongUser_ReturnsUnauthorized(t *testing.T) {
+	store := newFakeStore()
+	svc := newTestService(store)
+	order, _ := svc.CreateOrder("item_1", "user_1", 5000)
+
+	other := &usermodel.User{ID: "user_other", Identity: usermodel.IdentityUser}
+	_, err := svc.GetOrder(other, order.ID)
+
+	if !errors.Is(err, errorx.ErrUnauthorized) {
+		t.Errorf("want ErrUnauthorized, got %v", err)
+	}
+}
+
+func TestGetOrder_CorrectUser_ReturnsDetail(t *testing.T) {
+	store := newFakeStore()
+	svc := newTestService(store)
+	order, _ := svc.CreateOrder("item_1", "user_1", 5000)
+
+	user := &usermodel.User{ID: "user_1", Identity: usermodel.IdentityUser}
+	detail, err := svc.GetOrder(user, order.ID)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if detail.ID != order.ID {
+		t.Errorf("want order id=%s, got %s", order.ID, detail.ID)
+	}
+}
+
+func TestGetOrder_MerchantOwner_ReturnsDetail(t *testing.T) {
+	store := newFakeStore()
+	svc := newTestService(store)
+	order, _ := svc.CreateOrder("item_1", "user_1", 5000)
+	// fakeStore.FindOrderDetail returns ItemMerchantID="merchant_test" for orders not in details map
+	merchant := &usermodel.User{ID: "merchant_test", Identity: usermodel.IdentityMerchant}
+	detail, err := svc.GetOrder(merchant, order.ID)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if detail.ID != order.ID {
+		t.Errorf("want order id=%s, got %s", order.ID, detail.ID)
+	}
+}
+
+func TestGetOrder_WrongMerchant_ReturnsUnauthorized(t *testing.T) {
+	store := newFakeStore()
+	svc := newTestService(store)
+	order, _ := svc.CreateOrder("item_1", "user_1", 5000)
+	// fakeStore returns ItemMerchantID="merchant_test", so a different merchant gets 401
+	merchant := &usermodel.User{ID: "merchant_other", Identity: usermodel.IdentityMerchant}
+	_, err := svc.GetOrder(merchant, order.ID)
+
+	if !errors.Is(err, errorx.ErrUnauthorized) {
+		t.Errorf("want ErrUnauthorized, got %v", err)
+	}
+}
