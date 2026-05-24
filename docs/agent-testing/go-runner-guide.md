@@ -110,6 +110,21 @@ func caseCreateItem() Result {
 }
 ```
 
+## Helper 函数参考
+
+模板提供以下 helper，场景函数可直接调用（详细实现见 `runner-template.go`）：
+
+| 函数 | 签名 | 说明 |
+| --- | --- | --- |
+| `httpDo` | `(method, path string, body any, token string) (int, map[string]any)` | 发 HTTP 请求；`token=""` 时不带 Authorization 头 |
+| `dbRows` | `(query string, args ...any) []map[string]string` | 执行 SELECT；`TEST_DSN` 未设置时返回 nil |
+| `redisGet` | `(key string) string` | GET key；key 不存在或出错时返回 `""` |
+| `redisHGetAll` | `(key string) map[string]string` | HGETALL key；出错时返回 nil |
+| `redisZMembers` | `(key string) []string` | ZRANGE key 0 -1；出错时返回 nil |
+| `runConcurrent` | `(n int, fn func() Result) []Result` | 并发执行 fn n 次，返回全部结果 |
+| `mustStr` | `(m map[string]any, keys ...string) string` | 嵌套 map 取值；路径缺失时返回 `""` |
+| `safeGet` | `(rows []map[string]string, idx int, key string) string` | 安全取行；下标越界时返回 `""` |
+
 ## 输出格式要求
 
 Runner 输出格式是强制契约，agent 不得修改 `printResult` 和 `main` 中的打印逻辑。
@@ -135,6 +150,23 @@ Runner 输出格式是强制契约，agent 不得修改 `printResult` 和 `main`
 === CLEANUP
   <each cleanup action and result>
 ```
+
+并发场景中，`runConcurrent` 返回的每个 `Result` 单独打印为一条 CASE 块：
+
+```
+=== CASE: concurrent_bid_0
+  REQUEST:  POST /api/v1/bids {...}
+  RESPONSE: 200 bid_id=bid_xxx
+  DB:       ...
+  REDIS:    ...
+  RESULT:   PASS — ...
+
+=== CASE: concurrent_bid_1
+  ...
+  RESULT:   FAIL — ...
+```
+
+每个并发结果独立计入 SUMMARY 的 PASS/FAIL 统计。
 
 ## 清理要求
 
