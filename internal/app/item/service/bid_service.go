@@ -117,11 +117,13 @@ func (s *Service) GetRanking(itemID string, page, pageSize int) (*dto.RankingRes
 		var err error
 		entries, err = s.cache.GetRanking(context.Background(), strings.TrimSpace(itemID), offset, pageSize)
 		if err != nil {
-			entries = nil
+			entries = nil // degrade to MySQL fallback; read errors are non-fatal
 		}
 	}
 
 	if len(entries) == 0 {
+		// TODO: ListBidRanking takes a single limit; we pass offset+pageSize and slice in Go.
+		// For large page numbers this is an O(page) query — acceptable given leaderboard caps.
 		all, err := s.store.ListBidRanking(strings.TrimSpace(itemID), offset+pageSize)
 		if err != nil {
 			return nil, err

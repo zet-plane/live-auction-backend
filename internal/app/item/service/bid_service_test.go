@@ -267,8 +267,7 @@ func TestGetRankingFallsBackToMySQL(t *testing.T) {
 		&itemmodel.BidLog{ID: "b1", ItemID: itemID, RoomID: "room_1", UserID: "u1", Price: 200},
 		&itemmodel.BidLog{ID: "b2", ItemID: itemID, RoomID: "room_1", UserID: "u2", Price: 300},
 	)
-	// Make cache return empty (simulate miss)
-	delete(fc.ranking, itemID)
+	// No bids placed via service so fc.ranking[itemID] was never populated — cache miss is natural.
 
 	result, err := svc.GetRanking(itemID, 1, 10)
 	if err != nil {
