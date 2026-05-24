@@ -144,7 +144,7 @@ func (s *fakeStore) ListBidRanking(itemID string, limit int) ([]itemdto.BidderPr
 
 func TestCreateItemRequiresMerchantAndCreatesDraftItemWithRule(t *testing.T) {
 	store := newFakeStore()
-	svc := NewService(store, itemdto.AuctionPolicy{ExtendTriggerSec: 30, AutoExtendSec: 10, MaxExtendCount: 6, MaxTotalExtendSec: 300}, nil, nil)
+	svc := NewService(store, itemdto.AuctionPolicy{ExtendTriggerSec: 30, AutoExtendSec: 10, MaxExtendCount: 6, MaxTotalExtendSec: 300}, nil, nil, nil)
 	start := time.Date(2026, 5, 21, 20, 0, 0, 0, time.FixedZone("CST", 8*60*60))
 	end := start.Add(10 * time.Minute)
 
@@ -215,7 +215,7 @@ func TestCreateItemRequiresMerchantAndCreatesDraftItemWithRule(t *testing.T) {
 
 func TestCreateItemRejectsMissingRoomID(t *testing.T) {
 	store := newFakeStore()
-	svc := NewService(store, itemdto.AuctionPolicy{}, nil, nil)
+	svc := NewService(store, itemdto.AuctionPolicy{}, nil, nil, nil)
 	start := time.Date(2026, 5, 21, 20, 0, 0, 0, time.UTC)
 
 	_, err := svc.CreateItem(
@@ -240,7 +240,7 @@ func TestCreateItemRejectsMissingRoomID(t *testing.T) {
 
 func TestPublishStartAndCancelValidateOwnerAndStatus(t *testing.T) {
 	store := newFakeStore()
-	svc := NewService(store, itemdto.AuctionPolicy{}, nil, nil)
+	svc := NewService(store, itemdto.AuctionPolicy{}, nil, nil, nil)
 	itemID := seedDraftItem(t, svc, "merchant_1")
 
 	if err := svc.PublishItem(&usermodel.User{ID: "merchant_2", Identity: usermodel.IdentityMerchant}, itemID); !errors.Is(err, errorx.ErrNotFound) {
@@ -421,7 +421,7 @@ func (c *fakeCache) GetRanking(_ context.Context, itemID string, offset, limit i
 
 func TestCreateItemStoresRoomID(t *testing.T) {
 	store := newFakeStore()
-	svc := NewService(store, itemdto.AuctionPolicy{}, nil, nil)
+	svc := NewService(store, itemdto.AuctionPolicy{}, nil, nil, nil)
 	start := time.Date(2026, 5, 21, 20, 0, 0, 0, time.UTC)
 	end := start.Add(10 * time.Minute)
 
@@ -444,7 +444,7 @@ func TestCreateItemStoresRoomID(t *testing.T) {
 
 func TestUpdateItemRejectsBlankRoomIDAndKeepsExistingRoomID(t *testing.T) {
 	store := newFakeStore()
-	svc := NewService(store, itemdto.AuctionPolicy{}, nil, nil)
+	svc := NewService(store, itemdto.AuctionPolicy{}, nil, nil, nil)
 	merchant := &usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}
 	itemID := seedDraftItem(t, svc, merchant.ID)
 	start := time.Date(2026, 5, 21, 20, 0, 0, 0, time.UTC)
@@ -469,7 +469,7 @@ func TestUpdateItemRejectsBlankRoomIDAndKeepsExistingRoomID(t *testing.T) {
 
 func TestUpdateItemPersistsRoomID(t *testing.T) {
 	store := newFakeStore()
-	svc := NewService(store, itemdto.AuctionPolicy{}, nil, nil)
+	svc := NewService(store, itemdto.AuctionPolicy{}, nil, nil, nil)
 	merchant := &usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}
 	itemID := seedDraftItem(t, svc, merchant.ID)
 	start := time.Date(2026, 5, 21, 20, 0, 0, 0, time.UTC)
@@ -495,7 +495,7 @@ func TestUpdateItemPersistsRoomID(t *testing.T) {
 func TestPublishItemPushesToRoomQueue(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()
-	svc := NewService(store, itemdto.AuctionPolicy{}, fc, nil)
+	svc := NewService(store, itemdto.AuctionPolicy{}, fc, nil, nil)
 	start := time.Date(2026, 5, 21, 20, 0, 0, 0, time.UTC)
 	end := start.Add(10 * time.Minute)
 
@@ -518,7 +518,7 @@ func TestPublishItemPushesToRoomQueue(t *testing.T) {
 func TestStartItemInitializesRedisState(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()
-	svc := NewService(store, itemdto.AuctionPolicy{}, fc, nil)
+	svc := NewService(store, itemdto.AuctionPolicy{}, fc, nil, nil)
 	itemID := seedPublishedItem(t, svc, "merchant_1", "room_abc")
 
 	if err := svc.StartItem(&usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}, itemID); err != nil {
@@ -540,7 +540,7 @@ func TestStartItemFailsWhenRedisInitFails(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()
 	fc.initErr = errors.New("redis down")
-	svc := NewService(store, itemdto.AuctionPolicy{}, fc, nil)
+	svc := NewService(store, itemdto.AuctionPolicy{}, fc, nil, nil)
 	itemID := seedPublishedItem(t, svc, "merchant_1", "room_abc")
 
 	if err := svc.StartItem(&usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}, itemID); err == nil {
@@ -555,7 +555,7 @@ func TestStartItemFailsWhenRedisInitFails(t *testing.T) {
 func TestStartItemRollsBackRedisOnMySQLFailure(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()
-	svc := NewService(store, itemdto.AuctionPolicy{}, fc, nil)
+	svc := NewService(store, itemdto.AuctionPolicy{}, fc, nil, nil)
 	itemID := seedPublishedItem(t, svc, "merchant_1", "room_abc")
 
 	store.updateErr = errors.New("mysql down")
@@ -571,7 +571,7 @@ func TestStartItemRollsBackRedisOnMySQLFailure(t *testing.T) {
 func TestGetItemEnrichesFromCacheWhenOngoing(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()
-	svc := NewService(store, itemdto.AuctionPolicy{}, fc, nil)
+	svc := NewService(store, itemdto.AuctionPolicy{}, fc, nil, nil)
 	merchant := &usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}
 	itemID := seedPublishedItem(t, svc, "merchant_1", "room_abc")
 	_ = svc.StartItem(merchant, itemID)
@@ -598,7 +598,7 @@ func TestGetItemEnrichesFromCacheWhenOngoing(t *testing.T) {
 func TestGetItemFallsBackToMySQLWhenCacheMiss(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()
-	svc := NewService(store, itemdto.AuctionPolicy{}, fc, nil)
+	svc := NewService(store, itemdto.AuctionPolicy{}, fc, nil, nil)
 	merchant := &usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}
 	itemID := seedPublishedItem(t, svc, "merchant_1", "room_abc")
 	_ = svc.StartItem(merchant, itemID)
@@ -616,7 +616,7 @@ func TestGetItemFallsBackToMySQLWhenCacheMiss(t *testing.T) {
 func TestCancelItemRemovesFromRoomQueueAndState(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()
-	svc := NewService(store, itemdto.AuctionPolicy{}, fc, nil)
+	svc := NewService(store, itemdto.AuctionPolicy{}, fc, nil, nil)
 	itemID := seedPublishedItem(t, svc, "merchant_1", "room_abc")
 	merchant := &usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}
 

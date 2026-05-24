@@ -14,6 +14,8 @@ import (
 	"github.com/zet-plane/live-auction-backend/pkg/snowflake"
 )
 
+var ErrDepositRequired = errorx.New(http.StatusBadRequest, 40005, "deposit required")
+
 func (s *Service) PlaceBid(current *usermodel.User, itemID string, input dto.PlaceBidInput) (*dto.PlaceBidResult, error) {
 	item, rule, err := s.store.FindItemWithRule(strings.TrimSpace(itemID))
 	if err != nil {
@@ -21,6 +23,18 @@ func (s *Service) PlaceBid(current *usermodel.User, itemID string, input dto.Pla
 	}
 	if item.Status != model.ItemOngoing {
 		return nil, errorx.ErrInvalidRequest
+	}
+	if rule.DepositAmount > 0 {
+		if s.depositSvc == nil {
+			return nil, errorx.ErrInternal
+		}
+		ok, err := s.depositSvc.HasPaidDeposit(item.ID, current.ID, rule.DepositAmount)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, ErrDepositRequired
+		}
 	}
 	if s.cache == nil {
 		return nil, errorx.ErrInternal

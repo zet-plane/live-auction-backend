@@ -55,7 +55,7 @@ func seedOngoingItem(t *testing.T, svc *Service, merchantID, roomID string, star
 func TestPlaceBidSucceeds(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()
-	svc := NewService(store, testPolicy, fc, nil)
+	svc := NewService(store, testPolicy, fc, nil, nil)
 	endTime := time.Now().Add(5 * time.Minute)
 	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 0, endTime)
 
@@ -90,7 +90,7 @@ func TestPlaceBidSucceeds(t *testing.T) {
 func TestPlaceBidRejectsNonOngoingItem(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()
-	svc := NewService(store, testPolicy, fc, nil)
+	svc := NewService(store, testPolicy, fc, nil, nil)
 	itemID := seedPublishedItem(t, svc, "merchant_1", "room_1")
 
 	_, err := svc.PlaceBid(bidder, itemID, itemdto.PlaceBidInput{Price: 100, IdempotencyKey: "k1"})
@@ -103,7 +103,7 @@ func TestPlaceBidRejectsPriceTooLow(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()
 	fc.bidLuaCode = 3
-	svc := NewService(store, testPolicy, fc, nil)
+	svc := NewService(store, testPolicy, fc, nil, nil)
 	endTime := time.Now().Add(5 * time.Minute)
 	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 0, endTime)
 
@@ -121,7 +121,7 @@ func TestPlaceBidRejectsInvalidIncrement(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()
 	fc.bidLuaCode = 4
-	svc := NewService(store, testPolicy, fc, nil)
+	svc := NewService(store, testPolicy, fc, nil, nil)
 	endTime := time.Now().Add(5 * time.Minute)
 	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 0, endTime)
 
@@ -139,7 +139,7 @@ func TestPlaceBidRejectsEndedAuction(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()
 	fc.bidLuaCode = 2
-	svc := NewService(store, testPolicy, fc, nil)
+	svc := NewService(store, testPolicy, fc, nil, nil)
 	endTime := time.Now().Add(5 * time.Minute)
 	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 0, endTime)
 
@@ -156,7 +156,7 @@ func TestPlaceBidRejectsEndedAuction(t *testing.T) {
 func TestPlaceBidIdempotent(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()
-	svc := NewService(store, testPolicy, fc, nil)
+	svc := NewService(store, testPolicy, fc, nil, nil)
 	endTime := time.Now().Add(5 * time.Minute)
 	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 0, endTime)
 
@@ -187,7 +187,7 @@ func TestPlaceBidIdempotent(t *testing.T) {
 func TestPlaceBidPriceCapEndsAuction(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()
-	svc := NewService(store, testPolicy, fc, nil)
+	svc := NewService(store, testPolicy, fc, nil, nil)
 	endTime := time.Now().Add(5 * time.Minute)
 	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 500, endTime)
 
@@ -210,10 +210,101 @@ func TestPlaceBidPriceCapEndsAuction(t *testing.T) {
 	}
 }
 
+type fakeDepositChecker struct {
+	paid  bool
+	err   error
+	calls int
+}
+
+func (f *fakeDepositChecker) HasPaidDeposit(itemID, userID string, requiredAmount int64) (bool, error) {
+	f.calls++
+	if f.err != nil {
+		return false, f.err
+	}
+	return f.paid, nil
+}
+
+func TestPlaceBidSkipsDepositCheckWhenNotRequired(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	deposits := &fakeDepositChecker{paid: false}
+	svc := NewService(store, testPolicy, fc, nil, deposits)
+	endTime := time.Now().Add(5 * time.Minute)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 0, endTime)
+
+	_, err := svc.PlaceBid(bidder, itemID, itemdto.PlaceBidInput{
+		Price: 100, IdempotencyKey: "no_deposit_required", UserName: "Alice",
+	})
+	if err != nil {
+		t.Fatalf("PlaceBid failed: %v", err)
+	}
+	if deposits.calls != 0 {
+		t.Fatalf("expected deposit checker not to be called, got %d calls", deposits.calls)
+	}
+}
+
+func TestPlaceBidRejectsMissingDepositBeforeRedis(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	deposits := &fakeDepositChecker{paid: false}
+	svc := NewService(store, testPolicy, fc, nil, deposits)
+	endTime := time.Now().Add(5 * time.Minute)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 0, endTime)
+	rule := store.rules[store.items[itemID].RuleID]
+	rule.DepositAmount = 5000
+
+	_, err := svc.PlaceBid(bidder, itemID, itemdto.PlaceBidInput{
+		Price: 100, IdempotencyKey: "missing_deposit", UserName: "Alice",
+	})
+	if err == nil {
+		t.Fatal("expected deposit required error")
+	}
+	var ce *errorx.CodeError
+	if !errors.As(err, &ce) || ce.Code != 40005 {
+		t.Fatalf("expected code 40005, got %v", err)
+	}
+	if deposits.calls != 1 {
+		t.Fatalf("expected one deposit checker call, got %d", deposits.calls)
+	}
+	if len(store.bidLogs) != 0 {
+		t.Fatalf("expected no bid logs, got %d", len(store.bidLogs))
+	}
+	if len(fc.ranking[itemID]) != 0 {
+		t.Fatalf("expected Redis fake ranking not to record bids, got %d", len(fc.ranking[itemID]))
+	}
+}
+
+func TestPlaceBidAllowsPaidDeposit(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	deposits := &fakeDepositChecker{paid: true}
+	svc := NewService(store, testPolicy, fc, nil, deposits)
+	endTime := time.Now().Add(5 * time.Minute)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 0, endTime)
+	rule := store.rules[store.items[itemID].RuleID]
+	rule.DepositAmount = 5000
+
+	result, err := svc.PlaceBid(bidder, itemID, itemdto.PlaceBidInput{
+		Price: 100, IdempotencyKey: "paid_deposit", UserName: "Alice",
+	})
+	if err != nil {
+		t.Fatalf("PlaceBid failed: %v", err)
+	}
+	if result.CurrentPrice != 100 {
+		t.Fatalf("expected current price 100, got %d", result.CurrentPrice)
+	}
+	if deposits.calls != 1 {
+		t.Fatalf("expected one deposit checker call, got %d", deposits.calls)
+	}
+	if len(store.bidLogs) != 1 {
+		t.Fatalf("expected one bid log, got %d", len(store.bidLogs))
+	}
+}
+
 func TestGetRankingFromCache(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()
-	svc := NewService(store, testPolicy, fc, nil)
+	svc := NewService(store, testPolicy, fc, nil, nil)
 	endTime := time.Now().Add(5 * time.Minute)
 	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 0, endTime)
 
@@ -258,7 +349,7 @@ func TestGetRankingFromCache(t *testing.T) {
 func TestGetRankingFallsBackToMySQL(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()
-	svc := NewService(store, testPolicy, fc, nil)
+	svc := NewService(store, testPolicy, fc, nil, nil)
 	endTime := time.Now().Add(5 * time.Minute)
 	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 0, endTime)
 
@@ -284,7 +375,7 @@ func TestGetRankingFallsBackToMySQL(t *testing.T) {
 func TestGetRankingPagination(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()
-	svc := NewService(store, testPolicy, fc, nil)
+	svc := NewService(store, testPolicy, fc, nil, nil)
 	endTime := time.Now().Add(5 * time.Minute)
 	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 0, endTime)
 

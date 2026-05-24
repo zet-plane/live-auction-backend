@@ -16,20 +16,26 @@ import (
 )
 
 type Service struct {
-	store    dao.Store
-	cache    itemcache.Cache
-	policy   dto.AuctionPolicy
-	now      func() time.Time
-	orderSvc *orderservice.Service
+	store      dao.Store
+	cache      itemcache.Cache
+	policy     dto.AuctionPolicy
+	now        func() time.Time
+	orderSvc   *orderservice.Service
+	depositSvc DepositChecker
 }
 
-func NewService(store dao.Store, policy dto.AuctionPolicy, cache itemcache.Cache, orderSvc *orderservice.Service) *Service {
+type DepositChecker interface {
+	HasPaidDeposit(itemID, userID string, requiredAmount int64) (bool, error)
+}
+
+func NewService(store dao.Store, policy dto.AuctionPolicy, cache itemcache.Cache, orderSvc *orderservice.Service, depositSvc DepositChecker) *Service {
 	return &Service{
-		store:    store,
-		cache:    cache,
-		policy:   policy,
-		now:      time.Now,
-		orderSvc: orderSvc,
+		store:      store,
+		cache:      cache,
+		policy:     policy,
+		now:        time.Now,
+		orderSvc:   orderSvc,
+		depositSvc: depositSvc,
 	}
 }
 
