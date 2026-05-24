@@ -57,5 +57,5 @@ type ListOrdersResult struct {
 
 // PayOrderRequest is the request body for POST /orders/{id}/pay.
 type PayOrderRequest struct {
-	Result string `json:"result" binding:"required"`
+	Result string `json:"result" binding:"required,oneof=success"`
 }

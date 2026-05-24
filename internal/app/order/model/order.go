@@ -13,7 +13,7 @@ const (
 
 type Order struct {
 	ID        string      `gorm:"primaryKey;size:64" json:"id"`
-	ItemID    string      `gorm:"index;size:64;not null" json:"item_id"`
+	ItemID    string      `gorm:"uniqueIndex:idx_orders_item_id_unique;size:64;not null" json:"item_id"`
 	UserID    string      `gorm:"index;size:64;not null" json:"user_id"`
 	Price     int64       `gorm:"not null" json:"price"`
 	Status    OrderStatus `gorm:"index;size:32;not null" json:"status"`

@@ -17,7 +17,12 @@ docs/agent-testing/
 ├── template.md
 ├── modules/
 │   ├── bid.md
-│   └── auction-session.md
+│   ├── deposit.md
+│   ├── item.md
+│   ├── order.md
+│   ├── payment.md
+│   ├── room.md
+│   └── user.md
 ├── flows/
 │   └── auction-lifecycle.md
 └── reports/
@@ -110,7 +115,12 @@ docs/agent-testing/README.md
 示例：
 
 - `modules/bid.md`
-- `modules/auction-session.md`
+- `modules/deposit.md`
+- `modules/item.md`
+- `modules/order.md`
+- `modules/payment.md`
+- `modules/room.md`
+- `modules/user.md`
 
 模块文档适合覆盖：
 

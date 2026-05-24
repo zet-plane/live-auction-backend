@@ -3,6 +3,7 @@ package handler
 import (
 	"github.com/flamego/binding"
 	"github.com/flamego/flamego"
+	orderdto "github.com/zet-plane/live-auction-backend/internal/app/order/dto"
 	orderservice "github.com/zet-plane/live-auction-backend/internal/app/order/service"
 	usermodel "github.com/zet-plane/live-auction-backend/internal/app/user/model"
 	"github.com/zet-plane/live-auction-backend/internal/middleware/response"
@@ -16,8 +17,12 @@ func Init(s *orderservice.Service) {
 	orderSvc = s
 }
 
-func Pay(r flamego.Render, c flamego.Context, current *usermodel.User, errs binding.Errors) {
+func Pay(r flamego.Render, c flamego.Context, current *usermodel.User, body orderdto.PayOrderRequest, errs binding.Errors) {
 	if web.BindingErrors(r, errs) {
+		return
+	}
+	if body.Result != "success" {
+		response.Error(r, errorx.ErrInvalidRequest)
 		return
 	}
 	if orderSvc == nil {
