@@ -36,8 +36,8 @@ module agent-runner
 go 1.23
 
 require (
-    github.com/go-sql-driver/mysql v1.8.1
-    github.com/redis/go-redis/v9 v9.17.2
+	github.com/go-sql-driver/mysql v1.8.1
+	github.com/redis/go-redis/v9 v9.17.2
 )
 ```
 
@@ -74,7 +74,7 @@ cd /tmp/agent-runner-<batch> && go run main.go
 
 - 每个场景是一个 `func() Result` 函数，追加到 `scenarios()` 返回的切片。
 - 场景之间需要传递中间状态时（如第一步创建的 item_id 供后续步骤使用），使用 package 级别变量。
-- 并发场景使用 `runConcurrent(n, fn)` helper，它返回 `[]Result`；agent 将每个结果单独计入 pass/fail 统计。
+- 并发场景使用 `runConcurrent(n, fn)` helper。wrapper 函数内部调用 `printResult` 打印每个并发结果，最后返回一个汇总 `Result` 供 `main()` 计入总统计：
 - 函数名建议以 `case` 开头，例如 `caseCreateItem`、`casePublishItem`。
 
 示例：
@@ -110,6 +110,41 @@ func caseCreateItem() Result {
 }
 ```
 
+```go
+func caseConcurrentBid() Result {
+    results := runConcurrent(5, func() Result {
+        status, body := httpDo("POST", "/api/v1/bids", map[string]any{
+            "item_id": createdItemID,
+            "amount":  110,
+        }, userToken)
+        pass := status == 200 || status == 409
+        return Result{
+            Name:     "concurrent bid attempt",
+            Pass:     pass,
+            Reason:   fmt.Sprintf("status=%d", status),
+            Request:  "POST /api/v1/bids {item_id, amount:110}",
+            Response: fmt.Sprintf("%d %s", status, jsonStr(body)),
+            DB:       "N/A",
+            Redis:    "N/A",
+        }
+    })
+    passCount := 0
+    for _, r := range results {
+        printResult(r) // prints individual === CASE block for each goroutine
+        if r.Pass {
+            passCount++
+        }
+    }
+    return Result{
+        Name:   "concurrent bid summary",
+        Pass:   passCount == len(results),
+        Reason: fmt.Sprintf("%d/%d goroutines passed", passCount, len(results)),
+        DB:     "N/A",
+        Redis:  "N/A",
+    }
+}
+```
+
 ## Helper 函数参考
 
 模板提供以下 helper，场景函数可直接调用（详细实现见 `runner-template.go`）：
@@ -124,6 +159,8 @@ func caseCreateItem() Result {
 | `runConcurrent` | `(n int, fn func() Result) []Result` | 并发执行 fn n 次，返回全部结果 |
 | `mustStr` | `(m map[string]any, keys ...string) string` | 嵌套 map 取值；路径缺失时返回 `""` |
 | `safeGet` | `(rows []map[string]string, idx int, key string) string` | 安全取行；下标越界时返回 `""` |
+| `jsonStr` | `(v any) string` | 将值序列化为紧凑 JSON，用于 Result 字段打印 |
+| `filterLines` | `(s, substr string) string` | 从字符串中提取含 substr 的行；适用于解析服务日志输出 |
 
 ## 输出格式要求
 

@@ -11,6 +11,8 @@ docs/agent-testing/
 ├── README.md
 ├── environment.md
 ├── agent-runner-guide.md
+├── go-runner-guide.md
+├── runner-template.go
 ├── module-generator-guide.md
 ├── template.md
 ├── modules/
@@ -63,7 +65,7 @@ docs/agent-testing/README.md
 | --- | --- |
 | 准备环境、连接数据库/Redis、启动服务、创建测试数据 | `environment.md` |
 | 执行模块、流程、接口、并发或状态一致性测试 | `agent-runner-guide.md` |
-| 执行接口契约、集成或状态一致性测试，需要结构化证据采集 | `go-runner-guide.md` |
+| 执行接口契约、集成或状态一致性测试，需要结构化证据采集（先读 `agent-runner-guide.md`） | `go-runner-guide.md` |
 | 生成或补充模块测试文档 | `module-generator-guide.md` |
 | 写入或补充测试报告 | `reports/README.md` |
 
