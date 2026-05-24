@@ -116,6 +116,7 @@ func TestCreateItemRequiresMerchantAndCreatesDraftItemWithRule(t *testing.T) {
 	}
 
 	result, err := svc.CreateItem(&usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}, itemdto.CreateItemInput{
+		RoomID:      "room_abc",
 		Title:       " 翡翠手镯 ",
 		Description: " 天然翡翠，支持鉴定 ",
 		ImageURL:    " https://example.com/item.png ",
@@ -144,6 +145,9 @@ func TestCreateItemRequiresMerchantAndCreatesDraftItemWithRule(t *testing.T) {
 	if item.MerchantID != "merchant_1" {
 		t.Fatalf("expected merchant_1, got %q", item.MerchantID)
 	}
+	if item.RoomID != "room_abc" {
+		t.Fatalf("expected room_abc, got %q", item.RoomID)
+	}
 	if item.Status != itemmodel.ItemDraft {
 		t.Fatalf("expected draft status, got %q", item.Status)
 	}
@@ -155,6 +159,31 @@ func TestCreateItemRequiresMerchantAndCreatesDraftItemWithRule(t *testing.T) {
 	}
 	if rule.ItemID != item.ID || item.RuleID != rule.ID {
 		t.Fatalf("expected item/rule linkage, got item.rule_id=%q rule.item_id=%q", item.RuleID, rule.ItemID)
+	}
+}
+
+func TestCreateItemRejectsMissingRoomID(t *testing.T) {
+	store := newFakeStore()
+	svc := NewService(store, itemdto.AuctionPolicy{}, nil)
+	start := time.Date(2026, 5, 21, 20, 0, 0, 0, time.UTC)
+
+	_, err := svc.CreateItem(
+		&usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant},
+		itemdto.CreateItemInput{
+			Title: "翡翠手镯",
+			Rule: itemdto.RuleInput{
+				StartPrice:   1000,
+				BidIncrement: 100,
+				StartTime:    start,
+				EndTime:      start.Add(10 * time.Minute),
+			},
+		},
+	)
+	if !errors.Is(err, errorx.ErrInvalidRequest) {
+		t.Fatalf("expected invalid request for missing room_id, got %v", err)
+	}
+	if len(store.items) != 0 {
+		t.Fatalf("expected no item to be stored, got %d", len(store.items))
 	}
 }
 
@@ -268,6 +297,56 @@ func TestCreateItemStoresRoomID(t *testing.T) {
 	item := store.items[result.ItemID]
 	if item.RoomID != "room_abc" {
 		t.Fatalf("expected room_id room_abc, got %q", item.RoomID)
+	}
+}
+
+func TestUpdateItemRejectsBlankRoomIDAndKeepsExistingRoomID(t *testing.T) {
+	store := newFakeStore()
+	svc := NewService(store, itemdto.AuctionPolicy{}, nil)
+	merchant := &usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}
+	itemID := seedDraftItem(t, svc, merchant.ID)
+	start := time.Date(2026, 5, 21, 20, 0, 0, 0, time.UTC)
+
+	err := svc.UpdateItem(merchant, itemID, itemdto.CreateItemInput{
+		RoomID: "   ",
+		Title:  "Updated Item",
+		Rule: itemdto.RuleInput{
+			StartPrice:   1000,
+			BidIncrement: 100,
+			StartTime:    start,
+			EndTime:      start.Add(10 * time.Minute),
+		},
+	})
+	if !errors.Is(err, errorx.ErrInvalidRequest) {
+		t.Fatalf("expected invalid request for blank room_id, got %v", err)
+	}
+	if store.items[itemID].RoomID != "room_abc" {
+		t.Fatalf("expected existing room_id to remain room_abc, got %q", store.items[itemID].RoomID)
+	}
+}
+
+func TestUpdateItemPersistsRoomID(t *testing.T) {
+	store := newFakeStore()
+	svc := NewService(store, itemdto.AuctionPolicy{}, nil)
+	merchant := &usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}
+	itemID := seedDraftItem(t, svc, merchant.ID)
+	start := time.Date(2026, 5, 21, 20, 0, 0, 0, time.UTC)
+
+	err := svc.UpdateItem(merchant, itemID, itemdto.CreateItemInput{
+		RoomID: " room_xyz ",
+		Title:  "Updated Item",
+		Rule: itemdto.RuleInput{
+			StartPrice:   1000,
+			BidIncrement: 100,
+			StartTime:    start,
+			EndTime:      start.Add(10 * time.Minute),
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpdateItem failed: %v", err)
+	}
+	if store.items[itemID].RoomID != "room_xyz" {
+		t.Fatalf("expected room_id room_xyz, got %q", store.items[itemID].RoomID)
 	}
 }
 
@@ -439,6 +518,7 @@ func seedDraftItem(t *testing.T, svc *Service, merchantID string) string {
 	t.Helper()
 	start := time.Date(2026, 5, 21, 20, 0, 0, 0, time.UTC)
 	result, err := svc.CreateItem(&usermodel.User{ID: merchantID, Identity: usermodel.IdentityMerchant}, itemdto.CreateItemInput{
+		RoomID:   "room_abc",
 		Title:    "item",
 		ImageURL: "https://example.com/item.png",
 		Rule: itemdto.RuleInput{

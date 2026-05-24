@@ -158,6 +158,7 @@ func (s *Service) UpdateItem(current *usermodel.User, itemID string, input dto.C
 	if err := validateCreateInput(input); err != nil {
 		return err
 	}
+	item.RoomID = input.RoomID
 	item.Title = input.Title
 	item.Description = input.Description
 	item.ImageURL = input.ImageURL
@@ -265,6 +266,7 @@ func isMerchant(current *usermodel.User) bool {
 }
 
 func normalizeCreateInput(input dto.CreateItemInput) dto.CreateItemInput {
+	input.RoomID = strings.TrimSpace(input.RoomID)
 	input.Title = strings.TrimSpace(input.Title)
 	input.Description = strings.TrimSpace(input.Description)
 	input.ImageURL = strings.TrimSpace(input.ImageURL)
@@ -273,7 +275,7 @@ func normalizeCreateInput(input dto.CreateItemInput) dto.CreateItemInput {
 }
 
 func validateCreateInput(input dto.CreateItemInput) error {
-	if input.Title == "" || input.Rule.BidIncrement <= 0 {
+	if input.RoomID == "" || input.Title == "" || input.Rule.BidIncrement <= 0 {
 		return errorx.ErrInvalidRequest
 	}
 	if input.Rule.StartPrice < 0 || input.Rule.PriceCap < 0 || input.Rule.DepositAmount < 0 {
