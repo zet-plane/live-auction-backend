@@ -20,7 +20,7 @@ jobs:
       - name: Test
         run: go test ./...
 
-  docker:
+  build-image:
     name: Build & Push Docker Image
     needs: [test]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
@@ -50,7 +50,7 @@ jobs:
 
   notify-deploy:
     name: Notify Deploy Webhook
-    needs: [docker]
+    needs: [build-image]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
@@ -66,12 +66,16 @@ jobs:
             echo "DEPLOY_WEBHOOK_URL is empty; skipping webhook notification"
             exit 0
           fi
-          auth_header=()
-          if [ -n "$DEPLOY_WEBHOOK_TOKEN" ]; then
-            auth_header=(-H "Authorization: Bearer $DEPLOY_WEBHOOK_TOKEN")
+          if [ -z "$DEPLOY_WEBHOOK_TOKEN" ]; then
+            echo "DEPLOY_WEBHOOK_TOKEN is empty"
+            exit 1
           fi
-          curl --fail --show-error --silent \
+          response="$(curl --fail --show-error --silent \
             -X POST "$DEPLOY_WEBHOOK_URL" \
-            "${auth_header[@]}" \
+            -H "Authorization: Bearer $DEPLOY_WEBHOOK_TOKEN" \
             -H "Content-Type: application/json" \
-            -d "{\"image\":\"ghcr.io/${{ github.repository }}\",\"tag\":\"${{ env.SHORT_SHA }}\",\"sha\":\"${{ github.sha }}\"}"
+            -d "{\"image\":\"ghcr.io/${{ github.repository }}\",\"tag\":\"${{ env.SHORT_SHA }}\",\"sha\":\"${{ github.sha }}\"}")"
+          if [ -n "$response" ]; then
+            echo "$response"
+            exit 1
+          fi
