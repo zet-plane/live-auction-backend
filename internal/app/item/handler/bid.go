@@ -1,8 +1,6 @@
 package handler
 
 import (
-	"strconv"
-
 	"github.com/flamego/binding"
 	"github.com/flamego/flamego"
 	"github.com/zet-plane/live-auction-backend/internal/app/item/dto"
@@ -33,9 +31,7 @@ func GetRanking(r flamego.Render, c flamego.Context) {
 		response.Error(r, errorx.ErrInternal)
 		return
 	}
-	page, _ := strconv.Atoi(c.Query("page"))
-	pageSize, _ := strconv.Atoi(c.Query("page_size"))
-	result, err := svc.GetRanking(c.Param("item_id"), page, pageSize)
+	result, err := svc.GetRanking(c.Param("item_id"), queryInt(c, "page"), queryInt(c, "page_size"))
 	if err != nil {
 		response.Error(r, err)
 		return
