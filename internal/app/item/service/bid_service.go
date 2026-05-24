@@ -61,6 +61,10 @@ func (s *Service) PlaceBid(current *usermodel.User, itemID string, input dto.Pla
 		return nil, errorx.New(http.StatusBadRequest, 40003, "price too low")
 	case 4:
 		return nil, errorx.New(http.StatusBadRequest, 40004, "invalid bid increment")
+	default:
+		if luaResult.Code != 0 {
+			return nil, errorx.ErrInternal
+		}
 	}
 
 	// TODO: 高并发场景下改为异步落库（写入 Redis LIST，worker 批量消费）
