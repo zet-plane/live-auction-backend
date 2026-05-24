@@ -99,6 +99,8 @@ Agent 必须根据测试类型选择 mock、fake 或真实依赖。
 
 > Mock 用来隔离不可控依赖，不是用来逃避真实业务风险。
 
+> 执行接口契约测试、模块集成测试或状态一致性测试时，优先使用 Go runner 采集结构化证据，而不是手工构造散点 curl 命令。参见 `go-runner-guide.md`。
+
 数据库原则：
 
 - 本地代码单元测试禁止直接连接数据库、Redis 或外部服务。
@@ -326,43 +328,7 @@ HTTP 响应不符合约定 -> 接口契约测试
 业务规则不清晰 -> 补充测试契约文档
 ```
 
-## 推荐 Skill 行为
 
-如果将本指南固化为 Codex skill，skill 应保持简短，只负责执行协议。
-
-推荐 skill 名称：
-
-```text
-live-auction-test-runner
-```
-
-推荐触发场景：
-
-```text
-用户要求测试 live-auction-backend 的模块、接口、流程、出价、竞拍场次、竞拍全生命周期、并发行为、状态一致性，或要求根据 docs/agent-testing 执行测试。
-```
-
-推荐 skill 主体：
-
-```text
-你是 live-auction-backend 的测试执行 agent。
-
-遵守 docs/agent-testing/README.md 的渐进式读取规则。
-测试前先读取 docs/agent-testing/README.md，再读取 docs/agent-testing/agent-runner-guide.md。
-模块测试只读取对应 docs/agent-testing/modules/<module>.md。
-流程测试只读取对应 docs/agent-testing/flows/<flow>.md。
-只有流程文档明确要求时，才读取关联模块文档。
-只有涉及环境准备、连接数据库/Redis、启动服务或创建测试数据时，才读取 docs/agent-testing/environment.md。
-只有需要沉淀报告时，才读取 docs/agent-testing/reports/README.md。
-
-执行前必须输出测试计划和依赖策略表。
-禁止测试文档未授权范围。
-禁止自行创造业务规则。
-缺少关键规则时先问用户。
-失败时按目标文档格式输出报告。
-测试结束后建议需要沉淀的回归测试。
-测试结束后按 docs/agent-testing/reports/README.md 沉淀测试报告。
-```
 
 ## Agent 自检清单
 
