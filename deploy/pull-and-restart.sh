@@ -21,13 +21,35 @@ if [ ! -f docker-compose.prod.yml ]; then
   exit 1
 fi
 
+old_env="$(mktemp)"
 tmp_env="$(mktemp)"
 if [ -f .env ]; then
+  cp .env "$old_env"
   grep -v '^IMAGE_TAG=' .env > "$tmp_env" || true
 fi
 printf 'IMAGE_TAG=%s\n' "$image_tag" >> "$tmp_env"
 mv "$tmp_env" .env
 
-docker compose -f docker-compose.prod.yml pull app
+restore_env() {
+  if [ -s "$old_env" ]; then
+    mv "$old_env" .env
+  fi
+}
+trap restore_env ERR
+
+for attempt in 1 2 3; do
+  if docker compose -f docker-compose.prod.yml pull app; then
+    break
+  fi
+  if [ "$attempt" -eq 3 ]; then
+    echo "failed to pull app image after $attempt attempts" >&2
+    restore_env
+    exit 1
+  fi
+  sleep $((attempt * 5))
+done
+
+trap - ERR
+rm -f "$old_env"
 docker compose -f docker-compose.prod.yml up -d --remove-orphans
 docker image prune -f
