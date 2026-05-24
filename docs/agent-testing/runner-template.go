@@ -26,7 +26,7 @@ import (
 
 const (
 	baseURL   = "http://127.0.0.1:8080"
-	batchID   = "agent_item_20260524120000" // replace <module> and timestamp
+	batchID   = "agent_item_20260524120000" // REQUIRED: replace module name and timestamp before running
 	redisAddr = "127.0.0.1:6379"
 )
 
@@ -126,6 +126,9 @@ func init() {
 		db, err = sql.Open("mysql", dsn)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "db open: %v\n", err)
+		} else if err = db.Ping(); err != nil {
+			fmt.Fprintf(os.Stderr, "db ping: %v\n", err)
+			db = nil
 		}
 	}
 	rdb = redis.NewClient(&redis.Options{Addr: redisAddr})
@@ -184,6 +187,9 @@ func dbRows(query string, args ...any) []map[string]string {
 			row[col] = string(vals[i])
 		}
 		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		out = append(out, map[string]string{"error": err.Error()})
 	}
 	return out
 }
@@ -263,6 +269,7 @@ func jsonStr(v any) string {
 }
 
 // filterLines returns lines from s that contain substr, joined by newline.
+// Useful for extracting relevant lines from server log output piped into a Result field.
 func filterLines(s, substr string) string {
 	var out []string
 	for _, line := range strings.Split(s, "\n") {
