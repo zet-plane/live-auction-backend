@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/zet-plane/live-auction-backend/internal/app/item/dto"
 )
 
 type AuctionState struct {
@@ -19,12 +20,40 @@ type AuctionState struct {
 	TotalExtendedSec int
 }
 
+type BidLuaArgs struct {
+	UserID            string
+	UserName          string
+	BidID             string
+	Price             int64
+	BidIncrement      int64
+	PriceCap          int64
+	ExtendTriggerSec  int
+	AutoExtendSec     int
+	MaxExtendCount    int
+	MaxTotalExtendSec int
+	NowUnix           int64
+	IdempotencyKey    string
+	IdempotencyTTL    int
+}
+
+type BidLuaResult struct {
+	Code         int
+	BidID        string
+	CurrentPrice int64
+	LeaderUserID string
+	EndTimeUnix  int64
+	IsExtended   bool
+	IsCapped     bool
+}
+
 type Cache interface {
 	InitAuctionState(ctx context.Context, itemID string, state AuctionState) error
 	GetAuctionState(ctx context.Context, itemID string) (*AuctionState, bool, error)
 	DeleteAuctionState(ctx context.Context, itemID string) error
 	PushToRoomQueue(ctx context.Context, roomID, itemID string, score float64) error
 	RemoveFromRoomQueue(ctx context.Context, roomID, itemID string) error
+	PlaceBidLua(ctx context.Context, itemID string, args BidLuaArgs) (*BidLuaResult, error)
+	GetRanking(ctx context.Context, itemID string, offset, limit int) ([]dto.BidderPrice, error)
 }
 
 type RedisCache struct {

@@ -253,16 +253,22 @@ func TestPublishStartAndCancelValidateOwnerAndStatus(t *testing.T) {
 }
 
 type fakeCache struct {
-	states    map[string]*itemcache.AuctionState
-	queues    map[string][]string
-	initErr   error
-	deleteErr error
+	states      map[string]*itemcache.AuctionState
+	queues      map[string][]string
+	ranking     map[string]map[string]int64
+	bidderNames map[string]map[string]string
+	bidLuaCode  int
+	bidLuaErr   error
+	initErr     error
+	deleteErr   error
 }
 
 func newFakeCache() *fakeCache {
 	return &fakeCache{
-		states: map[string]*itemcache.AuctionState{},
-		queues: map[string][]string{},
+		states:      map[string]*itemcache.AuctionState{},
+		queues:      map[string][]string{},
+		ranking:     map[string]map[string]int64{},
+		bidderNames: map[string]map[string]string{},
 	}
 }
 
@@ -306,6 +312,91 @@ func (c *fakeCache) RemoveFromRoomQueue(_ context.Context, roomID, itemID string
 		}
 	}
 	return nil
+}
+
+func (c *fakeCache) PlaceBidLua(_ context.Context, itemID string, args itemcache.BidLuaArgs) (*itemcache.BidLuaResult, error) {
+	if c.bidLuaErr != nil {
+		return nil, c.bidLuaErr
+	}
+	if c.bidLuaCode != 0 {
+		return &itemcache.BidLuaResult{Code: c.bidLuaCode}, nil
+	}
+	state, ok := c.states[itemID]
+	if !ok {
+		return &itemcache.BidLuaResult{Code: 2}, nil
+	}
+	if args.NowUnix >= state.EndTime.Unix() {
+		return &itemcache.BidLuaResult{Code: 2}, nil
+	}
+	if args.Price <= state.CurrentPrice {
+		return &itemcache.BidLuaResult{Code: 3}, nil
+	}
+	if args.BidIncrement > 0 && (args.Price-state.CurrentPrice)%args.BidIncrement != 0 {
+		return &itemcache.BidLuaResult{Code: 4}, nil
+	}
+	if c.ranking[itemID] == nil {
+		c.ranking[itemID] = map[string]int64{}
+	}
+	if _, exists := c.ranking[itemID][args.UserID]; !exists {
+		state.ParticipantCount++
+	}
+	if args.Price > c.ranking[itemID][args.UserID] {
+		c.ranking[itemID][args.UserID] = args.Price
+	}
+	if c.bidderNames[itemID] == nil {
+		c.bidderNames[itemID] = map[string]string{}
+	}
+	c.bidderNames[itemID][args.UserID] = args.UserName
+	state.CurrentPrice = args.Price
+	state.LeaderUserID = args.UserID
+	state.BidCount++
+
+	isExtended := false
+	remaining := state.EndTime.Unix() - args.NowUnix
+	if remaining <= int64(args.ExtendTriggerSec) &&
+		state.ExtendCount < args.MaxExtendCount &&
+		state.TotalExtendedSec+args.AutoExtendSec <= args.MaxTotalExtendSec {
+		state.EndTime = state.EndTime.Add(time.Duration(args.AutoExtendSec) * time.Second)
+		state.ExtendCount++
+		state.TotalExtendedSec += args.AutoExtendSec
+		state.IsExtended = true
+		isExtended = true
+	}
+
+	isCapped := args.PriceCap > 0 && args.Price >= args.PriceCap
+	return &itemcache.BidLuaResult{
+		Code:         0,
+		BidID:        args.BidID,
+		CurrentPrice: args.Price,
+		LeaderUserID: args.UserID,
+		EndTimeUnix:  state.EndTime.Unix(),
+		IsExtended:   isExtended,
+		IsCapped:     isCapped,
+	}, nil
+}
+
+func (c *fakeCache) GetRanking(_ context.Context, itemID string, offset, limit int) ([]itemdto.BidderPrice, error) {
+	m := c.ranking[itemID]
+	if len(m) == 0 {
+		return nil, nil
+	}
+	entries := make([]itemdto.BidderPrice, 0, len(m))
+	for uid, price := range m {
+		name := ""
+		if c.bidderNames[itemID] != nil {
+			name = c.bidderNames[itemID][uid]
+		}
+		entries = append(entries, itemdto.BidderPrice{UserID: uid, UserName: name, Price: price})
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Price > entries[j].Price })
+	if offset >= len(entries) {
+		return nil, nil
+	}
+	entries = entries[offset:]
+	if len(entries) > limit {
+		entries = entries[:limit]
+	}
+	return entries, nil
 }
 
 func TestCreateItemStoresRoomID(t *testing.T) {
