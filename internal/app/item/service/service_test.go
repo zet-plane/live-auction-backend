@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"sort"
 	"testing"
 	"time"
 
@@ -17,6 +18,7 @@ type fakeStore struct {
 	items     map[string]*itemmodel.AuctionItem
 	rules     map[string]*itemmodel.AuctionRule
 	updateErr error
+	bidLogs   []*itemmodel.BidLog
 }
 
 func newFakeStore() *fakeStore {
@@ -89,6 +91,35 @@ func (s *fakeStore) ListItems(query itemdto.ListItemsInput) ([]itemmodel.ItemWit
 		list = append(list, itemmodel.ItemWithRule{Item: &itemCopy, Rule: &ruleCopy})
 	}
 	return list, int64(len(list)), nil
+}
+
+func (s *fakeStore) AutoMigrateBidLog() error { return nil }
+
+func (s *fakeStore) CreateBidLog(log *itemmodel.BidLog) error {
+	cp := *log
+	s.bidLogs = append(s.bidLogs, &cp)
+	return nil
+}
+
+func (s *fakeStore) ListBidRanking(itemID string, limit int) ([]itemdto.BidderPrice, error) {
+	best := map[string]int64{}
+	for _, l := range s.bidLogs {
+		if l.ItemID != itemID {
+			continue
+		}
+		if l.Price > best[l.UserID] {
+			best[l.UserID] = l.Price
+		}
+	}
+	entries := make([]itemdto.BidderPrice, 0, len(best))
+	for uid, price := range best {
+		entries = append(entries, itemdto.BidderPrice{UserID: uid, Price: price})
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Price > entries[j].Price })
+	if len(entries) > limit {
+		entries = entries[:limit]
+	}
+	return entries, nil
 }
 
 func TestCreateItemRequiresMerchantAndCreatesDraftItemWithRule(t *testing.T) {

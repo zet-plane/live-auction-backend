@@ -32,7 +32,10 @@ func (i *Item) PreInit(engine *kernel.Engine) error {
 		return ErrEmptyDatabase
 	}
 	store := dao.NewGormStore(engine.DB)
-	return store.AutoMigrate()
+	if err := store.AutoMigrate(); err != nil {
+		return err
+	}
+	return store.AutoMigrateBidLog()
 }
 
 func (i *Item) Load(engine *kernel.Engine) error {

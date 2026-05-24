@@ -18,6 +18,9 @@ type Store interface {
 	UpdateItemWithRule(item *model.AuctionItem, rule *model.AuctionRule) error
 	DeleteItem(itemID string) error
 	ListItems(query dto.ListItemsInput) ([]model.ItemWithRule, int64, error)
+	AutoMigrateBidLog() error
+	CreateBidLog(log *model.BidLog) error
+	ListBidRanking(itemID string, limit int) ([]dto.BidderPrice, error)
 }
 
 type GormStore struct {
