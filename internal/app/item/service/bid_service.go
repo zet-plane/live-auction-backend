@@ -99,3 +99,49 @@ func (s *Service) PlaceBid(current *usermodel.User, itemID string, input dto.Pla
 		Status:       status,
 	}, nil
 }
+
+func (s *Service) GetRanking(itemID string, page, pageSize int) (*dto.RankingResult, error) {
+	if page <= 0 {
+		page = 1
+	}
+	switch {
+	case pageSize > 100:
+		pageSize = 100
+	case pageSize <= 0:
+		pageSize = 10
+	}
+	offset := (page - 1) * pageSize
+
+	var entries []dto.BidderPrice
+	if s.cache != nil {
+		var err error
+		entries, err = s.cache.GetRanking(context.Background(), strings.TrimSpace(itemID), offset, pageSize)
+		if err != nil {
+			entries = nil
+		}
+	}
+
+	if len(entries) == 0 {
+		all, err := s.store.ListBidRanking(strings.TrimSpace(itemID), offset+pageSize)
+		if err != nil {
+			return nil, err
+		}
+		if offset < len(all) {
+			entries = all[offset:]
+		}
+		if len(entries) > pageSize {
+			entries = entries[:pageSize]
+		}
+	}
+
+	list := make([]dto.RankingEntry, len(entries))
+	for i, e := range entries {
+		list[i] = dto.RankingEntry{
+			Rank:     offset + i + 1,
+			UserID:   e.UserID,
+			UserName: e.UserName,
+			Price:    e.Price,
+		}
+	}
+	return &dto.RankingResult{List: list, Page: page, PageSize: pageSize}, nil
+}

@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -206,5 +207,119 @@ func TestPlaceBidPriceCapEndsAuction(t *testing.T) {
 	}
 	if item.DealPrice != 500 {
 		t.Fatalf("expected deal_price 500, got %d", item.DealPrice)
+	}
+}
+
+func TestGetRankingFromCache(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	svc := NewService(store, testPolicy, fc)
+	endTime := time.Now().Add(5 * time.Minute)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 0, endTime)
+
+	users := []struct {
+		user  *usermodel.User
+		price int64
+		idem  string
+	}{
+		{&usermodel.User{ID: "u1", Name: "Alice"}, 300, "k1"},
+		{&usermodel.User{ID: "u3", Name: "Carol"}, 400, "k3"},
+		{&usermodel.User{ID: "u2", Name: "Bob"}, 500, "k2"},
+	}
+	for _, u := range users {
+		if _, err := svc.PlaceBid(u.user, itemID, itemdto.PlaceBidInput{
+			Price: u.price, IdempotencyKey: u.idem, UserName: u.user.Name,
+		}); err != nil {
+			t.Fatalf("PlaceBid for %s failed: %v", u.user.ID, err)
+		}
+	}
+
+	result, err := svc.GetRanking(itemID, 1, 10)
+	if err != nil {
+		t.Fatalf("GetRanking failed: %v", err)
+	}
+	if len(result.List) != 3 {
+		t.Fatalf("expected 3 entries, got %d", len(result.List))
+	}
+	if result.List[0].UserID != "u2" || result.List[0].Price != 500 {
+		t.Fatalf("expected rank 1 = u2/500, got %+v", result.List[0])
+	}
+	if result.List[0].Rank != 1 {
+		t.Fatalf("expected rank 1, got %d", result.List[0].Rank)
+	}
+	if result.List[1].UserID != "u3" || result.List[1].Price != 400 {
+		t.Fatalf("expected rank 2 = u3/400, got %+v", result.List[1])
+	}
+	if result.List[2].UserID != "u1" || result.List[2].Price != 300 {
+		t.Fatalf("expected rank 3 = u1/300, got %+v", result.List[2])
+	}
+}
+
+func TestGetRankingFallsBackToMySQL(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	svc := NewService(store, testPolicy, fc)
+	endTime := time.Now().Add(5 * time.Minute)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 0, endTime)
+
+	// Seed bid logs directly in fakeStore (simulate Redis miss)
+	store.bidLogs = append(store.bidLogs,
+		&itemmodel.BidLog{ID: "b1", ItemID: itemID, RoomID: "room_1", UserID: "u1", Price: 200},
+		&itemmodel.BidLog{ID: "b2", ItemID: itemID, RoomID: "room_1", UserID: "u2", Price: 300},
+	)
+	// Make cache return empty (simulate miss)
+	delete(fc.ranking, itemID)
+
+	result, err := svc.GetRanking(itemID, 1, 10)
+	if err != nil {
+		t.Fatalf("GetRanking fallback failed: %v", err)
+	}
+	if len(result.List) != 2 {
+		t.Fatalf("expected 2 entries from MySQL fallback, got %d", len(result.List))
+	}
+	if result.List[0].Price != 300 {
+		t.Fatalf("expected highest price first, got %d", result.List[0].Price)
+	}
+}
+
+func TestGetRankingPagination(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	svc := NewService(store, testPolicy, fc)
+	endTime := time.Now().Add(5 * time.Minute)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 0, endTime)
+
+	for i := 1; i <= 5; i++ {
+		u := &usermodel.User{ID: fmt.Sprintf("u%d", i), Name: fmt.Sprintf("User%d", i)}
+		_, err := svc.PlaceBid(u, itemID, itemdto.PlaceBidInput{
+			Price:          int64(i * 100),
+			IdempotencyKey: fmt.Sprintf("k%d", i),
+			UserName:       u.Name,
+		})
+		if err != nil {
+			t.Fatalf("PlaceBid failed: %v", err)
+		}
+	}
+
+	r, err := svc.GetRanking(itemID, 1, 2)
+	if err != nil {
+		t.Fatalf("GetRanking page 1 failed: %v", err)
+	}
+	if len(r.List) != 2 {
+		t.Fatalf("expected 2 entries on page 1, got %d", len(r.List))
+	}
+	if r.List[0].Rank != 1 || r.List[1].Rank != 2 {
+		t.Fatalf("expected ranks 1,2 on page 1, got %d,%d", r.List[0].Rank, r.List[1].Rank)
+	}
+
+	r2, err := svc.GetRanking(itemID, 2, 2)
+	if err != nil {
+		t.Fatalf("GetRanking page 2 failed: %v", err)
+	}
+	if len(r2.List) != 2 {
+		t.Fatalf("expected 2 entries on page 2, got %d", len(r2.List))
+	}
+	if r2.List[0].Rank != 3 {
+		t.Fatalf("expected rank 3 on page 2, got %d", r2.List[0].Rank)
 	}
 }
