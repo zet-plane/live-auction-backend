@@ -9,24 +9,27 @@ import (
 	"github.com/zet-plane/live-auction-backend/internal/app/item/dao"
 	"github.com/zet-plane/live-auction-backend/internal/app/item/dto"
 	"github.com/zet-plane/live-auction-backend/internal/app/item/model"
+	orderservice "github.com/zet-plane/live-auction-backend/internal/app/order/service"
 	usermodel "github.com/zet-plane/live-auction-backend/internal/app/user/model"
 	"github.com/zet-plane/live-auction-backend/pkg/errorx"
 	"github.com/zet-plane/live-auction-backend/pkg/snowflake"
 )
 
 type Service struct {
-	store  dao.Store
-	cache  itemcache.Cache
-	policy dto.AuctionPolicy
-	now    func() time.Time
+	store    dao.Store
+	cache    itemcache.Cache
+	policy   dto.AuctionPolicy
+	now      func() time.Time
+	orderSvc *orderservice.Service
 }
 
-func NewService(store dao.Store, policy dto.AuctionPolicy, cache itemcache.Cache) *Service {
+func NewService(store dao.Store, policy dto.AuctionPolicy, cache itemcache.Cache, orderSvc *orderservice.Service) *Service {
 	return &Service{
-		store:  store,
-		cache:  cache,
-		policy: policy,
-		now:    time.Now,
+		store:    store,
+		cache:    cache,
+		policy:   policy,
+		now:      time.Now,
+		orderSvc: orderSvc,
 	}
 }
 
@@ -302,6 +305,39 @@ func normalizeListInput(query dto.ListItemsInput) dto.ListItemsInput {
 		query.PageSize = 10
 	}
 	return query
+}
+
+func (s *Service) EndExpiredAuctions() {
+	items, err := s.store.ListOngoingItemsPastEndTime(s.now(), 50)
+	if err != nil || len(items) == 0 {
+		return
+	}
+	for _, iwr := range items {
+		item, rule := iwr.Item, iwr.Rule
+		var winnerID string
+		var dealPrice int64
+		if s.cache != nil {
+			if state, ok, _ := s.cache.GetAuctionState(context.Background(), item.ID); ok {
+				winnerID = state.LeaderUserID
+				dealPrice = state.CurrentPrice
+			}
+		}
+		item.Status = model.ItemEnded
+		item.WinnerID = winnerID
+		item.DealPrice = dealPrice
+		if err := s.store.UpdateItemWithRule(item, rule); err != nil {
+			continue
+		}
+		if s.cache != nil {
+			_ = s.cache.DeleteAuctionState(context.Background(), item.ID)
+		}
+		if winnerID != "" && s.orderSvc != nil {
+			if _, err := s.orderSvc.CreateOrder(item.ID, winnerID, dealPrice); err != nil {
+				// non-fatal: compensation cron will retry
+				_ = err
+			}
+		}
+	}
 }
 
 func applyStateToDetail(d *dto.ItemDetailDTO, state *itemcache.AuctionState, now time.Time) {

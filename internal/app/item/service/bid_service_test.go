@@ -55,7 +55,7 @@ func seedOngoingItem(t *testing.T, svc *Service, merchantID, roomID string, star
 func TestPlaceBidSucceeds(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()
-	svc := NewService(store, testPolicy, fc)
+	svc := NewService(store, testPolicy, fc, nil)
 	endTime := time.Now().Add(5 * time.Minute)
 	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 0, endTime)
 
@@ -90,7 +90,7 @@ func TestPlaceBidSucceeds(t *testing.T) {
 func TestPlaceBidRejectsNonOngoingItem(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()
-	svc := NewService(store, testPolicy, fc)
+	svc := NewService(store, testPolicy, fc, nil)
 	itemID := seedPublishedItem(t, svc, "merchant_1", "room_1")
 
 	_, err := svc.PlaceBid(bidder, itemID, itemdto.PlaceBidInput{Price: 100, IdempotencyKey: "k1"})
@@ -103,7 +103,7 @@ func TestPlaceBidRejectsPriceTooLow(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()
 	fc.bidLuaCode = 3
-	svc := NewService(store, testPolicy, fc)
+	svc := NewService(store, testPolicy, fc, nil)
 	endTime := time.Now().Add(5 * time.Minute)
 	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 0, endTime)
 
@@ -121,7 +121,7 @@ func TestPlaceBidRejectsInvalidIncrement(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()
 	fc.bidLuaCode = 4
-	svc := NewService(store, testPolicy, fc)
+	svc := NewService(store, testPolicy, fc, nil)
 	endTime := time.Now().Add(5 * time.Minute)
 	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 0, endTime)
 
@@ -139,7 +139,7 @@ func TestPlaceBidRejectsEndedAuction(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()
 	fc.bidLuaCode = 2
-	svc := NewService(store, testPolicy, fc)
+	svc := NewService(store, testPolicy, fc, nil)
 	endTime := time.Now().Add(5 * time.Minute)
 	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 0, endTime)
 
@@ -156,7 +156,7 @@ func TestPlaceBidRejectsEndedAuction(t *testing.T) {
 func TestPlaceBidIdempotent(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()
-	svc := NewService(store, testPolicy, fc)
+	svc := NewService(store, testPolicy, fc, nil)
 	endTime := time.Now().Add(5 * time.Minute)
 	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 0, endTime)
 
@@ -187,7 +187,7 @@ func TestPlaceBidIdempotent(t *testing.T) {
 func TestPlaceBidPriceCapEndsAuction(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()
-	svc := NewService(store, testPolicy, fc)
+	svc := NewService(store, testPolicy, fc, nil)
 	endTime := time.Now().Add(5 * time.Minute)
 	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 500, endTime)
 
@@ -213,7 +213,7 @@ func TestPlaceBidPriceCapEndsAuction(t *testing.T) {
 func TestGetRankingFromCache(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()
-	svc := NewService(store, testPolicy, fc)
+	svc := NewService(store, testPolicy, fc, nil)
 	endTime := time.Now().Add(5 * time.Minute)
 	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 0, endTime)
 
@@ -258,7 +258,7 @@ func TestGetRankingFromCache(t *testing.T) {
 func TestGetRankingFallsBackToMySQL(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()
-	svc := NewService(store, testPolicy, fc)
+	svc := NewService(store, testPolicy, fc, nil)
 	endTime := time.Now().Add(5 * time.Minute)
 	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 0, endTime)
 
@@ -284,7 +284,7 @@ func TestGetRankingFallsBackToMySQL(t *testing.T) {
 func TestGetRankingPagination(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()
-	svc := NewService(store, testPolicy, fc)
+	svc := NewService(store, testPolicy, fc, nil)
 	endTime := time.Now().Add(5 * time.Minute)
 	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 0, endTime)
 

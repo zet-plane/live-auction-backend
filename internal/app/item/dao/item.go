@@ -3,6 +3,7 @@ package dao
 import (
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/zet-plane/live-auction-backend/internal/app/item/dto"
 	"github.com/zet-plane/live-auction-backend/internal/app/item/model"
@@ -18,6 +19,7 @@ type Store interface {
 	UpdateItemWithRule(item *model.AuctionItem, rule *model.AuctionRule) error
 	DeleteItem(itemID string) error
 	ListItems(query dto.ListItemsInput) ([]model.ItemWithRule, int64, error)
+	ListOngoingItemsPastEndTime(before time.Time, limit int) ([]model.ItemWithRule, error)
 	AutoMigrateBidLog() error
 	CreateBidLog(log *model.BidLog) error
 	ListBidRanking(itemID string, limit int) ([]dto.BidderPrice, error)
@@ -130,4 +132,40 @@ func (s *GormStore) ListItems(query dto.ListItemsInput) ([]model.ItemWithRule, i
 		list = append(list, model.ItemWithRule{Item: &items[i], Rule: rule})
 	}
 	return list, total, nil
+}
+
+func (s *GormStore) ListOngoingItemsPastEndTime(before time.Time, limit int) ([]model.ItemWithRule, error) {
+	var items []model.AuctionItem
+	if err := s.db.
+		Where("status = ? AND deleted_at IS NULL", model.ItemOngoing).
+		Find(&items).Error; err != nil {
+		return nil, err
+	}
+	if len(items) == 0 {
+		return nil, nil
+	}
+	ruleIDs := make([]string, 0, len(items))
+	for _, it := range items {
+		ruleIDs = append(ruleIDs, it.RuleID)
+	}
+	var rules []model.AuctionRule
+	if err := s.db.Where("id IN ? AND end_time < ?", ruleIDs, before).Find(&rules).Error; err != nil {
+		return nil, err
+	}
+	ruleByID := make(map[string]*model.AuctionRule, len(rules))
+	for i := range rules {
+		ruleByID[rules[i].ID] = &rules[i]
+	}
+	result := make([]model.ItemWithRule, 0, len(rules))
+	for i := range items {
+		rule, ok := ruleByID[items[i].RuleID]
+		if !ok {
+			continue
+		}
+		result = append(result, model.ItemWithRule{Item: &items[i], Rule: rule})
+		if len(result) >= limit {
+			break
+		}
+	}
+	return result, nil
 }

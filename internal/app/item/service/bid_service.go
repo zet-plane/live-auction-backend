@@ -88,6 +88,12 @@ func (s *Service) PlaceBid(current *usermodel.User, itemID string, input dto.Pla
 			return nil, err
 		}
 		status = "ended"
+		if s.orderSvc != nil {
+			if _, err := s.orderSvc.CreateOrder(item.ID, current.ID, input.Price); err != nil {
+				// non-fatal: compensation cron will retry
+				_ = err
+			}
+		}
 		// TODO: broadcast auction_ended WebSocket event (implement after WS module)
 	}
 
