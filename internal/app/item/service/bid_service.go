@@ -12,6 +12,7 @@ import (
 	usermodel "github.com/zet-plane/live-auction-backend/internal/app/user/model"
 	"github.com/zet-plane/live-auction-backend/pkg/errorx"
 	"github.com/zet-plane/live-auction-backend/pkg/snowflake"
+	"github.com/zet-plane/live-auction-backend/pkg/wsevent"
 )
 
 var ErrDepositRequired = errorx.New(http.StatusBadRequest, 40005, "deposit required")
@@ -93,6 +94,41 @@ func (s *Service) PlaceBid(current *usermodel.User, itemID string, input dto.Pla
 		return nil, err
 	}
 
+	if s.broadcaster != nil {
+		endTime := time.Unix(luaResult.EndTimeUnix, 0)
+		_ = s.broadcaster.Fanout(wsevent.RoomTopic(item.RoomID), wsevent.Event{
+			Type: dto.EventBidSuccess,
+			Payload: dto.BidSuccessPayload{
+				ItemID:       item.ID,
+				UserID:       current.ID,
+				Price:        input.Price,
+				CurrentPrice: luaResult.CurrentPrice,
+				LeaderUserID: luaResult.LeaderUserID,
+				EndTime:      endTime,
+			},
+		})
+		if luaResult.PrevLeaderUserID != "" && luaResult.PrevLeaderUserID != luaResult.LeaderUserID {
+			_ = s.broadcaster.Unicast(wsevent.UserAddr(luaResult.PrevLeaderUserID), wsevent.Event{
+				Type: dto.EventUserOutbid,
+				Payload: dto.UserOutbidPayload{
+					ItemID:       item.ID,
+					NewLeaderID:  luaResult.LeaderUserID,
+					CurrentPrice: luaResult.CurrentPrice,
+				},
+			})
+		}
+		if luaResult.IsExtended {
+			_ = s.broadcaster.Fanout(wsevent.RoomTopic(item.RoomID), wsevent.Event{
+				Type: dto.EventAuctionExtended,
+				Payload: dto.AuctionExtendedPayload{
+					ItemID:        item.ID,
+					NewEndTime:    endTime,
+					ExtendSeconds: s.policy.AutoExtendSec,
+				},
+			})
+		}
+	}
+
 	status := "ongoing"
 	if luaResult.IsCapped {
 		item.Status = model.ItemEnded
@@ -102,13 +138,35 @@ func (s *Service) PlaceBid(current *usermodel.User, itemID string, input dto.Pla
 			return nil, err
 		}
 		status = "ended"
+		var orderID string
 		if s.orderSvc != nil {
-			if _, err := s.orderSvc.CreateOrder(item.ID, current.ID, input.Price); err != nil {
-				// non-fatal: compensation cron will retry
-				_ = err
+			if order, err := s.orderSvc.CreateOrder(item.ID, current.ID, input.Price); err == nil && order != nil {
+				orderID = order.ID
 			}
 		}
-		// TODO: broadcast auction_ended WebSocket event (implement after WS module)
+		if s.broadcaster != nil {
+			_ = s.broadcaster.Fanout(wsevent.RoomTopic(item.RoomID), wsevent.Event{
+				Type: dto.EventAuctionEnded,
+				Payload: dto.AuctionEndedPayload{
+					ItemID:       item.ID,
+					WinnerUserID: current.ID,
+					DealPrice:    input.Price,
+				},
+			})
+			if orderID != "" {
+				orderEvt := wsevent.Event{
+					Type: dto.EventOrderCreated,
+					Payload: dto.OrderCreatedPayload{
+						ItemID:    item.ID,
+						OrderID:   orderID,
+						WinnerID:  current.ID,
+						DealPrice: input.Price,
+					},
+				}
+				_ = s.broadcaster.Fanout(wsevent.RoomTopic(item.RoomID), orderEvt)
+				_ = s.broadcaster.Unicast(wsevent.UserAddr(current.ID), orderEvt)
+			}
+		}
 	}
 
 	return &dto.PlaceBidResult{

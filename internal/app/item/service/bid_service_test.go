@@ -10,6 +10,7 @@ import (
 	itemmodel "github.com/zet-plane/live-auction-backend/internal/app/item/model"
 	usermodel "github.com/zet-plane/live-auction-backend/internal/app/user/model"
 	"github.com/zet-plane/live-auction-backend/pkg/errorx"
+	"github.com/zet-plane/live-auction-backend/pkg/wsevent"
 )
 
 var (
@@ -411,5 +412,82 @@ func TestGetRankingPagination(t *testing.T) {
 	}
 	if r2.List[0].Rank != 3 {
 		t.Fatalf("expected rank 3 on page 2, got %d", r2.List[0].Rank)
+	}
+}
+
+type fakeBroadcaster struct {
+	fanouts  []fakeFanout
+	unicasts []fakeUnicast
+}
+type fakeFanout struct {
+	topic string
+	event wsevent.Event
+}
+type fakeUnicast struct {
+	addr  string
+	event wsevent.Event
+}
+
+func (f *fakeBroadcaster) Fanout(topic string, event wsevent.Event) error {
+	f.fanouts = append(f.fanouts, fakeFanout{topic, event})
+	return nil
+}
+func (f *fakeBroadcaster) Unicast(addr string, event wsevent.Event) error {
+	f.unicasts = append(f.unicasts, fakeUnicast{addr, event})
+	return nil
+}
+
+func TestPlaceBidBroadcastsBidSuccess(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	fb := &fakeBroadcaster{}
+	svc := NewService(store, testPolicy, fc, nil, nil, fb)
+	endTime := time.Now().Add(5 * time.Minute)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 0, endTime)
+
+	_, err := svc.PlaceBid(bidder, itemID, itemdto.PlaceBidInput{
+		Price: 100, IdempotencyKey: "k1", UserName: "Alice",
+	})
+	if err != nil {
+		t.Fatalf("PlaceBid failed: %v", err)
+	}
+	found := false
+	for _, f := range fb.fanouts {
+		if f.event.Type == itemdto.EventBidSuccess {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected bid_success fanout, got: %v", fb.fanouts)
+	}
+}
+
+func TestPlaceBidBroadcastsUserOutbid(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	fb := &fakeBroadcaster{}
+	svc := NewService(store, testPolicy, fc, nil, nil, fb)
+	endTime := time.Now().Add(5 * time.Minute)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 0, endTime)
+
+	user1 := &usermodel.User{ID: "user_1", Name: "Alice", Identity: usermodel.IdentityUser}
+	user2 := &usermodel.User{ID: "user_2", Name: "Bob", Identity: usermodel.IdentityUser}
+
+	_, _ = svc.PlaceBid(user1, itemID, itemdto.PlaceBidInput{Price: 100, IdempotencyKey: "k1", UserName: "Alice"})
+	fb.unicasts = nil
+
+	_, err := svc.PlaceBid(user2, itemID, itemdto.PlaceBidInput{Price: 200, IdempotencyKey: "k2", UserName: "Bob"})
+	if err != nil {
+		t.Fatalf("second PlaceBid failed: %v", err)
+	}
+
+	found := false
+	for _, u := range fb.unicasts {
+		if u.event.Type == itemdto.EventUserOutbid && u.addr == wsevent.UserAddr("user_1") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected user_outbid unicast to user_1, got: %v", fb.unicasts)
 	}
 }
