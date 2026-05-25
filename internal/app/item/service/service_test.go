@@ -12,6 +12,7 @@ import (
 	itemmodel "github.com/zet-plane/live-auction-backend/internal/app/item/model"
 	usermodel "github.com/zet-plane/live-auction-backend/internal/app/user/model"
 	"github.com/zet-plane/live-auction-backend/pkg/errorx"
+	"github.com/zet-plane/live-auction-backend/pkg/wsevent"
 )
 
 type fakeStore struct {
@@ -656,6 +657,35 @@ func seedPublishedItem(t *testing.T, svc *Service, merchantID, roomID string) st
 		t.Fatalf("PublishItem failed: %v", err)
 	}
 	return result.ItemID
+}
+
+func TestEndExpiredAuctionsBroadcastsAuctionEnded(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	fb := &fakeBroadcaster{}
+	svc := NewService(store, itemdto.AuctionPolicy{ExtendTriggerSec: 30, AutoExtendSec: 10, MaxExtendCount: 6, MaxTotalExtendSec: 300}, fc, nil, nil, fb)
+
+	endTime := time.Now().Add(5 * time.Minute)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_abc", 0, 100, 0, endTime)
+
+	// Set a leader in the cache
+	fc.states[itemID].LeaderUserID = "user_winner"
+	fc.states[itemID].CurrentPrice = 500
+
+	// Advance time past the end time
+	svc.now = func() time.Time { return time.Now().Add(10 * time.Minute) }
+
+	svc.EndExpiredAuctions()
+
+	found := false
+	for _, f := range fb.fanouts {
+		if f.event.Type == itemdto.EventAuctionEnded && f.topic == wsevent.RoomTopic("room_abc") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected auction_ended fanout to room topic, got: %v", fb.fanouts)
+	}
 }
 
 func seedDraftItem(t *testing.T, svc *Service, merchantID string) string {

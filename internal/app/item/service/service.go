@@ -357,10 +357,36 @@ func (s *Service) EndExpiredAuctions() {
 		if s.cache != nil {
 			_ = s.cache.DeleteAuctionState(context.Background(), item.ID)
 		}
+		if s.broadcaster != nil {
+			_ = s.broadcaster.Fanout(wsevent.RoomTopic(item.RoomID), wsevent.Event{
+				Type: dto.EventAuctionEnded,
+				Payload: dto.AuctionEndedPayload{
+					ItemID:       item.ID,
+					WinnerUserID: winnerID,
+					DealPrice:    dealPrice,
+				},
+			})
+		}
 		if winnerID != "" && s.orderSvc != nil {
-			if _, err := s.orderSvc.CreateOrder(item.ID, winnerID, dealPrice); err != nil {
+			var orderID string
+			if order, err := s.orderSvc.CreateOrder(item.ID, winnerID, dealPrice); err != nil {
 				// non-fatal: compensation cron will retry
 				_ = err
+			} else if order != nil {
+				orderID = order.ID
+			}
+			if s.broadcaster != nil && orderID != "" {
+				orderEvt := wsevent.Event{
+					Type: dto.EventOrderCreated,
+					Payload: dto.OrderCreatedPayload{
+						ItemID:    item.ID,
+						OrderID:   orderID,
+						WinnerID:  winnerID,
+						DealPrice: dealPrice,
+					},
+				}
+				_ = s.broadcaster.Fanout(wsevent.RoomTopic(item.RoomID), orderEvt)
+				_ = s.broadcaster.Unicast(wsevent.UserAddr(winnerID), orderEvt)
 			}
 		}
 	}
