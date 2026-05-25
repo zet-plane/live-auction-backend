@@ -37,13 +37,14 @@ type BidLuaArgs struct {
 }
 
 type BidLuaResult struct {
-	Code         int
-	BidID        string
-	CurrentPrice int64
-	LeaderUserID string
-	EndTimeUnix  int64
-	IsExtended   bool
-	IsCapped     bool
+	Code             int
+	BidID            string
+	CurrentPrice     int64
+	LeaderUserID     string
+	EndTimeUnix      int64
+	IsExtended       bool
+	IsCapped         bool
+	PrevLeaderUserID string // leader before this bid; empty if no previous leader
 }
 
 type Cache interface {

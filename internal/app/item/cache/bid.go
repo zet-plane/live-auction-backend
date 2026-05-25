@@ -33,11 +33,11 @@ if existing then
   local raw = redis.call('HGETALL', state_key)
   local m = {}
   for i = 1, #raw, 2 do m[raw[i]] = raw[i+1] end
-  return {1, existing, tonumber(m['current_price'] or 0), m['leader_user_id'] or '', tonumber(m['end_time_unix'] or 0), 0, 0}
+  return {1, existing, tonumber(m['current_price'] or 0), m['leader_user_id'] or '', tonumber(m['end_time_unix'] or 0), 0, 0, ''}
 end
 
 local raw = redis.call('HGETALL', state_key)
-if #raw == 0 then return {2,'',0,'',0,0,0} end
+if #raw == 0 then return {2,'',0,'',0,0,0,''} end
 local s = {}
 for i = 1, #raw, 2 do s[raw[i]] = raw[i+1] end
 
@@ -47,10 +47,11 @@ local ext_cnt   = tonumber(s['extend_count']   or 0)
 local ext_tot   = tonumber(s['total_extended_sec'] or 0)
 local bid_cnt   = tonumber(s['bid_count']       or 0)
 local part_cnt  = tonumber(s['participant_count'] or 0)
+local prev_leader = s['leader_user_id'] or ''
 
-if now_unix >= end_unix then return {2,'',0,'',0,0,0} end
-if price <= cur_price   then return {3,'',0,'',0,0,0} end
-if (price - cur_price) % bid_incr ~= 0 then return {4,'',0,'',0,0,0} end
+if now_unix >= end_unix then return {2,'',0,'',0,0,0,''} end
+if price <= cur_price   then return {3,'',0,'',0,0,0,''} end
+if (price - cur_price) % bid_incr ~= 0 then return {4,'',0,'',0,0,0,''} end
 
 local prev_score = redis.call('ZSCORE', ranking_key, user_id)
 if not prev_score then part_cnt = part_cnt + 1 end
@@ -83,7 +84,7 @@ redis.call('SET', idem_key, bid_id, 'EX', idem_ttl)
 local is_capped = 0
 if price_cap > 0 and price >= price_cap then is_capped = 1 end
 
-return {0, bid_id, price, user_id, end_unix, is_extended, is_capped}
+return {0, bid_id, price, user_id, end_unix, is_extended, is_capped, prev_leader}
 `
 
 var bidScript = redis.NewScript(bidLuaScript)
@@ -126,7 +127,7 @@ func (c *RedisCache) PlaceBidLua(ctx context.Context, itemID string, args BidLua
 	if err != nil {
 		return nil, err
 	}
-	if len(res) < 7 {
+	if len(res) < 8 {
 		return nil, fmt.Errorf("lua result length unexpected: %d", len(res))
 	}
 
@@ -134,13 +135,14 @@ func (c *RedisCache) PlaceBidLua(ctx context.Context, itemID string, args BidLua
 	toStr := func(v interface{}) string { s, _ := v.(string); return s }
 
 	return &BidLuaResult{
-		Code:         int(toI64(res[0])),
-		BidID:        toStr(res[1]),
-		CurrentPrice: toI64(res[2]),
-		LeaderUserID: toStr(res[3]),
-		EndTimeUnix:  toI64(res[4]),
-		IsExtended:   toI64(res[5]) == 1,
-		IsCapped:     toI64(res[6]) == 1,
+		Code:             int(toI64(res[0])),
+		BidID:            toStr(res[1]),
+		CurrentPrice:     toI64(res[2]),
+		LeaderUserID:     toStr(res[3]),
+		EndTimeUnix:      toI64(res[4]),
+		IsExtended:       toI64(res[5]) == 1,
+		IsCapped:         toI64(res[6]) == 1,
+		PrevLeaderUserID: toStr(res[7]),
 	}, nil
 }
 

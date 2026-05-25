@@ -367,6 +367,7 @@ func (c *fakeCache) PlaceBidLua(_ context.Context, itemID string, args itemcache
 		c.bidderNames[itemID] = map[string]string{}
 	}
 	c.bidderNames[itemID][args.UserID] = args.UserName
+	prevLeader := state.LeaderUserID
 	state.CurrentPrice = args.Price
 	state.LeaderUserID = args.UserID
 	state.BidCount++
@@ -385,13 +386,14 @@ func (c *fakeCache) PlaceBidLua(_ context.Context, itemID string, args itemcache
 
 	isCapped := args.PriceCap > 0 && args.Price >= args.PriceCap
 	return &itemcache.BidLuaResult{
-		Code:         0,
-		BidID:        args.BidID,
-		CurrentPrice: args.Price,
-		LeaderUserID: args.UserID,
-		EndTimeUnix:  state.EndTime.Unix(),
-		IsExtended:   isExtended,
-		IsCapped:     isCapped,
+		Code:             0,
+		BidID:            args.BidID,
+		CurrentPrice:     args.Price,
+		LeaderUserID:     args.UserID,
+		EndTimeUnix:      state.EndTime.Unix(),
+		IsExtended:       isExtended,
+		IsCapped:         isCapped,
+		PrevLeaderUserID: prevLeader,
 	}, nil
 }
 
