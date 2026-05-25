@@ -108,7 +108,7 @@ func (c *RedisCache) PlaceBidLua(ctx context.Context, itemID string, args BidLua
 		bidderNamesKey(itemID),
 		idempotencyKey(itemID, args.IdempotencyKey),
 	}
-	argv := []interface{}{
+	argv := []any{
 		args.UserID,
 		args.UserName,
 		args.BidID,
@@ -131,8 +131,8 @@ func (c *RedisCache) PlaceBidLua(ctx context.Context, itemID string, args BidLua
 		return nil, fmt.Errorf("lua result length unexpected: %d", len(res))
 	}
 
-	toI64 := func(v interface{}) int64 { n, _ := v.(int64); return n }
-	toStr := func(v interface{}) string { s, _ := v.(string); return s }
+	toI64 := func(v any) int64 { n, _ := v.(int64); return n }
+	toStr := func(v any) string { s, _ := v.(string); return s }
 
 	return &BidLuaResult{
 		Code:             int(toI64(res[0])),
