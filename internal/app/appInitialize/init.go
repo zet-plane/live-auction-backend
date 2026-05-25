@@ -8,10 +8,12 @@ import (
 	"github.com/zet-plane/live-auction-backend/internal/app/payment"
 	"github.com/zet-plane/live-auction-backend/internal/app/room"
 	"github.com/zet-plane/live-auction-backend/internal/app/user"
+	"github.com/zet-plane/live-auction-backend/internal/app/ws"
 )
 
 var apps = []app.Module{
 	&user.User{Name: "user"},
+	&ws.WS{Name: "ws"},
 	&room.Room{Name: "room"},
 	&order.Order{Name: "order"},
 	&payment.Payment{Name: "payment"},
