@@ -3,11 +3,12 @@ package fs
 import (
 	"bytes"
 	"io"
-	"log"
 	"mime/multipart"
 	"net/http"
 	"os"
 	"path"
+
+	"github.com/zet-plane/live-auction-backend/pkg/logx"
 )
 
 func GetSize(f multipart.File) (int, error) {
@@ -48,13 +49,13 @@ func MkDir(src string) error {
 func FileCreate(content bytes.Buffer, name string) {
 	file, err := os.Create(name)
 	if err != nil {
-		log.Println(err)
+		logx.Error(err)
 		return
 	}
 	defer file.Close()
 
 	if _, err = file.WriteString(content.String()); err != nil {
-		log.Println(err)
+		logx.Error(err)
 	}
 }
 

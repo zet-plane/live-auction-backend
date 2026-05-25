@@ -12,6 +12,7 @@ import (
 	"github.com/zet-plane/live-auction-backend/internal/middleware/response"
 	"github.com/zet-plane/live-auction-backend/internal/middleware/web"
 	"github.com/zet-plane/live-auction-backend/pkg/errorx"
+	"github.com/zet-plane/live-auction-backend/pkg/logx"
 )
 
 var svc *service.Service
@@ -30,6 +31,7 @@ func CreateItem(r flamego.Render, current *usermodel.User, body dto.CreateItemRe
 	}
 	result, err := svc.CreateItem(current, body.Input())
 	if err != nil {
+		logx.Warnw("CreateItem failed", "user_id", current.ID, "err", err)
 		response.Error(r, err)
 		return
 	}
@@ -43,6 +45,7 @@ func ListItems(r flamego.Render, c flamego.Context) {
 	}
 	result, err := svc.ListItems(listInput(c))
 	if err != nil {
+		logx.Warnw("ListItems failed", "err", err)
 		response.Error(r, err)
 		return
 	}
@@ -56,6 +59,7 @@ func ListMerchantItems(r flamego.Render, c flamego.Context, current *usermodel.U
 	}
 	result, err := svc.ListMerchantItems(current, listInput(c))
 	if err != nil {
+		logx.Warnw("ListMerchantItems failed", "user_id", current.ID, "err", err)
 		response.Error(r, err)
 		return
 	}
@@ -69,6 +73,7 @@ func GetItem(r flamego.Render, c flamego.Context) {
 	}
 	result, err := svc.GetItem(c.Param("item_id"))
 	if err != nil {
+		logx.Warnw("GetItem failed", "item_id", c.Param("item_id"), "err", err)
 		response.Error(r, err)
 		return
 	}
@@ -84,6 +89,7 @@ func UpdateItem(r flamego.Render, c flamego.Context, current *usermodel.User, bo
 		return
 	}
 	if err := svc.UpdateItem(current, c.Param("item_id"), body.Input()); err != nil {
+		logx.Warnw("UpdateItem failed", "user_id", current.ID, "item_id", c.Param("item_id"), "err", err)
 		response.Error(r, err)
 		return
 	}
@@ -96,6 +102,7 @@ func DeleteItem(r flamego.Render, c flamego.Context, current *usermodel.User) {
 		return
 	}
 	if err := svc.DeleteItem(current, c.Param("item_id")); err != nil {
+		logx.Warnw("DeleteItem failed", "user_id", current.ID, "item_id", c.Param("item_id"), "err", err)
 		response.Error(r, err)
 		return
 	}
@@ -103,23 +110,24 @@ func DeleteItem(r flamego.Render, c flamego.Context, current *usermodel.User) {
 }
 
 func PublishItem(r flamego.Render, c flamego.Context, current *usermodel.User) {
-	statusAction(r, c, current, svc.PublishItem)
+	statusAction(r, c, current, "PublishItem", svc.PublishItem)
 }
 
 func StartItem(r flamego.Render, c flamego.Context, current *usermodel.User) {
-	statusAction(r, c, current, svc.StartItem)
+	statusAction(r, c, current, "StartItem", svc.StartItem)
 }
 
 func CancelItem(r flamego.Render, c flamego.Context, current *usermodel.User) {
-	statusAction(r, c, current, svc.CancelItem)
+	statusAction(r, c, current, "CancelItem", svc.CancelItem)
 }
 
-func statusAction(r flamego.Render, c flamego.Context, current *usermodel.User, action func(*usermodel.User, string) error) {
+func statusAction(r flamego.Render, c flamego.Context, current *usermodel.User, op string, action func(*usermodel.User, string) error) {
 	if svc == nil {
 		response.Error(r, errorx.ErrInternal)
 		return
 	}
 	if err := action(current, c.Param("item_id")); err != nil {
+		logx.Warnw(op+" failed", "user_id", current.ID, "item_id", c.Param("item_id"), "err", err)
 		response.Error(r, err)
 		return
 	}

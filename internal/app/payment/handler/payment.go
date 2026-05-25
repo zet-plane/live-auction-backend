@@ -9,6 +9,7 @@ import (
 	"github.com/zet-plane/live-auction-backend/internal/middleware/response"
 	"github.com/zet-plane/live-auction-backend/internal/middleware/web"
 	"github.com/zet-plane/live-auction-backend/pkg/errorx"
+	"github.com/zet-plane/live-auction-backend/pkg/logx"
 )
 
 var orderSvc *orderservice.Service
@@ -22,6 +23,7 @@ func Pay(r flamego.Render, c flamego.Context, current *usermodel.User, body orde
 		return
 	}
 	if body.Result != "success" {
+		logx.Warnw("Pay rejected: bad result field", "user_id", current.ID, "order_id", c.Param("order_id"), "result", body.Result)
 		response.Error(r, errorx.ErrInvalidRequest)
 		return
 	}
@@ -30,6 +32,7 @@ func Pay(r flamego.Render, c flamego.Context, current *usermodel.User, body orde
 		return
 	}
 	if err := orderSvc.Pay(current, c.Param("order_id")); err != nil {
+		logx.Warnw("Pay failed", "user_id", current.ID, "order_id", c.Param("order_id"), "err", err)
 		response.Error(r, err)
 		return
 	}
@@ -42,6 +45,7 @@ func Cancel(r flamego.Render, c flamego.Context, current *usermodel.User) {
 		return
 	}
 	if err := orderSvc.Cancel(current, c.Param("order_id")); err != nil {
+		logx.Warnw("Cancel failed", "user_id", current.ID, "order_id", c.Param("order_id"), "err", err)
 		response.Error(r, err)
 		return
 	}

@@ -9,6 +9,7 @@ import (
 	"github.com/zet-plane/live-auction-backend/internal/middleware/response"
 	"github.com/zet-plane/live-auction-backend/internal/middleware/web"
 	"github.com/zet-plane/live-auction-backend/pkg/errorx"
+	"github.com/zet-plane/live-auction-backend/pkg/logx"
 )
 
 var svc *service.Service
@@ -21,7 +22,11 @@ func AuthenticateToken(token string) (any, error) {
 	if svc == nil {
 		return nil, errorx.ErrInternal
 	}
-	return svc.Authenticate(token)
+	result, err := svc.Authenticate(token)
+	if err != nil {
+		logx.Warnw("AuthenticateToken failed", "err", err)
+	}
+	return result, err
 }
 
 func Register(r flamego.Render, body dto.RegisterRequest, errs binding.Errors) {
@@ -37,6 +42,7 @@ func Register(r flamego.Render, body dto.RegisterRequest, errs binding.Errors) {
 		Password: body.Password,
 	})
 	if err != nil {
+		logx.Warnw("Register failed", "account", body.Account, "err", err)
 		response.Error(r, err)
 		return
 	}
@@ -53,6 +59,7 @@ func Login(r flamego.Render, body dto.LoginRequest, errs binding.Errors) {
 	}
 	result, err := svc.Login(body.Account, body.Password)
 	if err != nil {
+		logx.Warnw("Login failed", "account", body.Account, "err", err)
 		response.Error(r, err)
 		return
 	}
@@ -78,6 +85,7 @@ func UpdateMe(r flamego.Render, current *model.User, body dto.UpdateProfileReque
 		Identity:  body.Identity,
 	})
 	if err != nil {
+		logx.Warnw("UpdateMe failed", "user_id", current.ID, "err", err)
 		response.Error(r, err)
 		return
 	}
@@ -90,6 +98,7 @@ func DeleteMe(r flamego.Render, current *model.User) {
 		return
 	}
 	if err := svc.DeleteMe(current); err != nil {
+		logx.Warnw("DeleteMe failed", "user_id", current.ID, "err", err)
 		response.Error(r, err)
 		return
 	}

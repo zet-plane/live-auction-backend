@@ -10,6 +10,7 @@ import (
 	"github.com/zet-plane/live-auction-backend/internal/middleware/response"
 	"github.com/zet-plane/live-auction-backend/internal/middleware/web"
 	"github.com/zet-plane/live-auction-backend/pkg/errorx"
+	"github.com/zet-plane/live-auction-backend/pkg/logx"
 )
 
 var svc *service.Service
@@ -26,6 +27,7 @@ func ActivateRoom(r flamego.Render, current *usermodel.User, body dto.CreateRoom
 	}
 	result, err := svc.ActivateRoom(current, body.Input())
 	if err != nil {
+		logx.Warnw("ActivateRoom failed", "user_id", current.ID, "err", err)
 		response.Error(r, err)
 		return
 	}
@@ -39,6 +41,7 @@ func GetMerchantRoom(r flamego.Render, current *usermodel.User) {
 	}
 	result, err := svc.GetMerchantRoom(current)
 	if err != nil {
+		logx.Warnw("GetMerchantRoom failed", "user_id", current.ID, "err", err)
 		response.Error(r, err)
 		return
 	}
@@ -51,6 +54,7 @@ func StartRoom(r flamego.Render, c flamego.Context, current *usermodel.User) {
 		return
 	}
 	if err := svc.StartRoom(current, c.Param("room_id")); err != nil {
+		logx.Warnw("StartRoom failed", "user_id", current.ID, "room_id", c.Param("room_id"), "err", err)
 		response.Error(r, err)
 		return
 	}
@@ -63,6 +67,7 @@ func EndRoom(r flamego.Render, c flamego.Context, current *usermodel.User) {
 		return
 	}
 	if err := svc.EndRoom(current, c.Param("room_id")); err != nil {
+		logx.Warnw("EndRoom failed", "user_id", current.ID, "room_id", c.Param("room_id"), "err", err)
 		response.Error(r, err)
 		return
 	}
@@ -76,6 +81,7 @@ func GetRoom(r flamego.Render, c flamego.Context) {
 	}
 	result, err := svc.GetRoom(c.Param("room_id"))
 	if err != nil {
+		logx.Warnw("GetRoom failed", "room_id", c.Param("room_id"), "err", err)
 		response.Error(r, err)
 		return
 	}
@@ -90,6 +96,7 @@ func ListRooms(r flamego.Render, c flamego.Context) {
 	statusFilter := model.RoomStatus(c.Query("status"))
 	result, err := svc.ListRooms(statusFilter)
 	if err != nil {
+		logx.Warnw("ListRooms failed", "status", statusFilter, "err", err)
 		response.Error(r, err)
 		return
 	}

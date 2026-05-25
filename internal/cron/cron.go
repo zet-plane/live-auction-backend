@@ -1,9 +1,8 @@
 package cron
 
 import (
-	"fmt"
-
 	"github.com/robfig/cron/v3"
+	"github.com/zet-plane/live-auction-backend/pkg/logx"
 )
 
 // New returns a cron scheduler configured with second-level precision
@@ -18,6 +17,6 @@ func New() *cron.Cron {
 // PrintEntries logs all registered entries – useful during startup.
 func PrintEntries(c *cron.Cron) {
 	for _, e := range c.Entries() {
-		fmt.Printf("[CRON] registered entry id=%d next=%s\n", e.ID, e.Next)
+		logx.Infow("[CRON] registered entry", "id", e.ID, "next", e.Next)
 	}
 }

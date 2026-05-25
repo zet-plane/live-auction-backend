@@ -17,6 +17,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/zet-plane/live-auction-backend/config"
 	"github.com/zet-plane/live-auction-backend/internal/app/appInitialize"
+	"github.com/zet-plane/live-auction-backend/pkg/logx"
 	appCron "github.com/zet-plane/live-auction-backend/internal/cron"
 	"github.com/zet-plane/live-auction-backend/internal/core/cache"
 	"github.com/zet-plane/live-auction-backend/internal/core/database"
@@ -34,6 +35,7 @@ var StartCmd = &cobra.Command{
 	Example: "live-auction server -c config.yaml",
 	PreRun: func(cmd *cobra.Command, args []string) {
 		config.LoadConfig(configPath)
+		logx.SetUp()
 	},
 	Run: func(cmd *cobra.Command, args []string) {
 		cfg := config.GetConfig()
@@ -46,8 +48,7 @@ var StartCmd = &cobra.Command{
 			ConnMaxLifetime: cfg.DatabaseConnMaxLifetime(),
 		})
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "failed to connect database: %v\n", err)
-			os.Exit(1)
+			logx.Fatalf("failed to connect database: %v", err)
 		}
 
 		rdb, err := cache.Open(cache.Config{
@@ -56,18 +57,15 @@ var StartCmd = &cobra.Command{
 			DB:       cfg.Redis.DB,
 		})
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "failed to connect redis: %v\n", err)
-			os.Exit(1)
+			logx.Fatalf("failed to connect redis: %v", err)
 		}
 
 		engine, err := buildEngine(cfg, db, rdb)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "failed to initialize engine: %v\n", err)
-			os.Exit(1)
+			logx.Fatalf("failed to initialize engine: %v", err)
 		}
 		if err := run(engine); err != nil {
-			fmt.Fprintf(os.Stderr, "server stopped with error: %v\n", err)
-			os.Exit(1)
+			logx.Fatalf("server stopped with error: %v", err)
 		}
 	},
 }
@@ -149,7 +147,7 @@ func run(engine *kernel.Engine) error {
 
 	errCh := make(chan error, 1)
 	go func() {
-		fmt.Printf("server listening on http://%s\n", cfg.Address())
+		logx.Infof("server listening on http://%s", cfg.Address())
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 			return
@@ -162,7 +160,7 @@ func run(engine *kernel.Engine) error {
 
 	select {
 	case sig := <-quit:
-		fmt.Printf("received signal %s, shutting down\n", sig)
+		logx.Infof("received signal %s, shutting down", sig)
 	case err := <-errCh:
 		return err
 	}
@@ -180,5 +178,7 @@ func run(engine *kernel.Engine) error {
 	}
 	wg.Wait()
 
-	return srv.Shutdown(stopCtx)
+	err := srv.Shutdown(stopCtx)
+	logx.Stop()
+	return err
 }

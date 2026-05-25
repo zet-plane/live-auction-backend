@@ -8,6 +8,7 @@ import (
 	usermodel "github.com/zet-plane/live-auction-backend/internal/app/user/model"
 	"github.com/zet-plane/live-auction-backend/internal/middleware/response"
 	"github.com/zet-plane/live-auction-backend/pkg/errorx"
+	"github.com/zet-plane/live-auction-backend/pkg/logx"
 )
 
 var svc *service.Service
@@ -28,6 +29,7 @@ func ListOrders(r flamego.Render, c flamego.Context, current *usermodel.User) {
 	}
 	result, err := svc.ListOrders(current, input)
 	if err != nil {
+		logx.Warnw("ListOrders failed", "user_id", current.ID, "status", input.Status, "err", err)
 		response.Error(r, err)
 		return
 	}
@@ -41,6 +43,7 @@ func GetOrder(r flamego.Render, c flamego.Context, current *usermodel.User) {
 	}
 	detail, err := svc.GetOrder(current, c.Param("order_id"))
 	if err != nil {
+		logx.Warnw("GetOrder failed", "user_id", current.ID, "order_id", c.Param("order_id"), "err", err)
 		response.Error(r, err)
 		return
 	}

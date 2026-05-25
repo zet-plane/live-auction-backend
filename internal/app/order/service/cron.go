@@ -1,9 +1,8 @@
 package service
 
 import (
-	"log"
-
 	"github.com/zet-plane/live-auction-backend/internal/app/order/model"
+	"github.com/zet-plane/live-auction-backend/pkg/logx"
 )
 
 // ScanExpiredOrders updates pending orders past their ExpiredAt to expired.
@@ -11,12 +10,12 @@ import (
 func (s *Service) ScanExpiredOrders() {
 	orders, err := s.store.ListExpiredPendingOrders(s.now(), 100)
 	if err != nil {
-		log.Printf("[order] ScanExpiredOrders list error: %v", err)
+		logx.Errorf("[order] ScanExpiredOrders list error: %v", err)
 		return
 	}
 	for _, o := range orders {
 		if _, err := s.store.UpdateOrderStatus(o.ID, model.OrderPending, model.OrderExpired); err != nil {
-			log.Printf("[order] ScanExpiredOrders update %s error: %v", o.ID, err)
+			logx.Errorf("[order] ScanExpiredOrders update %s error: %v", o.ID, err)
 		}
 	}
 }
@@ -26,12 +25,12 @@ func (s *Service) ScanExpiredOrders() {
 func (s *Service) ScanCompensation() {
 	items, err := s.store.ListEndedItemsWithoutOrder(50)
 	if err != nil {
-		log.Printf("[order] ScanCompensation list error: %v", err)
+		logx.Errorf("[order] ScanCompensation list error: %v", err)
 		return
 	}
 	for _, item := range items {
 		if _, err := s.CreateOrder(item.ItemID, item.WinnerID, item.DealPrice); err != nil {
-			log.Printf("[order] ScanCompensation create order for item %s error: %v", item.ItemID, err)
+			logx.Errorf("[order] ScanCompensation create order for item %s error: %v", item.ItemID, err)
 		}
 	}
 }
