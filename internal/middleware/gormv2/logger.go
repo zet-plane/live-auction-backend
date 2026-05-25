@@ -16,7 +16,7 @@ type Logger struct {
 
 func NewLogger() Logger {
 	return Logger{
-		LogLevel:                  gormlogger.Warn,
+		LogLevel:                  gormlogger.Info,
 		SlowThreshold:             100 * time.Millisecond,
 		IgnoreRecordNotFoundError: true,
 	}
@@ -57,6 +57,6 @@ func (l Logger) Trace(_ context.Context, begin time.Time, fc func() (sql string,
 	case l.SlowThreshold > 0 && elapsed > l.SlowThreshold && l.LogLevel >= gormlogger.Warn:
 		logx.Warnw("[GORM] slow query", "sql", sql, "rows", rows, "elapsed", elapsed)
 	case l.LogLevel >= gormlogger.Info:
-		logx.Debugw("[GORM] query", "sql", sql, "rows", rows, "elapsed", elapsed)
+		logx.Infow("[GORM] query", "sql", sql, "rows", rows, "elapsed", elapsed)
 	}
 }
