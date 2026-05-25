@@ -135,7 +135,7 @@ func (s *Service) Pay(current *usermodel.User, orderID string) error
 1. `FindOrder(orderID)` — verify `order.UserID == current.ID`, else `ErrUnauthorized`.
 2. `UpdateOrderStatus(orderID, pending, paid)`.
 3. If `RowsAffected == 0`: re-fetch order; if already `paid` return `nil` (idempotent); otherwise return `ErrInvalidRequest`.
-4. TODO: broadcast `order_paid` notification (deferred until notification module).
+4. No broadcast needed: payment success is visible via `GET /api/v1/orders/{order_id}`.
 
 ### Cancel
 
