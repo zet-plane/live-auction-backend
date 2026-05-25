@@ -14,6 +14,7 @@ import (
 	"github.com/zet-plane/live-auction-backend/internal/app/item/router"
 	"github.com/zet-plane/live-auction-backend/internal/app/item/service"
 	orderapp "github.com/zet-plane/live-auction-backend/internal/app/order"
+	wsapp "github.com/zet-plane/live-auction-backend/internal/app/ws"
 	"github.com/zet-plane/live-auction-backend/internal/core/kernel"
 )
 
@@ -57,7 +58,7 @@ func (i *Item) Load(engine *kernel.Engine) error {
 	}
 
 	c := cache.NewRedisCache(engine.Cache)
-	svc := service.NewService(store, policy, c, orderapp.Svc, depositapp.Svc)
+	svc := service.NewService(store, policy, c, orderapp.Svc, depositapp.Svc, wsapp.Hub)
 	handler.Init(svc)
 	router.RegisterRoutes(engine.Flame)
 	engine.Cron.AddFunc("@every 1m", svc.EndExpiredAuctions)

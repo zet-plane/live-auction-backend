@@ -13,29 +13,32 @@ import (
 	usermodel "github.com/zet-plane/live-auction-backend/internal/app/user/model"
 	"github.com/zet-plane/live-auction-backend/pkg/errorx"
 	"github.com/zet-plane/live-auction-backend/pkg/snowflake"
+	"github.com/zet-plane/live-auction-backend/pkg/wsevent"
 )
 
 type Service struct {
-	store      dao.Store
-	cache      itemcache.Cache
-	policy     dto.AuctionPolicy
-	now        func() time.Time
-	orderSvc   *orderservice.Service
-	depositSvc DepositChecker
+	store       dao.Store
+	cache       itemcache.Cache
+	policy      dto.AuctionPolicy
+	now         func() time.Time
+	orderSvc    *orderservice.Service
+	depositSvc  DepositChecker
+	broadcaster wsevent.Broadcaster
 }
 
 type DepositChecker interface {
 	HasPaidDeposit(itemID, userID string, requiredAmount int64) (bool, error)
 }
 
-func NewService(store dao.Store, policy dto.AuctionPolicy, cache itemcache.Cache, orderSvc *orderservice.Service, depositSvc DepositChecker) *Service {
+func NewService(store dao.Store, policy dto.AuctionPolicy, cache itemcache.Cache, orderSvc *orderservice.Service, depositSvc DepositChecker, broadcaster wsevent.Broadcaster) *Service {
 	return &Service{
-		store:      store,
-		cache:      cache,
-		policy:     policy,
-		now:        time.Now,
-		orderSvc:   orderSvc,
-		depositSvc: depositSvc,
+		store:       store,
+		cache:       cache,
+		policy:      policy,
+		now:         time.Now,
+		orderSvc:    orderSvc,
+		depositSvc:  depositSvc,
+		broadcaster: broadcaster,
 	}
 }
 
@@ -234,6 +237,17 @@ func (s *Service) StartItem(current *usermodel.User, itemID string) error {
 		}
 		return err
 	}
+	if s.broadcaster != nil {
+		_ = s.broadcaster.Fanout(wsevent.RoomTopic(item.RoomID), wsevent.Event{
+			Type: dto.EventAuctionStarted,
+			Payload: dto.AuctionStartedPayload{
+				ItemID:    item.ID,
+				RoomID:    item.RoomID,
+				StartTime: s.now(),
+				EndTime:   rule.EndTime,
+			},
+		})
+	}
 	return nil
 }
 
@@ -252,6 +266,12 @@ func (s *Service) CancelItem(current *usermodel.User, itemID string) error {
 	if s.cache != nil {
 		_ = s.cache.RemoveFromRoomQueue(context.Background(), item.RoomID, item.ID)
 		_ = s.cache.DeleteAuctionState(context.Background(), item.ID)
+	}
+	if s.broadcaster != nil {
+		_ = s.broadcaster.Fanout(wsevent.RoomTopic(item.RoomID), wsevent.Event{
+			Type:    dto.EventAuctionCancelled,
+			Payload: dto.AuctionCancelledPayload{ItemID: item.ID},
+		})
 	}
 	return nil
 }
