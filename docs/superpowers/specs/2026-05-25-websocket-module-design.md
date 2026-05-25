@@ -86,12 +86,10 @@ func UserAddr(userID string) string  { return "user:" + userID }
 ```go
 // hub/hub.go
 type Hub struct {
-    mu       sync.RWMutex
-    rooms    map[string]map[string]*Conn  // roomID → connID → Conn
-    users    map[string][]*Conn           // userID → []*Conn（支持多 tab）
-    register chan *Conn
-    remove   chan *Conn
-    redis    *redis.Client
+    mu    sync.RWMutex
+    rooms map[string]map[string]*Conn  // roomID → connID → Conn
+    users map[string][]*Conn           // userID → []*Conn（支持多 tab）
+    redis *redis.Client
 }
 
 // hub/conn.go
@@ -106,23 +104,23 @@ type Conn struct {
 
 ### 5.2 连接生命周期
 
-**连接建立（register）：**
+**连接建立（`Hub.Register(conn)`）：**
 
 ```
-同步（强一致）：
+同步（写锁保护）：
   rooms[roomID][connID] = conn
   users[userID] = append(users[userID], conn)
 
-异步（goroutine，失败不阻断连接建立）：
+异步（go syncRedisOnJoin，失败不阻断连接建立）：
   Redis SADD auction:room:{roomID}:online_users {userID}
   Redis HINCRBY auction:room:{roomID}:state online_count +1
 ```
 
-**连接断开（remove）：**
+**连接断开（`Hub.Remove(conn)`）：**
 
 ```
-同步：从 rooms / users 双索引删除
-异步：Redis SREM + HINCRBY -1
+同步（写锁保护）：从 rooms / users 双索引删除
+异步（go syncRedisOnLeave）：Redis SREM + HINCRBY -1
 ```
 
 ### 5.3 慢连接处理
@@ -209,7 +207,7 @@ var Hub *hub.Hub  // 实现 wsevent.Broadcaster
 
 func (w *WS) Load(engine *kernel.Engine) error {
     Hub = hub.NewHub(engine.Cache)
-    go Hub.Run()
+    // 无需 Run() goroutine，Hub 通过 sync.RWMutex 保护内部状态
     handler.Init(Hub)
     router.RegisterRoutes(engine.Flame)
     return nil
