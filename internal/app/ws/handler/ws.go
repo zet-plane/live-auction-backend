@@ -24,6 +24,16 @@ func Init(h *wshub.Hub) {
 	hub = h
 }
 
+// ServeWS upgrades an authenticated live room WebSocket connection.
+//
+// @Summary 连接直播间 WebSocket
+// @Tags websocket
+// @Param room_id path string true "直播间 ID"
+// @Param ticket query string true "通过 /api/v1/ws-ticket 签发的 ticket"
+// @Success 101 {string} string "Switching Protocols"
+// @Failure 400 {string} string "missing ticket or room_id"
+// @Failure 401 {string} string "invalid or expired ticket"
+// @Router /ws/v1/rooms/{room_id} [get]
 func ServeWS(c flamego.Context, w http.ResponseWriter, r *http.Request) {
 	roomID := c.Param("room_id")
 	ticket := r.URL.Query().Get("ticket")

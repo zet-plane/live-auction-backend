@@ -29,6 +29,17 @@ func AuthenticateToken(token string) (any, error) {
 	return result, err
 }
 
+// Register creates a user account.
+//
+// @Summary 用户注册
+// @Tags auth
+// @Accept json
+// @Produce json
+// @Param body body dto.RegisterRequest true "注册请求"
+// @Success 200 {object} response.Body{data=dto.LoginResult}
+// @Failure 400 {object} response.Body
+// @Failure 500 {object} response.Body
+// @Router /api/v1/auth/register [post]
 func Register(r flamego.Render, body dto.RegisterRequest, errs binding.Errors) {
 	if web.BindingErrors(r, errs) {
 		return
@@ -49,6 +60,18 @@ func Register(r flamego.Render, body dto.RegisterRequest, errs binding.Errors) {
 	response.OK(r, result)
 }
 
+// Login authenticates a user account.
+//
+// @Summary 用户登录
+// @Tags auth
+// @Accept json
+// @Produce json
+// @Param body body dto.LoginRequest true "登录请求"
+// @Success 200 {object} response.Body{data=dto.LoginResult}
+// @Failure 400 {object} response.Body
+// @Failure 401 {object} response.Body
+// @Failure 500 {object} response.Body
+// @Router /api/v1/auth/login [post]
 func Login(r flamego.Render, body dto.LoginRequest, errs binding.Errors) {
 	if web.BindingErrors(r, errs) {
 		return
@@ -66,10 +89,33 @@ func Login(r flamego.Render, body dto.LoginRequest, errs binding.Errors) {
 	response.OK(r, result)
 }
 
+// Me returns the current user profile.
+//
+// @Summary 获取当前用户
+// @Tags users
+// @Produce json
+// @Security BearerAuth
+// @Success 200 {object} response.Body{data=dto.UserDTO}
+// @Failure 401 {object} response.Body
+// @Failure 500 {object} response.Body
+// @Router /api/v1/users/me [get]
 func Me(r flamego.Render, current *model.User) {
 	response.OK(r, dto.NewUserDTO(current))
 }
 
+// UpdateMe updates the current user profile.
+//
+// @Summary 更新当前用户
+// @Tags users
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param body body dto.UpdateProfileRequest true "资料更新请求"
+// @Success 200 {object} response.Body
+// @Failure 400 {object} response.Body
+// @Failure 401 {object} response.Body
+// @Failure 500 {object} response.Body
+// @Router /api/v1/users/me [put]
 func UpdateMe(r flamego.Render, current *model.User, body dto.UpdateProfileRequest, errs binding.Errors) {
 	if web.BindingErrors(r, errs) {
 		return
@@ -92,6 +138,16 @@ func UpdateMe(r flamego.Render, current *model.User, body dto.UpdateProfileReque
 	response.OK(r, nil)
 }
 
+// DeleteMe deletes the current user account.
+//
+// @Summary 删除当前用户
+// @Tags users
+// @Produce json
+// @Security BearerAuth
+// @Success 200 {object} response.Body
+// @Failure 401 {object} response.Body
+// @Failure 500 {object} response.Body
+// @Router /api/v1/users/me [delete]
 func DeleteMe(r flamego.Render, current *model.User) {
 	if svc == nil {
 		response.Error(r, errorx.ErrInternal)

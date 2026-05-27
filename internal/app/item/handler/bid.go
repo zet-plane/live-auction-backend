@@ -11,6 +11,20 @@ import (
 	"github.com/zet-plane/live-auction-backend/pkg/logx"
 )
 
+// PlaceBid places a bid for an ongoing auction item.
+//
+// @Summary 出价
+// @Tags bids
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param item_id path string true "拍品 ID"
+// @Param body body dto.PlaceBidRequest true "出价请求"
+// @Success 200 {object} response.Body{data=dto.PlaceBidResult}
+// @Failure 400 {object} response.Body
+// @Failure 401 {object} response.Body
+// @Failure 500 {object} response.Body
+// @Router /api/v1/items/{item_id}/bids [post]
 func PlaceBid(r flamego.Render, c flamego.Context, current *usermodel.User, body dto.PlaceBidRequest, errs binding.Errors) {
 	if web.BindingErrors(r, errs) {
 		return
@@ -21,13 +35,25 @@ func PlaceBid(r flamego.Render, c flamego.Context, current *usermodel.User, body
 	}
 	result, err := svc.PlaceBid(current, c.Param("item_id"), body.Input(current.Name))
 	if err != nil {
-		logx.Warnw("PlaceBid failed", "user_id", current.ID, "item_id", c.Param("item_id"), "price", body.Price,"err", err)
+		logx.Warnw("PlaceBid failed", "user_id", current.ID, "item_id", c.Param("item_id"), "price", body.Price, "err", err)
 		response.Error(r, err)
 		return
 	}
 	response.OK(r, result)
 }
 
+// GetRanking returns bid ranking for an auction item.
+//
+// @Summary 出价排行榜
+// @Tags bids
+// @Produce json
+// @Param item_id path string true "拍品 ID"
+// @Param page query int false "页码"
+// @Param page_size query int false "每页数量"
+// @Success 200 {object} response.Body{data=dto.RankingResult}
+// @Failure 400 {object} response.Body
+// @Failure 500 {object} response.Body
+// @Router /api/v1/items/{item_id}/ranking [get]
 func GetRanking(r flamego.Render, c flamego.Context) {
 	if svc == nil {
 		response.Error(r, errorx.ErrInternal)

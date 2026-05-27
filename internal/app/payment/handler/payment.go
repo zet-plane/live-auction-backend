@@ -18,6 +18,20 @@ func Init(s *orderservice.Service) {
 	orderSvc = s
 }
 
+// Pay marks an order as paid.
+//
+// @Summary 支付订单
+// @Tags payments
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param order_id path string true "订单 ID"
+// @Param body body orderdto.PayOrderRequest true "支付结果请求"
+// @Success 200 {object} response.Body
+// @Failure 400 {object} response.Body
+// @Failure 401 {object} response.Body
+// @Failure 500 {object} response.Body
+// @Router /api/v1/orders/{order_id}/pay [post]
 func Pay(r flamego.Render, c flamego.Context, current *usermodel.User, body orderdto.PayOrderRequest, errs binding.Errors) {
 	if web.BindingErrors(r, errs) {
 		return
@@ -39,6 +53,17 @@ func Pay(r flamego.Render, c flamego.Context, current *usermodel.User, body orde
 	response.OK(r, nil)
 }
 
+// Cancel cancels an order.
+//
+// @Summary 取消订单
+// @Tags payments
+// @Produce json
+// @Security BearerAuth
+// @Param order_id path string true "订单 ID"
+// @Success 200 {object} response.Body
+// @Failure 401 {object} response.Body
+// @Failure 500 {object} response.Body
+// @Router /api/v1/orders/{order_id}/cancel [post]
 func Cancel(r flamego.Render, c flamego.Context, current *usermodel.User) {
 	if orderSvc == nil {
 		response.Error(r, errorx.ErrInternal)

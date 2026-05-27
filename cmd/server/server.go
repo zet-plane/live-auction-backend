@@ -17,13 +17,13 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/zet-plane/live-auction-backend/config"
 	"github.com/zet-plane/live-auction-backend/internal/app/appInitialize"
-	"github.com/zet-plane/live-auction-backend/pkg/logx"
-	appCron "github.com/zet-plane/live-auction-backend/internal/cron"
 	"github.com/zet-plane/live-auction-backend/internal/core/cache"
 	"github.com/zet-plane/live-auction-backend/internal/core/database"
 	"github.com/zet-plane/live-auction-backend/internal/core/kernel"
+	appCron "github.com/zet-plane/live-auction-backend/internal/cron"
 	"github.com/zet-plane/live-auction-backend/internal/middleware/gw"
 	"github.com/zet-plane/live-auction-backend/internal/middleware/response"
+	"github.com/zet-plane/live-auction-backend/pkg/logx"
 	"gorm.io/gorm"
 )
 
@@ -104,6 +104,7 @@ func buildEngine(cfg *config.Config, db *gorm.DB, rdb *redis.Client) (*kernel.En
 			"status":  "ok",
 		})
 	})
+	registerSwaggerRoutes(f)
 
 	c := appCron.New()
 

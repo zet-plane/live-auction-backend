@@ -15,6 +15,17 @@ func Init(s *service.Service) {
 	svc = s
 }
 
+// PayDeposit pays the deposit required by an auction item.
+//
+// @Summary 支付保证金
+// @Tags deposits
+// @Produce json
+// @Security BearerAuth
+// @Param item_id path string true "拍品 ID"
+// @Success 200 {object} response.Body
+// @Failure 401 {object} response.Body
+// @Failure 500 {object} response.Body
+// @Router /api/v1/items/{item_id}/deposit/pay [post]
 func PayDeposit(r flamego.Render, c flamego.Context, current *usermodel.User) {
 	if svc == nil {
 		response.Error(r, errorx.ErrInternal)
@@ -29,6 +40,17 @@ func PayDeposit(r flamego.Render, c flamego.Context, current *usermodel.User) {
 	response.OK(r, result)
 }
 
+// GetMyDeposit returns the current user's deposit for an auction item.
+//
+// @Summary 获取我的保证金
+// @Tags deposits
+// @Produce json
+// @Security BearerAuth
+// @Param item_id path string true "拍品 ID"
+// @Success 200 {object} response.Body
+// @Failure 401 {object} response.Body
+// @Failure 500 {object} response.Body
+// @Router /api/v1/items/{item_id}/deposit [get]
 func GetMyDeposit(r flamego.Render, c flamego.Context, current *usermodel.User) {
 	if svc == nil {
 		response.Error(r, errorx.ErrInternal)

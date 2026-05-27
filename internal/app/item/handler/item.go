@@ -21,6 +21,19 @@ func Init(s *service.Service) {
 	svc = s
 }
 
+// CreateItem creates a draft auction item.
+//
+// @Summary 创建拍品
+// @Tags items
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param body body dto.CreateItemRequest true "拍品创建请求"
+// @Success 200 {object} response.Body{data=dto.CreateItemResult}
+// @Failure 400 {object} response.Body
+// @Failure 401 {object} response.Body
+// @Failure 500 {object} response.Body
+// @Router /api/v1/items [post]
 func CreateItem(r flamego.Render, current *usermodel.User, body dto.CreateItemRequest, errs binding.Errors) {
 	if web.BindingErrors(r, errs) {
 		return
@@ -38,6 +51,18 @@ func CreateItem(r flamego.Render, current *usermodel.User, body dto.CreateItemRe
 	response.OK(r, result)
 }
 
+// ListItems lists public auction items.
+//
+// @Summary 拍品列表
+// @Tags items
+// @Produce json
+// @Param status query string false "拍品状态"
+// @Param keyword query string false "关键词"
+// @Param page query int false "页码"
+// @Param page_size query int false "每页数量"
+// @Success 200 {object} response.Body{data=dto.ItemListResult}
+// @Failure 500 {object} response.Body
+// @Router /api/v1/items [get]
 func ListItems(r flamego.Render, c flamego.Context) {
 	if svc == nil {
 		response.Error(r, errorx.ErrInternal)
@@ -52,6 +77,20 @@ func ListItems(r flamego.Render, c flamego.Context) {
 	response.OK(r, result)
 }
 
+// ListMerchantItems lists the current merchant's auction items.
+//
+// @Summary 商家拍品列表
+// @Tags items
+// @Produce json
+// @Security BearerAuth
+// @Param status query string false "拍品状态"
+// @Param keyword query string false "关键词"
+// @Param page query int false "页码"
+// @Param page_size query int false "每页数量"
+// @Success 200 {object} response.Body{data=dto.MerchantItemListResult}
+// @Failure 401 {object} response.Body
+// @Failure 500 {object} response.Body
+// @Router /api/v1/merchant/items [get]
 func ListMerchantItems(r flamego.Render, c flamego.Context, current *usermodel.User) {
 	if svc == nil {
 		response.Error(r, errorx.ErrInternal)
@@ -66,6 +105,17 @@ func ListMerchantItems(r flamego.Render, c flamego.Context, current *usermodel.U
 	response.OK(r, result)
 }
 
+// GetItem returns an auction item detail.
+//
+// @Summary 拍品详情
+// @Tags items
+// @Produce json
+// @Param item_id path string true "拍品 ID"
+// @Success 200 {object} response.Body{data=dto.ItemDetailDTO}
+// @Failure 400 {object} response.Body
+// @Failure 404 {object} response.Body
+// @Failure 500 {object} response.Body
+// @Router /api/v1/items/{item_id} [get]
 func GetItem(r flamego.Render, c flamego.Context) {
 	if svc == nil {
 		response.Error(r, errorx.ErrInternal)
@@ -80,6 +130,20 @@ func GetItem(r flamego.Render, c flamego.Context) {
 	response.OK(r, result)
 }
 
+// UpdateItem updates a draft auction item.
+//
+// @Summary 更新拍品
+// @Tags items
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param item_id path string true "拍品 ID"
+// @Param body body dto.CreateItemRequest true "拍品更新请求"
+// @Success 200 {object} response.Body
+// @Failure 400 {object} response.Body
+// @Failure 401 {object} response.Body
+// @Failure 500 {object} response.Body
+// @Router /api/v1/items/{item_id} [put]
 func UpdateItem(r flamego.Render, c flamego.Context, current *usermodel.User, body dto.CreateItemRequest, errs binding.Errors) {
 	if web.BindingErrors(r, errs) {
 		return
@@ -96,6 +160,17 @@ func UpdateItem(r flamego.Render, c flamego.Context, current *usermodel.User, bo
 	response.OK(r, nil)
 }
 
+// DeleteItem deletes an auction item.
+//
+// @Summary 删除拍品
+// @Tags items
+// @Produce json
+// @Security BearerAuth
+// @Param item_id path string true "拍品 ID"
+// @Success 200 {object} response.Body
+// @Failure 401 {object} response.Body
+// @Failure 500 {object} response.Body
+// @Router /api/v1/items/{item_id} [delete]
 func DeleteItem(r flamego.Render, c flamego.Context, current *usermodel.User) {
 	if svc == nil {
 		response.Error(r, errorx.ErrInternal)
@@ -109,14 +184,47 @@ func DeleteItem(r flamego.Render, c flamego.Context, current *usermodel.User) {
 	response.OK(r, nil)
 }
 
+// PublishItem publishes a draft auction item.
+//
+// @Summary 发布拍品
+// @Tags items
+// @Produce json
+// @Security BearerAuth
+// @Param item_id path string true "拍品 ID"
+// @Success 200 {object} response.Body
+// @Failure 401 {object} response.Body
+// @Failure 500 {object} response.Body
+// @Router /api/v1/items/{item_id}/publish [post]
 func PublishItem(r flamego.Render, c flamego.Context, current *usermodel.User) {
 	statusAction(r, c, current, "PublishItem", svc.PublishItem)
 }
 
+// StartItem starts a published auction item.
+//
+// @Summary 开始拍品竞拍
+// @Tags items
+// @Produce json
+// @Security BearerAuth
+// @Param item_id path string true "拍品 ID"
+// @Success 200 {object} response.Body
+// @Failure 401 {object} response.Body
+// @Failure 500 {object} response.Body
+// @Router /api/v1/items/{item_id}/start [post]
 func StartItem(r flamego.Render, c flamego.Context, current *usermodel.User) {
 	statusAction(r, c, current, "StartItem", svc.StartItem)
 }
 
+// CancelItem cancels a published or ongoing auction item.
+//
+// @Summary 取消拍品竞拍
+// @Tags items
+// @Produce json
+// @Security BearerAuth
+// @Param item_id path string true "拍品 ID"
+// @Success 200 {object} response.Body
+// @Failure 401 {object} response.Body
+// @Failure 500 {object} response.Body
+// @Router /api/v1/items/{item_id}/cancel [post]
 func CancelItem(r flamego.Render, c flamego.Context, current *usermodel.User) {
 	statusAction(r, c, current, "CancelItem", svc.CancelItem)
 }

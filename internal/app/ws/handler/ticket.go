@@ -22,6 +22,16 @@ func InitTicket(r *redis.Client) {
 	redisClient = r
 }
 
+// IssueTicket issues a short-lived WebSocket ticket.
+//
+// @Summary 签发 WebSocket ticket
+// @Tags websocket
+// @Produce json
+// @Security BearerAuth
+// @Success 200 {object} response.Body
+// @Failure 401 {object} response.Body
+// @Failure 500 {object} response.Body
+// @Router /api/v1/ws-ticket [post]
 func IssueTicket(r flamego.Render, current *usermodel.User) {
 	ticket, err := generateTicket()
 	if err != nil {

@@ -17,6 +17,19 @@ var svc *service.Service
 
 func Init(s *service.Service) { svc = s }
 
+// ActivateRoom creates or updates the current merchant's live room.
+//
+// @Summary 开通商家直播间
+// @Tags rooms
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param body body dto.CreateRoomRequest true "直播间请求"
+// @Success 200 {object} response.Body{data=dto.MerchantRoomDTO}
+// @Failure 400 {object} response.Body
+// @Failure 401 {object} response.Body
+// @Failure 500 {object} response.Body
+// @Router /api/v1/merchant/room [post]
 func ActivateRoom(r flamego.Render, current *usermodel.User, body dto.CreateRoomRequest, errs binding.Errors) {
 	if web.BindingErrors(r, errs) {
 		return
@@ -34,6 +47,16 @@ func ActivateRoom(r flamego.Render, current *usermodel.User, body dto.CreateRoom
 	response.OK(r, result)
 }
 
+// GetMerchantRoom returns the current merchant's live room.
+//
+// @Summary 获取商家直播间
+// @Tags rooms
+// @Produce json
+// @Security BearerAuth
+// @Success 200 {object} response.Body{data=dto.MerchantRoomDTO}
+// @Failure 401 {object} response.Body
+// @Failure 500 {object} response.Body
+// @Router /api/v1/merchant/room [get]
 func GetMerchantRoom(r flamego.Render, current *usermodel.User) {
 	if svc == nil {
 		response.Error(r, errorx.ErrInternal)
@@ -48,6 +71,17 @@ func GetMerchantRoom(r flamego.Render, current *usermodel.User) {
 	response.OK(r, result)
 }
 
+// StartRoom starts a live room.
+//
+// @Summary 开始直播间
+// @Tags rooms
+// @Produce json
+// @Security BearerAuth
+// @Param room_id path string true "直播间 ID"
+// @Success 200 {object} response.Body
+// @Failure 401 {object} response.Body
+// @Failure 500 {object} response.Body
+// @Router /api/v1/rooms/{room_id}/start [post]
 func StartRoom(r flamego.Render, c flamego.Context, current *usermodel.User) {
 	if svc == nil {
 		response.Error(r, errorx.ErrInternal)
@@ -61,6 +95,17 @@ func StartRoom(r flamego.Render, c flamego.Context, current *usermodel.User) {
 	response.OK(r, nil)
 }
 
+// EndRoom ends a live room.
+//
+// @Summary 结束直播间
+// @Tags rooms
+// @Produce json
+// @Security BearerAuth
+// @Param room_id path string true "直播间 ID"
+// @Success 200 {object} response.Body
+// @Failure 401 {object} response.Body
+// @Failure 500 {object} response.Body
+// @Router /api/v1/rooms/{room_id}/end [post]
 func EndRoom(r flamego.Render, c flamego.Context, current *usermodel.User) {
 	if svc == nil {
 		response.Error(r, errorx.ErrInternal)
@@ -74,6 +119,16 @@ func EndRoom(r flamego.Render, c flamego.Context, current *usermodel.User) {
 	response.OK(r, nil)
 }
 
+// GetRoom returns a public live room detail.
+//
+// @Summary 直播间详情
+// @Tags rooms
+// @Produce json
+// @Param room_id path string true "直播间 ID"
+// @Success 200 {object} response.Body{data=dto.RoomDetailDTO}
+// @Failure 400 {object} response.Body
+// @Failure 500 {object} response.Body
+// @Router /api/v1/rooms/{room_id} [get]
 func GetRoom(r flamego.Render, c flamego.Context) {
 	if svc == nil {
 		response.Error(r, errorx.ErrInternal)
@@ -88,6 +143,15 @@ func GetRoom(r flamego.Render, c flamego.Context) {
 	response.OK(r, result)
 }
 
+// ListRooms lists public live rooms.
+//
+// @Summary 直播间列表
+// @Tags rooms
+// @Produce json
+// @Param status query string false "直播间状态"
+// @Success 200 {object} response.Body{data=[]dto.RoomDetailDTO}
+// @Failure 500 {object} response.Body
+// @Router /api/v1/rooms [get]
 func ListRooms(r flamego.Render, c flamego.Context) {
 	if svc == nil {
 		response.Error(r, errorx.ErrInternal)

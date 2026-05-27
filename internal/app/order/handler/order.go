@@ -17,6 +17,19 @@ func Init(s *service.Service) {
 	svc = s
 }
 
+// ListOrders lists orders for the current user or merchant.
+//
+// @Summary 订单列表
+// @Tags orders
+// @Produce json
+// @Security BearerAuth
+// @Param status query string false "订单状态"
+// @Param page query int false "页码"
+// @Param page_size query int false "每页数量"
+// @Success 200 {object} response.Body{data=dto.ListOrdersResult}
+// @Failure 401 {object} response.Body
+// @Failure 500 {object} response.Body
+// @Router /api/v1/orders [get]
 func ListOrders(r flamego.Render, c flamego.Context, current *usermodel.User) {
 	if svc == nil {
 		response.Error(r, errorx.ErrInternal)
@@ -36,6 +49,18 @@ func ListOrders(r flamego.Render, c flamego.Context, current *usermodel.User) {
 	response.OK(r, result)
 }
 
+// GetOrder returns an order detail.
+//
+// @Summary 订单详情
+// @Tags orders
+// @Produce json
+// @Security BearerAuth
+// @Param order_id path string true "订单 ID"
+// @Success 200 {object} response.Body{data=dto.OrderDetail}
+// @Failure 401 {object} response.Body
+// @Failure 404 {object} response.Body
+// @Failure 500 {object} response.Body
+// @Router /api/v1/orders/{order_id} [get]
 func GetOrder(r flamego.Render, c flamego.Context, current *usermodel.User) {
 	if svc == nil {
 		response.Error(r, errorx.ErrInternal)

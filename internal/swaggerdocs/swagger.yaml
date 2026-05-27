@@ -1,0 +1,1564 @@
+basePath: /
+definitions:
+  dto.ActionsDTO:
+    properties:
+      can_cancel:
+        type: boolean
+      can_edit:
+        type: boolean
+      can_publish:
+        type: boolean
+      can_start:
+        type: boolean
+      can_unpublish:
+        type: boolean
+      can_view_detail:
+        type: boolean
+    type: object
+  dto.AuctionPolicy:
+    properties:
+      auto_extend_sec:
+        type: integer
+      extend_trigger_sec:
+        type: integer
+      max_extend_count:
+        type: integer
+      max_total_extend_sec:
+        type: integer
+    type: object
+  dto.CreateItemRequest:
+    properties:
+      description:
+        maxLength: 1024
+        type: string
+      image_url:
+        maxLength: 512
+        type: string
+      room_id:
+        maxLength: 64
+        minLength: 1
+        type: string
+      rule:
+        $ref: '#/definitions/dto.RuleInput'
+      tags:
+        items:
+          type: string
+        type: array
+      title:
+        maxLength: 128
+        minLength: 1
+        type: string
+    required:
+    - room_id
+    - rule
+    - title
+    type: object
+  dto.CreateItemResult:
+    properties:
+      item_id:
+        type: string
+      rule_id:
+        type: string
+    type: object
+  dto.CreateRoomRequest:
+    properties:
+      title:
+        maxLength: 128
+        minLength: 1
+        type: string
+    required:
+    - title
+    type: object
+  dto.ItemDetailDTO:
+    properties:
+      auction_policy:
+        $ref: '#/definitions/dto.AuctionPolicy'
+      bid_count:
+        type: integer
+      created_at:
+        type: string
+      current_price:
+        type: integer
+      description:
+        type: string
+      id:
+        type: string
+      image_url:
+        type: string
+      is_extended:
+        type: boolean
+      leader_user_id:
+        type: string
+      merchant_id:
+        type: string
+      participant_count:
+        type: integer
+      remaining_ms:
+        type: integer
+      rule:
+        $ref: '#/definitions/dto.RuleDTO'
+      status:
+        $ref: '#/definitions/model.AuctionItemStatus'
+      tags:
+        items:
+          type: string
+        type: array
+      title:
+        type: string
+      updated_at:
+        type: string
+    type: object
+  dto.ItemListDTO:
+    properties:
+      auto_extend_sec:
+        type: integer
+      bid_count:
+        type: integer
+      bid_increment:
+        type: integer
+      current_price:
+        type: integer
+      description:
+        type: string
+      end_time:
+        type: string
+      extend_trigger_sec:
+        type: integer
+      id:
+        type: string
+      image_url:
+        type: string
+      participant_count:
+        type: integer
+      price_cap:
+        type: integer
+      remaining_ms:
+        type: integer
+      room_id:
+        type: string
+      start_price:
+        type: integer
+      start_time:
+        type: string
+      status:
+        $ref: '#/definitions/model.AuctionItemStatus'
+      tags:
+        items:
+          type: string
+        type: array
+      title:
+        type: string
+    type: object
+  dto.ItemListResult:
+    properties:
+      list:
+        items:
+          $ref: '#/definitions/dto.ItemListDTO'
+        type: array
+      page:
+        type: integer
+      page_size:
+        type: integer
+      total:
+        type: integer
+    type: object
+  dto.ListOrdersResult:
+    properties:
+      list:
+        items:
+          $ref: '#/definitions/dto.OrderWithTitle'
+        type: array
+      page:
+        type: integer
+      page_size:
+        type: integer
+      total:
+        type: integer
+    type: object
+  dto.LoginRequest:
+    properties:
+      account:
+        type: string
+      password:
+        type: string
+    required:
+    - account
+    - password
+    type: object
+  dto.LoginResult:
+    properties:
+      token:
+        type: string
+      user:
+        $ref: '#/definitions/dto.UserDTO'
+    type: object
+  dto.MerchantItemDTO:
+    properties:
+      actions:
+        $ref: '#/definitions/dto.ActionsDTO'
+      auction_policy:
+        $ref: '#/definitions/dto.AuctionPolicy'
+      created_at:
+        type: string
+      description:
+        type: string
+      explain_status:
+        type: string
+      explain_status_text:
+        type: string
+      id:
+        type: string
+      image_url:
+        type: string
+      merchant_id:
+        type: string
+      progress:
+        $ref: '#/definitions/dto.ProgressDTO'
+      result:
+        $ref: '#/definitions/dto.ResultDTO'
+      room_id:
+        type: string
+      rule_summary:
+        $ref: '#/definitions/dto.RuleDTO'
+      status:
+        $ref: '#/definitions/model.AuctionItemStatus'
+      status_text:
+        type: string
+      tags:
+        items:
+          type: string
+        type: array
+      title:
+        type: string
+      updated_at:
+        type: string
+    type: object
+  dto.MerchantItemListResult:
+    properties:
+      list:
+        items:
+          $ref: '#/definitions/dto.MerchantItemDTO'
+        type: array
+      page:
+        type: integer
+      page_size:
+        type: integer
+      total:
+        type: integer
+    type: object
+  dto.MerchantRoomDTO:
+    properties:
+      actions:
+        $ref: '#/definitions/dto.RoomActionsDTO'
+      created_at:
+        type: string
+      current_item_id:
+        type: string
+      id:
+        type: string
+      merchant_id:
+        type: string
+      online_count:
+        type: integer
+      queued_count:
+        type: integer
+      status:
+        $ref: '#/definitions/model.RoomStatus'
+      status_text:
+        type: string
+      title:
+        type: string
+      updated_at:
+        type: string
+    type: object
+  dto.OrderDetail:
+    properties:
+      created_at:
+        type: string
+      expired_at:
+        type: string
+      id:
+        type: string
+      item_id:
+        type: string
+      item_title:
+        type: string
+      price:
+        type: integer
+      status:
+        $ref: '#/definitions/model.OrderStatus'
+      updated_at:
+        type: string
+      user_id:
+        type: string
+    type: object
+  dto.OrderWithTitle:
+    properties:
+      created_at:
+        type: string
+      expired_at:
+        type: string
+      id:
+        type: string
+      item_id:
+        type: string
+      item_title:
+        type: string
+      price:
+        type: integer
+      status:
+        $ref: '#/definitions/model.OrderStatus'
+      user_id:
+        type: string
+    type: object
+  dto.PayOrderRequest:
+    properties:
+      result:
+        enum:
+        - success
+        type: string
+    required:
+    - result
+    type: object
+  dto.PlaceBidRequest:
+    properties:
+      idempotency_key:
+        maxLength: 128
+        minLength: 1
+        type: string
+      price:
+        minimum: 1
+        type: integer
+    required:
+    - idempotency_key
+    - price
+    type: object
+  dto.PlaceBidResult:
+    properties:
+      bid_id:
+        type: string
+      current_price:
+        type: integer
+      end_time:
+        type: string
+      leader_user_id:
+        type: string
+      status:
+        description: '"ongoing" | "ended"'
+        type: string
+    type: object
+  dto.ProgressDTO:
+    properties:
+      bid_count:
+        type: integer
+      current_price:
+        type: integer
+      is_extended:
+        type: boolean
+      leader_user_id:
+        type: string
+      online_count:
+        type: integer
+      participant_count:
+        type: integer
+      remaining_ms:
+        type: integer
+    type: object
+  dto.RankingEntry:
+    properties:
+      price:
+        type: integer
+      rank:
+        type: integer
+      user_id:
+        type: string
+      user_name:
+        type: string
+    type: object
+  dto.RankingResult:
+    properties:
+      list:
+        items:
+          $ref: '#/definitions/dto.RankingEntry'
+        type: array
+      page:
+        type: integer
+      page_size:
+        type: integer
+    type: object
+  dto.RegisterRequest:
+    properties:
+      account:
+        maxLength: 64
+        minLength: 3
+        type: string
+      password:
+        maxLength: 72
+        minLength: 6
+        type: string
+    required:
+    - account
+    - password
+    type: object
+  dto.ResultDTO:
+    properties:
+      deal_price:
+        type: integer
+      order_id:
+        type: string
+      order_status:
+        type: string
+      winner_user_id:
+        type: string
+      winner_user_name:
+        type: string
+    type: object
+  dto.RoomActionsDTO:
+    properties:
+      can_end:
+        type: boolean
+      can_start:
+        type: boolean
+    type: object
+  dto.RoomDetailDTO:
+    properties:
+      created_at:
+        type: string
+      current_item_id:
+        type: string
+      id:
+        type: string
+      item_queue:
+        items:
+          type: string
+        type: array
+      merchant_id:
+        type: string
+      online_count:
+        type: integer
+      status:
+        $ref: '#/definitions/model.RoomStatus'
+      title:
+        type: string
+      updated_at:
+        type: string
+    type: object
+  dto.RuleDTO:
+    properties:
+      bid_increment:
+        type: integer
+      deposit_amount:
+        type: integer
+      end_time:
+        type: string
+      price_cap:
+        type: integer
+      start_price:
+        type: integer
+      start_time:
+        type: string
+    type: object
+  dto.RuleInput:
+    properties:
+      bid_increment:
+        minimum: 1
+        type: integer
+      deposit_amount:
+        minimum: 1
+        type: integer
+      end_time:
+        type: string
+      price_cap:
+        minimum: 1
+        type: integer
+      start_price:
+        minimum: 1
+        type: integer
+      start_time:
+        type: string
+    required:
+    - bid_increment
+    - end_time
+    - start_price
+    - start_time
+    type: object
+  dto.UpdateProfileRequest:
+    properties:
+      avatar_url:
+        maxLength: 512
+        type: string
+      identity:
+        allOf:
+        - $ref: '#/definitions/model.UserIdentity'
+        enum:
+        - user
+        - merchant
+      motto:
+        maxLength: 255
+        type: string
+      name:
+        maxLength: 64
+        minLength: 1
+        type: string
+    type: object
+  dto.UserDTO:
+    properties:
+      account:
+        type: string
+      avatar_url:
+        type: string
+      created_at:
+        type: string
+      id:
+        type: string
+      identity:
+        $ref: '#/definitions/model.UserIdentity'
+      motto:
+        type: string
+      name:
+        type: string
+      updated_at:
+        type: string
+    type: object
+  model.AuctionItemStatus:
+    enum:
+    - draft
+    - published
+    - ongoing
+    - ended
+    - cancelled
+    type: string
+    x-enum-varnames:
+    - ItemDraft
+    - ItemPublished
+    - ItemOngoing
+    - ItemEnded
+    - ItemCancelled
+  model.OrderStatus:
+    enum:
+    - pending
+    - paid
+    - cancelled
+    - expired
+    type: string
+    x-enum-varnames:
+    - OrderPending
+    - OrderPaid
+    - OrderCancelled
+    - OrderExpired
+  model.RoomStatus:
+    enum:
+    - idle
+    - live
+    type: string
+    x-enum-varnames:
+    - RoomIdle
+    - RoomLive
+  model.UserIdentity:
+    enum:
+    - user
+    - merchant
+    type: string
+    x-enum-varnames:
+    - IdentityUser
+    - IdentityMerchant
+  response.Body:
+    properties:
+      code:
+        type: integer
+      data: {}
+      message:
+        type: string
+    type: object
+info:
+  contact: {}
+  description: Live auction e-commerce backend API.
+  title: Live Auction Backend API
+  version: "1.0"
+paths:
+  /api/v1/auth/login:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 登录请求
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/dto.LoginRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/response.Body'
+            - properties:
+                data:
+                  $ref: '#/definitions/dto.LoginResult'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/response.Body'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/response.Body'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.Body'
+      summary: 用户登录
+      tags:
+      - auth
+  /api/v1/auth/register:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 注册请求
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/dto.RegisterRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/response.Body'
+            - properties:
+                data:
+                  $ref: '#/definitions/dto.LoginResult'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/response.Body'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.Body'
+      summary: 用户注册
+      tags:
+      - auth
+  /api/v1/items:
+    get:
+      parameters:
+      - description: 拍品状态
+        in: query
+        name: status
+        type: string
+      - description: 关键词
+        in: query
+        name: keyword
+        type: string
+      - description: 页码
+        in: query
+        name: page
+        type: integer
+      - description: 每页数量
+        in: query
+        name: page_size
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/response.Body'
+            - properties:
+                data:
+                  $ref: '#/definitions/dto.ItemListResult'
+              type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.Body'
+      summary: 拍品列表
+      tags:
+      - items
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 拍品创建请求
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/dto.CreateItemRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/response.Body'
+            - properties:
+                data:
+                  $ref: '#/definitions/dto.CreateItemResult'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/response.Body'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/response.Body'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.Body'
+      security:
+      - BearerAuth: []
+      summary: 创建拍品
+      tags:
+      - items
+  /api/v1/items/{item_id}:
+    delete:
+      parameters:
+      - description: 拍品 ID
+        in: path
+        name: item_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/response.Body'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/response.Body'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.Body'
+      security:
+      - BearerAuth: []
+      summary: 删除拍品
+      tags:
+      - items
+    get:
+      parameters:
+      - description: 拍品 ID
+        in: path
+        name: item_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/response.Body'
+            - properties:
+                data:
+                  $ref: '#/definitions/dto.ItemDetailDTO'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/response.Body'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/response.Body'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.Body'
+      summary: 拍品详情
+      tags:
+      - items
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: 拍品 ID
+        in: path
+        name: item_id
+        required: true
+        type: string
+      - description: 拍品更新请求
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/dto.CreateItemRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/response.Body'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/response.Body'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/response.Body'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.Body'
+      security:
+      - BearerAuth: []
+      summary: 更新拍品
+      tags:
+      - items
+  /api/v1/items/{item_id}/bids:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 拍品 ID
+        in: path
+        name: item_id
+        required: true
+        type: string
+      - description: 出价请求
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/dto.PlaceBidRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/response.Body'
+            - properties:
+                data:
+                  $ref: '#/definitions/dto.PlaceBidResult'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/response.Body'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/response.Body'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.Body'
+      security:
+      - BearerAuth: []
+      summary: 出价
+      tags:
+      - bids
+  /api/v1/items/{item_id}/cancel:
+    post:
+      parameters:
+      - description: 拍品 ID
+        in: path
+        name: item_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/response.Body'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/response.Body'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.Body'
+      security:
+      - BearerAuth: []
+      summary: 取消拍品竞拍
+      tags:
+      - items
+  /api/v1/items/{item_id}/deposit:
+    get:
+      parameters:
+      - description: 拍品 ID
+        in: path
+        name: item_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/response.Body'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/response.Body'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.Body'
+      security:
+      - BearerAuth: []
+      summary: 获取我的保证金
+      tags:
+      - deposits
+  /api/v1/items/{item_id}/deposit/pay:
+    post:
+      parameters:
+      - description: 拍品 ID
+        in: path
+        name: item_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/response.Body'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/response.Body'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.Body'
+      security:
+      - BearerAuth: []
+      summary: 支付保证金
+      tags:
+      - deposits
+  /api/v1/items/{item_id}/publish:
+    post:
+      parameters:
+      - description: 拍品 ID
+        in: path
+        name: item_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/response.Body'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/response.Body'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.Body'
+      security:
+      - BearerAuth: []
+      summary: 发布拍品
+      tags:
+      - items
+  /api/v1/items/{item_id}/ranking:
+    get:
+      parameters:
+      - description: 拍品 ID
+        in: path
+        name: item_id
+        required: true
+        type: string
+      - description: 页码
+        in: query
+        name: page
+        type: integer
+      - description: 每页数量
+        in: query
+        name: page_size
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/response.Body'
+            - properties:
+                data:
+                  $ref: '#/definitions/dto.RankingResult'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/response.Body'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.Body'
+      summary: 出价排行榜
+      tags:
+      - bids
+  /api/v1/items/{item_id}/start:
+    post:
+      parameters:
+      - description: 拍品 ID
+        in: path
+        name: item_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/response.Body'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/response.Body'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.Body'
+      security:
+      - BearerAuth: []
+      summary: 开始拍品竞拍
+      tags:
+      - items
+  /api/v1/merchant/items:
+    get:
+      parameters:
+      - description: 拍品状态
+        in: query
+        name: status
+        type: string
+      - description: 关键词
+        in: query
+        name: keyword
+        type: string
+      - description: 页码
+        in: query
+        name: page
+        type: integer
+      - description: 每页数量
+        in: query
+        name: page_size
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/response.Body'
+            - properties:
+                data:
+                  $ref: '#/definitions/dto.MerchantItemListResult'
+              type: object
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/response.Body'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.Body'
+      security:
+      - BearerAuth: []
+      summary: 商家拍品列表
+      tags:
+      - items
+  /api/v1/merchant/room:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/response.Body'
+            - properties:
+                data:
+                  $ref: '#/definitions/dto.MerchantRoomDTO'
+              type: object
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/response.Body'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.Body'
+      security:
+      - BearerAuth: []
+      summary: 获取商家直播间
+      tags:
+      - rooms
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 直播间请求
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/dto.CreateRoomRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/response.Body'
+            - properties:
+                data:
+                  $ref: '#/definitions/dto.MerchantRoomDTO'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/response.Body'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/response.Body'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.Body'
+      security:
+      - BearerAuth: []
+      summary: 开通商家直播间
+      tags:
+      - rooms
+  /api/v1/orders:
+    get:
+      parameters:
+      - description: 订单状态
+        in: query
+        name: status
+        type: string
+      - description: 页码
+        in: query
+        name: page
+        type: integer
+      - description: 每页数量
+        in: query
+        name: page_size
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/response.Body'
+            - properties:
+                data:
+                  $ref: '#/definitions/dto.ListOrdersResult'
+              type: object
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/response.Body'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.Body'
+      security:
+      - BearerAuth: []
+      summary: 订单列表
+      tags:
+      - orders
+  /api/v1/orders/{order_id}:
+    get:
+      parameters:
+      - description: 订单 ID
+        in: path
+        name: order_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/response.Body'
+            - properties:
+                data:
+                  $ref: '#/definitions/dto.OrderDetail'
+              type: object
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/response.Body'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/response.Body'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.Body'
+      security:
+      - BearerAuth: []
+      summary: 订单详情
+      tags:
+      - orders
+  /api/v1/orders/{order_id}/cancel:
+    post:
+      parameters:
+      - description: 订单 ID
+        in: path
+        name: order_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/response.Body'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/response.Body'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.Body'
+      security:
+      - BearerAuth: []
+      summary: 取消订单
+      tags:
+      - payments
+  /api/v1/orders/{order_id}/pay:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 订单 ID
+        in: path
+        name: order_id
+        required: true
+        type: string
+      - description: 支付结果请求
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/dto.PayOrderRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/response.Body'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/response.Body'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/response.Body'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.Body'
+      security:
+      - BearerAuth: []
+      summary: 支付订单
+      tags:
+      - payments
+  /api/v1/rooms:
+    get:
+      parameters:
+      - description: 直播间状态
+        in: query
+        name: status
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/response.Body'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/dto.RoomDetailDTO'
+                  type: array
+              type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.Body'
+      summary: 直播间列表
+      tags:
+      - rooms
+  /api/v1/rooms/{room_id}:
+    get:
+      parameters:
+      - description: 直播间 ID
+        in: path
+        name: room_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/response.Body'
+            - properties:
+                data:
+                  $ref: '#/definitions/dto.RoomDetailDTO'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/response.Body'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.Body'
+      summary: 直播间详情
+      tags:
+      - rooms
+  /api/v1/rooms/{room_id}/end:
+    post:
+      parameters:
+      - description: 直播间 ID
+        in: path
+        name: room_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/response.Body'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/response.Body'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.Body'
+      security:
+      - BearerAuth: []
+      summary: 结束直播间
+      tags:
+      - rooms
+  /api/v1/rooms/{room_id}/start:
+    post:
+      parameters:
+      - description: 直播间 ID
+        in: path
+        name: room_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/response.Body'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/response.Body'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.Body'
+      security:
+      - BearerAuth: []
+      summary: 开始直播间
+      tags:
+      - rooms
+  /api/v1/users/me:
+    delete:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/response.Body'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/response.Body'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.Body'
+      security:
+      - BearerAuth: []
+      summary: 删除当前用户
+      tags:
+      - users
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/response.Body'
+            - properties:
+                data:
+                  $ref: '#/definitions/dto.UserDTO'
+              type: object
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/response.Body'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.Body'
+      security:
+      - BearerAuth: []
+      summary: 获取当前用户
+      tags:
+      - users
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: 资料更新请求
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/dto.UpdateProfileRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/response.Body'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/response.Body'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/response.Body'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.Body'
+      security:
+      - BearerAuth: []
+      summary: 更新当前用户
+      tags:
+      - users
+  /api/v1/ws-ticket:
+    post:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/response.Body'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/response.Body'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.Body'
+      security:
+      - BearerAuth: []
+      summary: 签发 WebSocket ticket
+      tags:
+      - websocket
+  /ws/v1/rooms/{room_id}:
+    get:
+      parameters:
+      - description: 直播间 ID
+        in: path
+        name: room_id
+        required: true
+        type: string
+      - description: 通过 /api/v1/ws-ticket 签发的 ticket
+        in: query
+        name: ticket
+        required: true
+        type: string
+      responses:
+        "101":
+          description: Switching Protocols
+          schema:
+            type: string
+        "400":
+          description: missing ticket or room_id
+          schema:
+            type: string
+        "401":
+          description: invalid or expired ticket
+          schema:
+            type: string
+      summary: 连接直播间 WebSocket
+      tags:
+      - websocket
+schemes:
+- http
+- https
+securityDefinitions:
+  BearerAuth:
+    in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"
