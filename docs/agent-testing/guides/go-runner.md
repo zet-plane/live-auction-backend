@@ -24,7 +24,7 @@
 mkdir -p /tmp/agent-runner-<batch>
 ```
 
-读取 `docs/agent-testing/runner-template.go`，将内容完整复制到 `/tmp/agent-runner-<batch>/main.go`。
+读取 `docs/agent-testing/templates/runner.go`，将内容完整复制到 `/tmp/agent-runner-<batch>/main.go`。
 
 ### 第二步：创建 go.mod
 
@@ -47,6 +47,12 @@ require (
 cd /tmp/agent-runner-<batch> && go mod tidy
 ```
 
+如果本机默认 Go build cache 目录受沙箱限制，应显式指定临时 cache：
+
+```bash
+cd /tmp/agent-runner-<batch> && rtk env GOCACHE=/tmp/live-auction-go-cache go mod tidy
+```
+
 ### 第三步：填写 CONFIG
 
 修改 `main.go` 顶部 CONFIG 区的三个常量：
@@ -59,6 +65,12 @@ DSN 通过环境变量传入，不写入文件：
 
 ```bash
 export TEST_DSN="<user>:<pass>@tcp(127.0.0.1:3306)/<dbname>?parseTime=true"
+```
+
+命令行直接传入 `TEST_DSN` 时，必须避免 shell 展开 `?` 和 `&`。推荐使用引号包住整个环境变量值，并且不要把完整 DSN 写入报告：
+
+```bash
+rtk env GOCACHE=/tmp/live-auction-go-cache 'TEST_DSN=<redacted>' go run main.go
 ```
 
 ### 第四步：填写 SCENARIOS 和 CLEANUP，运行
@@ -147,7 +159,7 @@ func caseConcurrentBid() Result {
 
 ## Helper 函数参考
 
-模板提供以下 helper，场景函数可直接调用（详细实现见 `runner-template.go`）：
+模板提供以下 helper，场景函数可直接调用（详细实现见 `templates/runner.go`）：
 
 | 函数 | 签名 | 说明 |
 | --- | --- | --- |
@@ -211,6 +223,9 @@ Runner 输出格式是强制契约，agent 不得修改 `printResult` 和 `main`
 - 只清理带 batchID 前缀的数据或本次 runner 创建的可识别 ID（item_id、room_id 等）。
 - 不得清空数据库或批量修改非测试数据。
 - cleanup 的每一步操作和结果必须打印，作为报告的清理记录证据。
+- 清理顺序应遵守业务关联：先清理或软删除本批次主实体，再清理本批次可识别的子记录和 Redis key。不得为了清理方便删除无批次前缀的数据。
+- 对使用软删除的表，优先执行带主键或批次前缀条件的软删除；若需要删除子表记录，必须限定在本次 runner 创建的 ID 集合内。
+- Redis 清理只能删除本批次 key，或从共享 ZSET/SET 中移除本批次 member；禁止 `FLUSHDB`、`FLUSHALL`。
 
 ## 与测试报告的衔接
 

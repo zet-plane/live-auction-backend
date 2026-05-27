@@ -85,7 +85,7 @@ Local code unit tests:
 
 Agent-driven interface, integration, end-to-end, concurrency, and state-consistency tests:
 
-- May connect to online or online-equivalent real dependencies only when routed by `docs/agent-testing/README.md` and `docs/agent-testing/environment.md`.
+- May connect to online or online-equivalent real dependencies only when routed by `docs/agent-testing/README.md` and `docs/agent-testing/guides/environment.md`.
 - May operate only on data created for the current test batch.
 - Must record evidence and cleanup results.
 - Must not write online addresses, credentials, passwords, or reusable tokens into reports.
@@ -102,9 +102,9 @@ Do not read other files in `docs/agent-testing/` until the README routes you the
 
 Common routes:
 
-- Execute tests: README -> `agent-runner-guide.md` -> relevant `modules/<module>.md` or `flows/<flow>.md`.
-- Prepare environment, connect DB/Redis, start services, or create test data: README/runner -> `environment.md`.
-- Generate missing module contracts: README -> `module-generator-guide.md` -> `template.md`.
+- Execute tests: README -> `guides/runner.md` -> relevant `modules/<module>.md` or `flows/<flow>.md`.
+- Prepare environment, connect DB/Redis, start services, or create test data: README/runner -> `guides/environment.md`.
+- Generate missing module contracts: README -> `guides/module-generator.md` -> `templates/module.md`.
 - Write or validate reports: README/runner -> `reports/README.md`.
 
 ## Useful Commands

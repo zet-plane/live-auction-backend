@@ -94,6 +94,16 @@ rtk go run main.go server -c config.yaml
 
 如果本次任务明确要求连接线上数据库，可以不启动本地 MySQL；如果模块不依赖 Redis，可以不启动 Redis。
 
+### 本地依赖异常处理
+
+执行本地真实依赖测试时，agent 应先区分“依赖不可用”和“沙箱权限受限”：
+
+- 如果服务启动或 runner 连接 `127.0.0.1` 失败并出现 `operation not permitted`、`connect: operation not permitted` 等错误，优先按当前执行环境的权限规则申请在沙箱外重试；不要把它直接记录成业务失败。
+- 如果 `docker compose up -d redis` 失败并提示 `6379` 端口已被占用，先检查是否已有可用 Redis 监听在配置地址。端口占用不等于 Redis 不可用；必须用后端启动结果、runner Redis client、或安全的 Redis 探测命令确认。
+- 如果 `docker compose ps` 显示某个服务未运行，但端口已被其他容器或本机进程占用，应记录实际证据，并使用 `config.yaml` 中的目标地址验证可用性。
+- 本地服务启动成功后，必须用 HTTP 探测目标接口或 runner 首个场景确认服务可访问。
+- 如果 agent 为本次测试临时启动了后端服务，测试结束后应停止该进程并确认端口释放，避免影响下一次测试。
+
 ## 5. 配置检查
 
 启动服务前检查：
@@ -171,12 +181,13 @@ Redis key 前缀：agent:<target>:<YYYYMMDDHHMMSS>:
 
 ```text
 - 已读取 docs/agent-testing/README.md。
-- 已读取 docs/agent-testing/environment.md。
+- 已读取 docs/agent-testing/guides/environment.md。
 - 已读取目标模块或流程测试文档。
 - go test ./... 无编译错误，或已记录阻塞原因。
 - 目标模块单元测试通过，或已记录阻塞原因。
 - 数据库连接已确认可用。
 - Redis 连接已确认可用，如果模块依赖 Redis。
+- 本地 HTTP 服务已确认可访问；如果由 agent 临时启动，已记录测试结束后的停止方式。
 - 测试批次 ID 已生成。
 - 测试数据前缀已确定。
 - 清理策略已确定。

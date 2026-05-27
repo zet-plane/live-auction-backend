@@ -41,15 +41,15 @@ docs/agent-testing/modules/<module>.md
 必读：
 
 1. `docs/agent-testing/README.md`
-2. `docs/agent-testing/module-generator-guide.md`
-3. `docs/agent-testing/template.md`
+2. `docs/agent-testing/guides/module-generator.md`
+3. `docs/agent-testing/templates/module.md`
 4. 目标模块代码
 
 按需读取：
 
 - 已有相邻模块文档，例如 `bid.md`、`auction-session.md`，用于对齐风格和粒度。
-- `agent-runner-guide.md`，仅当生成内容需要引用执行流程或依赖策略细节。
-- `environment.md`，仅当生成内容涉及环境准备、连接数据库/Redis、启动服务或测试数据清理。
+- `docs/agent-testing/guides/runner.md`，仅当生成内容需要引用执行流程或依赖策略细节。
+- `docs/agent-testing/guides/environment.md`，仅当生成内容涉及环境准备、连接数据库/Redis、启动服务或测试数据清理。
 
 目标模块代码通常包括：
 
@@ -122,7 +122,7 @@ Agent 需要从代码中提取事实，而不是凭空写业务。
 
 ### 4. 生成文档结构
 
-生成的模块文档必须使用 `template.md` 的结构。
+生成的模块文档必须使用 `templates/module.md` 的结构。
 
 文档必须按“测试对象优先”组织，而不是按“测试方法优先”组织。
 

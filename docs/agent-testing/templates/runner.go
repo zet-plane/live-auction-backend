@@ -1,5 +1,5 @@
 // Agent testing Go runner template.
-// Copy this file to /tmp/agent-runner-<batch>/main.go, create go.mod (see go-runner-guide.md),
+// Copy this file to /tmp/agent-runner-<batch>/main.go, create go.mod (see guides/go-runner.md),
 // fill CONFIG and SCENARIOS, then: go run main.go
 // This file never enters the repository at runtime.
 

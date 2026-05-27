@@ -44,7 +44,7 @@ Agent 不应在本模块内测试：
 - 用户注册登录、token 生成和权限模型的完整契约；这些属于 `modules/user.md`。
 - 房间开播、房间排队、当前拍品推进的完整契约；这些属于 `modules/room.md` 或后续场次模块。
 - 支付、订单、物流、鉴定、真实第三方服务。
-- WebSocket 广播的完整连接和消息契约，当前代码只保留 TODO，尚未实现出价推送。
+- WebSocket 连接、ticket、心跳、房间广播和用户单播的完整消息契约；这些属于 `modules/ws.md`。出价模块内只验证 broadcaster 调用、事件类型和 payload 与出价状态一致。
 
 ## 4. 禁止事项
 
@@ -68,7 +68,7 @@ Agent 不应在本模块内测试：
 | 场景测试 | 使用真实接口链路、真实测试数据库和真实测试 Redis；按 `modules/item.md` 准备 ongoing 拍品 | 验证用户可见出价和排名链路 |
 | Agent 并发测试 | 使用真实 HTTP 并发请求、真实测试 Redis Lua 和真实测试数据库 | fake 无法证明原子出价、幂等和最高价最终一致性 |
 | 状态一致性测试 | 对比 HTTP 响应、MySQL `auction_items` / `bid_logs`、Redis state/ranking/names/idempotency key | 验证外部可见结果和内部状态一致 |
-| WebSocket 测试 | 当前出价模块不适用 | 代码中只有 `auction_ended` TODO，尚未实现出价或成交 WebSocket 广播 |
+| WebSocket 测试 | 出价模块内部分适用；完整连接测试转到 `modules/ws.md` | 使用 fake broadcaster 验证 `bid_success`、`user_outbid`、`auction_extended`、`auction_ended`、`order_created` 的事件生产和 payload |
 
 ## 6. 全局测试数据准备
 
@@ -135,13 +135,15 @@ Agent 不应在本模块内测试：
 - MySQL 排行榜按每个用户最高价 `MAX(price)` 聚合，按价格倒序返回，并左连接 `users` 表取昵称。
 - 排行榜 `page <= 0` 归一为 1，`page_size <= 0` 归一为 10，`page_size > 100` 归一为 100。
 - 排名 `rank` 从当前分页 offset + 1 开始。
+- 当商品规则 `deposit_amount > 0` 时，`PlaceBid` 会在 Redis Lua 执行前调用 `depositSvc.HasPaidDeposit`；未缴纳足额 `paid` 保证金时返回 `40005 deposit required`。
+- 当商品规则 `deposit_amount <= 0` 时，`PlaceBid` 不调用保证金检查。
 - 当前实现写 BidLog 是同步写入；代码内 TODO 标注高并发场景后续改为异步落库。
-- 当前实现只保留 WebSocket TODO，尚未广播出价成功、排名更新或竞拍结束事件。
+- 当前实现会通过 broadcaster 广播或单播 `bid_success`、`user_outbid`、`auction_extended`、`auction_ended`、`order_created`；未看到独立 `ranking_updated` 事件。
 
 根据当前代码结构推断：
 
 - 普通用户和商家用户都可能通过鉴权进入出价接口；当前 Service 没有限制身份必须为普通用户。
-- 当前出价接口没有校验出价用户是否缴纳保证金、是否被禁止出价或是否为拍品所属商家。
+- 当前出价接口已校验保证金；仍未看到报名、风控、黑名单、出价用户不能是拍品所属商家等限制。
 - 当前出价接口没有校验一口价时 `DealPrice` 是否使用 Redis 返回的 `CurrentPrice`；代码使用请求中的 `input.Price`。
 - 当前排行榜公开可见，不返回敏感 token 或联系方式。
 - Redis 成功但 MySQL `BidLog` 写入失败时，Redis 状态可能已经变化；当前代码没有回滚 Redis。
@@ -224,13 +226,14 @@ Agent 不应在本模块内测试：
 | DAO | `internal/app/item/dao/item.go`、`internal/app/item/dao/bid_log.go` | 查 item/rule、写 BidLog、更新一口价成交状态 |
 | Model | `internal/app/item/model/item.go`、`internal/app/item/model/bid_log.go` | `AuctionItem`、`AuctionRule`、`BidLog` |
 | Cache | `internal/app/item/cache/cache.go`、`internal/app/item/cache/bid.go` | Redis Lua 原子出价 |
-| WebSocket / 外部依赖 | 不适用 | 当前未实现 WebSocket 广播 |
+| Deposit | `internal/app/deposit/service/service.go` | `HasPaidDeposit` 校验足额 `paid` 保证金 |
+| WebSocket / 外部依赖 | `pkg/wsevent.Broadcaster` | 出价成功、被超越、自动延时、一口价成交和订单创建时发送事件；完整连接收发转到 `modules/ws.md` |
 
 #### 接口职责
 
-提交当前登录用户对指定 ongoing 拍品的一次出价。接口负责校验请求字段、调用 Redis Lua 原子更新实时竞拍状态、同步写 BidLog，并在达到一口价时结束拍品。
+提交当前登录用户对指定 ongoing 拍品的一次出价。接口负责校验请求字段、按规则校验保证金、调用 Redis Lua 原子更新实时竞拍状态、同步写 BidLog，并在达到一口价时结束拍品。
 
-接口不负责创建拍品、开始竞拍、保证金校验、支付、订单生成或 WebSocket 推送。
+接口不负责创建拍品、开始竞拍、支付保证金、订单生成或 WebSocket 连接管理；当前 Service 会通过 broadcaster 生产出价相关实时事件。
 
 #### 请求字段
 
@@ -254,6 +257,7 @@ Agent 不应在本模块内测试：
 
 - 登录用户 token。
 - 已 `published -> ongoing` 的测试拍品。
+- 如果 `deposit_amount > 0`，需准备当前出价用户的足额 `paid` 保证金；缺失、`pending` 或金额不足都应失败。
 - Redis state 已存在，包含起拍价、结束时间、出价数、参与人数和延时字段。
 - 合法请求体和非法请求体集合。
 - 一口价测试需使用配置了 `price_cap` 的独立拍品。
@@ -275,6 +279,7 @@ Agent 不应在本模块内测试：
 - 请求体缺字段或字段非法时返回 binding 参数错误。
 - `item_id` 不存在时返回 not found。
 - 商品状态不是 `ongoing` 时返回 invalid request。
+- 商品要求保证金但当前用户没有足额 `paid` 保证金时返回 `40005 deposit required`，且不得改变 Redis state/ranking 或写入 `BidLog`。
 - Redis state 不存在或竞拍已结束时返回 `40002 auction has ended`。
 - 出价小于等于当前价时返回 `40003 price too low`。
 - 出价不符合加价幅度时返回 `40004 invalid bid increment`。
@@ -691,8 +696,10 @@ Agent 不应在本模块内测试：
 | `auction:item:{item_id}:bidder_names` HASH | 非幂等成功出价 | HGET/HMGET 验证用户昵称 | 删除本批次 bidder_names |
 | `auction:item:{item_id}:idempotency:{key}` STRING | 非幂等成功出价 | GET 验证 bid ID，TTL 验证过期时间存在 | 删除本批次 idempotency keys |
 | MySQL `bid_logs` | 非幂等成功出价 | SQL 查询字段和数量 | 删除或标记本批次测试数据 |
-| WebSocket 出价成功消息 | 当前不适用 | 代码未实现 | 不适用 |
-| WebSocket 竞拍结束消息 | 当前不适用 | 代码仅 TODO | 不适用 |
+| WebSocket 出价成功消息 | 非幂等成功出价 | fake broadcaster 或真实 WebSocket 客户端验证 `bid_success` payload；完整连接转到 `modules/ws.md` | 关闭本批次连接 |
+| WebSocket 被超越消息 | 后一用户超越前一领先用户 | fake broadcaster 或真实 WebSocket 客户端验证 `user_outbid` 只发给前领先用户 | 关闭本批次连接 |
+| WebSocket 自动延时消息 | 临近结束出价触发自动延时 | fake broadcaster 或真实 WebSocket 客户端验证 `auction_extended` payload 与 Redis end_time 一致 | 关闭本批次连接 |
+| WebSocket 竞拍结束 / 订单消息 | 一口价成交或结算结束 | fake broadcaster 或真实 WebSocket 客户端验证 `auction_ended`、`order_created` payload 与 MySQL / HTTP 一致 | 关闭本批次连接 |
 | 外部第三方服务 | 不适用 | 出价模块不依赖第三方服务 | 不适用 |
 
 ## 16. 回归测试
@@ -724,7 +731,7 @@ Agent 不应在本模块内测试：
 | `idempotency_key` 字段 | 是 | 是 | 是 | 是 | 是 | 是 | 是 | 是 |
 | 自动延时 | 是 | 是 | 是 | 是 | 是 | 是 | 是 | 是 |
 | 一口价成交 | 是 | 是 | 是 | 是 | 是 | 是 | 是 | 是 |
-| WebSocket 推送 | 否 | 否 | 否 | 否 | 否 | 否 | 否 | 否 |
+| WebSocket 事件生产 | 是 | 否 | 是 | 是 | 是 | 是 | 是 | 是 |
 
 ## 18. 通过标准
 
@@ -751,14 +758,14 @@ Agent 不应在本模块内测试：
 
 - 当前是否允许商家身份参与出价？如果不允许，出价接口需要补身份限制，测试也应增加商家出价失败场景。
 - 当前是否需要校验出价用户不能是拍品所属商家？
-- 当前是否需要保证金、报名、风控或黑名单校验？代码当前未实现。
+- 当前是否需要报名、风控或黑名单校验？代码当前仅实现保证金校验。
 - Redis Lua 成功但 MySQL BidLog 写入失败时，期望语义是接口失败并允许状态不一致、补偿修复，还是应改为异步落库/重试/回滚？
 - 一口价 Redis 成功但 MySQL ended 更新失败时，是否需要补偿任务或事务化状态修复？
 - `GET /ranking` 是否应校验 item 存在？当前实现不存在也可能返回空榜。
 - 排行榜同价时是否需要稳定排序规则？当前 Redis/MySQL 都只明确按价格倒序。
 - 自动延时触发边界是否包含 `remaining == ExtendTriggerSec`？当前 Lua 使用 `<=`。
 - 达到 `price_cap` 时是否允许出价大于一口价？当前代码允许 `price >= price_cap` 并以请求价格成交。
-- WebSocket 出价成功、排名更新、竞拍结束事件是否属于本模块后续必须测试范围？当前代码未实现。
+- 是否需要独立 `ranking_updated` 事件？当前代码会广播 `bid_success` 和相关状态事件，但未看到独立排行榜刷新事件。
 
 ## 20. 失败报告格式
 

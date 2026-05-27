@@ -140,8 +140,8 @@ Service-layer tests use a `fakeStore` struct that implements `dao.Store` — no 
 
 When doing any testing task that uses `docs/agent-testing/`, **always read `docs/agent-testing/README.md` first**. Do not read other files in `docs/agent-testing/` until the README routes you there. The directory uses progressive disclosure: the README is the entry point, then the agent reads only the specific guide, module contract, flow contract, environment guide, template, or report guide needed for the current task.
 
-- Execute tests by following the README route to `agent-runner-guide.md`, then the relevant `modules/<module>.md` or `flows/<flow>.md`.
-- Prepare environment, connect DB/Redis, start services, or create test data only after the README or runner routes you to `environment.md`.
-- Generate missing module contracts only after the README routes you to `module-generator-guide.md`.
-- Read `template.md` only when generating or updating a module contract.
+- Execute tests by following the README route to `guides/runner.md`, then the relevant `modules/<module>.md` or `flows/<flow>.md`.
+- Prepare environment, connect DB/Redis, start services, or create test data only after the README or runner routes you to `guides/environment.md`.
+- Generate missing module contracts only after the README routes you to `guides/module-generator.md`.
+- Read `templates/module.md` only when generating or updating a module contract.
 - Read `reports/README.md` only when writing, updating, or validating a test report.
