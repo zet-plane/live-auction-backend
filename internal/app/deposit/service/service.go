@@ -10,6 +10,7 @@ import (
 	"github.com/zet-plane/live-auction-backend/internal/app/deposit/model"
 	usermodel "github.com/zet-plane/live-auction-backend/internal/app/user/model"
 	"github.com/zet-plane/live-auction-backend/pkg/errorx"
+	"github.com/zet-plane/live-auction-backend/pkg/logx"
 	"github.com/zet-plane/live-auction-backend/pkg/snowflake"
 )
 
@@ -22,7 +23,9 @@ func NewService(store dao.Store) *Service {
 	return &Service{store: store, now: time.Now}
 }
 
-func (s *Service) PayDeposit(current *usermodel.User, itemID string) (*dto.DepositDetail, error) {
+func (s *Service) PayDeposit(current *usermodel.User, itemID string) (result *dto.DepositDetail, err error) {
+	defer logx.Track("deposit.PayDeposit", "user_id", userID(current), "item_id", strings.TrimSpace(itemID))(&err)
+
 	if current == nil || strings.TrimSpace(current.ID) == "" {
 		return nil, errorx.ErrUnauthorized
 	}
@@ -74,7 +77,9 @@ func (s *Service) PayDeposit(current *usermodel.User, itemID string) (*dto.Depos
 	return dto.NewDepositDetail(deposit), nil
 }
 
-func (s *Service) GetMyDeposit(current *usermodel.User, itemID string) (*dto.DepositDetail, error) {
+func (s *Service) GetMyDeposit(current *usermodel.User, itemID string) (result *dto.DepositDetail, err error) {
+	defer logx.Track("deposit.GetMyDeposit", "user_id", userID(current), "item_id", strings.TrimSpace(itemID))(&err)
+
 	if current == nil || strings.TrimSpace(current.ID) == "" {
 		return nil, errorx.ErrUnauthorized
 	}
@@ -89,7 +94,13 @@ func (s *Service) GetMyDeposit(current *usermodel.User, itemID string) (*dto.Dep
 	return dto.NewDepositDetail(deposit), nil
 }
 
-func (s *Service) HasPaidDeposit(itemID, userID string, requiredAmount int64) (bool, error) {
+func (s *Service) HasPaidDeposit(itemID, userID string, requiredAmount int64) (ok bool, err error) {
+	defer logx.Track("deposit.HasPaidDeposit",
+		"item_id", strings.TrimSpace(itemID),
+		"user_id", strings.TrimSpace(userID),
+		"required_amount", requiredAmount,
+	)(&err)
+
 	if requiredAmount <= 0 {
 		return true, nil
 	}
@@ -106,4 +117,11 @@ func (s *Service) HasPaidDeposit(itemID, userID string, requiredAmount int64) (b
 		return false, err
 	}
 	return deposit.Status == model.DepositPaid && deposit.Amount >= requiredAmount, nil
+}
+
+func userID(current *usermodel.User) string {
+	if current == nil {
+		return ""
+	}
+	return current.ID
 }

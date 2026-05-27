@@ -8,29 +8,49 @@ import (
 // ScanExpiredOrders updates pending orders past their ExpiredAt to expired.
 // Called by cron every 5 minutes. Processes up to 100 orders per run.
 func (s *Service) ScanExpiredOrders() {
-	orders, err := s.store.ListExpiredPendingOrders(s.now(), 100)
-	if err != nil {
-		logx.Errorf("[order] ScanExpiredOrders list error: %v", err)
+	var err error
+	updatedCount := 0
+	finish := logx.Track("order.ScanExpiredOrders")
+	defer func() {
+		finish(&err, "updated_count", updatedCount)
+	}()
+
+	orders, listErr := s.store.ListExpiredPendingOrders(s.now(), 100)
+	if listErr != nil {
+		err = listErr
+		logx.Errorf("[order] ScanExpiredOrders list error: %v", listErr)
 		return
 	}
 	for _, o := range orders {
 		if _, err := s.store.UpdateOrderStatus(o.ID, model.OrderPending, model.OrderExpired); err != nil {
 			logx.Errorf("[order] ScanExpiredOrders update %s error: %v", o.ID, err)
+			continue
 		}
+		updatedCount++
 	}
 }
 
 // ScanCompensation creates orders for ended auction items that have no order yet.
 // Called by cron every 10 minutes as a safety net for CreateOrder failures.
 func (s *Service) ScanCompensation() {
-	items, err := s.store.ListEndedItemsWithoutOrder(50)
-	if err != nil {
-		logx.Errorf("[order] ScanCompensation list error: %v", err)
+	var err error
+	createdCount := 0
+	finish := logx.Track("order.ScanCompensation")
+	defer func() {
+		finish(&err, "created_count", createdCount)
+	}()
+
+	items, listErr := s.store.ListEndedItemsWithoutOrder(50)
+	if listErr != nil {
+		err = listErr
+		logx.Errorf("[order] ScanCompensation list error: %v", listErr)
 		return
 	}
 	for _, item := range items {
 		if _, err := s.CreateOrder(item.ItemID, item.WinnerID, item.DealPrice); err != nil {
 			logx.Errorf("[order] ScanCompensation create order for item %s error: %v", item.ItemID, err)
+			continue
 		}
+		createdCount++
 	}
 }

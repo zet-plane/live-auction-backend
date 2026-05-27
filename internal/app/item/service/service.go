@@ -12,6 +12,7 @@ import (
 	orderservice "github.com/zet-plane/live-auction-backend/internal/app/order/service"
 	usermodel "github.com/zet-plane/live-auction-backend/internal/app/user/model"
 	"github.com/zet-plane/live-auction-backend/pkg/errorx"
+	"github.com/zet-plane/live-auction-backend/pkg/logx"
 	"github.com/zet-plane/live-auction-backend/pkg/snowflake"
 	"github.com/zet-plane/live-auction-backend/pkg/wsevent"
 )
@@ -42,7 +43,13 @@ func NewService(store dao.Store, policy dto.AuctionPolicy, cache itemcache.Cache
 	}
 }
 
-func (s *Service) CreateItem(current *usermodel.User, input dto.CreateItemInput) (*dto.CreateItemResult, error) {
+func (s *Service) CreateItem(current *usermodel.User, input dto.CreateItemInput) (result *dto.CreateItemResult, err error) {
+	var itemID string
+	finish := logx.Track("item.CreateItem", "merchant_id", userID(current), "room_id", strings.TrimSpace(input.RoomID))
+	defer func() {
+		finish(&err, "item_id", itemID)
+	}()
+
 	if !isMerchant(current) {
 		return nil, errorx.ErrUnauthorized
 	}
@@ -51,7 +58,7 @@ func (s *Service) CreateItem(current *usermodel.User, input dto.CreateItemInput)
 		return nil, err
 	}
 
-	itemID := "item_" + snowflake.MakeUUID()
+	itemID = "item_" + snowflake.MakeUUID()
 	ruleID := "rule_" + snowflake.MakeUUID()
 	item := &model.AuctionItem{
 		ID:          itemID,
@@ -80,8 +87,15 @@ func (s *Service) CreateItem(current *usermodel.User, input dto.CreateItemInput)
 	return &dto.CreateItemResult{ItemID: itemID, RuleID: ruleID}, nil
 }
 
-func (s *Service) ListItems(query dto.ListItemsInput) (*dto.ItemListResult, error) {
+func (s *Service) ListItems(query dto.ListItemsInput) (result *dto.ItemListResult, err error) {
 	query = normalizeListInput(query)
+	defer logx.Track("item.ListItems",
+		"status", query.Status,
+		"merchant_id", query.MerchantID,
+		"page", query.Page,
+		"page_size", query.PageSize,
+	)(&err)
+
 	items, total, err := s.store.ListItems(query)
 	if err != nil {
 		return nil, err
@@ -105,12 +119,20 @@ func (s *Service) ListItems(query dto.ListItemsInput) (*dto.ItemListResult, erro
 	}, nil
 }
 
-func (s *Service) ListMerchantItems(current *usermodel.User, query dto.ListItemsInput) (*dto.MerchantItemListResult, error) {
+func (s *Service) ListMerchantItems(current *usermodel.User, query dto.ListItemsInput) (result *dto.MerchantItemListResult, err error) {
+	finish := logx.Track("item.ListMerchantItems",
+		"merchant_id", userID(current),
+	)
+	defer func() {
+		finish(&err, "status", query.Status, "page", query.Page, "page_size", query.PageSize)
+	}()
+
 	if !isMerchant(current) {
 		return nil, errorx.ErrUnauthorized
 	}
 	query.MerchantID = current.ID
 	query = normalizeListInput(query)
+
 	items, total, err := s.store.ListItems(query)
 	if err != nil {
 		return nil, err
@@ -143,22 +165,27 @@ func (s *Service) ListMerchantItems(current *usermodel.User, query dto.ListItems
 	}, nil
 }
 
-func (s *Service) GetItem(itemID string) (*dto.ItemDetailDTO, error) {
-	item, rule, err := s.store.FindItemWithRule(strings.TrimSpace(itemID))
+func (s *Service) GetItem(itemID string) (result *dto.ItemDetailDTO, err error) {
+	itemID = strings.TrimSpace(itemID)
+	defer logx.Track("item.GetItem", "item_id", itemID)(&err)
+
+	item, rule, err := s.store.FindItemWithRule(itemID)
 	if err != nil {
 		return nil, err
 	}
 	now := s.now()
-	result := dto.NewItemDetailDTO(item, rule, s.policy, now)
+	detail := dto.NewItemDetailDTO(item, rule, s.policy, now)
 	if item.Status == model.ItemOngoing && s.cache != nil {
 		if state, ok, _ := s.cache.GetAuctionState(context.Background(), item.ID); ok {
-			applyStateToDetail(&result, state, now)
+			applyStateToDetail(&detail, state, now)
 		}
 	}
-	return &result, nil
+	return &detail, nil
 }
 
-func (s *Service) UpdateItem(current *usermodel.User, itemID string, input dto.CreateItemInput) error {
+func (s *Service) UpdateItem(current *usermodel.User, itemID string, input dto.CreateItemInput) (err error) {
+	defer logx.Track("item.UpdateItem", "merchant_id", userID(current), "item_id", strings.TrimSpace(itemID))(&err)
+
 	item, rule, err := s.findMerchantItem(current, itemID)
 	if err != nil {
 		return err
@@ -184,7 +211,9 @@ func (s *Service) UpdateItem(current *usermodel.User, itemID string, input dto.C
 	return s.store.UpdateItemWithRule(item, rule)
 }
 
-func (s *Service) DeleteItem(current *usermodel.User, itemID string) error {
+func (s *Service) DeleteItem(current *usermodel.User, itemID string) (err error) {
+	defer logx.Track("item.DeleteItem", "merchant_id", userID(current), "item_id", strings.TrimSpace(itemID))(&err)
+
 	item, _, err := s.findMerchantItem(current, itemID)
 	if err != nil {
 		return err
@@ -195,7 +224,9 @@ func (s *Service) DeleteItem(current *usermodel.User, itemID string) error {
 	return s.store.DeleteItem(item.ID)
 }
 
-func (s *Service) PublishItem(current *usermodel.User, itemID string) error {
+func (s *Service) PublishItem(current *usermodel.User, itemID string) (err error) {
+	defer logx.Track("item.PublishItem", "merchant_id", userID(current), "item_id", strings.TrimSpace(itemID))(&err)
+
 	item, rule, err := s.findMerchantItem(current, itemID)
 	if err != nil {
 		return err
@@ -213,7 +244,9 @@ func (s *Service) PublishItem(current *usermodel.User, itemID string) error {
 	return nil
 }
 
-func (s *Service) StartItem(current *usermodel.User, itemID string) error {
+func (s *Service) StartItem(current *usermodel.User, itemID string) (err error) {
+	defer logx.Track("item.StartItem", "merchant_id", userID(current), "item_id", strings.TrimSpace(itemID))(&err)
+
 	item, rule, err := s.findMerchantItem(current, itemID)
 	if err != nil {
 		return err
@@ -251,7 +284,9 @@ func (s *Service) StartItem(current *usermodel.User, itemID string) error {
 	return nil
 }
 
-func (s *Service) CancelItem(current *usermodel.User, itemID string) error {
+func (s *Service) CancelItem(current *usermodel.User, itemID string) (err error) {
+	defer logx.Track("item.CancelItem", "merchant_id", userID(current), "item_id", strings.TrimSpace(itemID))(&err)
+
 	item, rule, err := s.findMerchantItem(current, itemID)
 	if err != nil {
 		return err
@@ -294,6 +329,13 @@ func isMerchant(current *usermodel.User) bool {
 	return current != nil && current.Identity == usermodel.IdentityMerchant
 }
 
+func userID(current *usermodel.User) string {
+	if current == nil {
+		return ""
+	}
+	return current.ID
+}
+
 func normalizeCreateInput(input dto.CreateItemInput) dto.CreateItemInput {
 	input.RoomID = strings.TrimSpace(input.RoomID)
 	input.Title = strings.TrimSpace(input.Title)
@@ -334,8 +376,19 @@ func normalizeListInput(query dto.ListItemsInput) dto.ListItemsInput {
 }
 
 func (s *Service) EndExpiredAuctions() {
-	items, err := s.store.ListOngoingItemsPastEndTime(s.now(), 50)
-	if err != nil || len(items) == 0 {
+	var err error
+	endedCount := 0
+	finish := logx.Track("item.EndExpiredAuctions")
+	defer func() {
+		finish(&err, "ended_count", endedCount)
+	}()
+
+	items, listErr := s.store.ListOngoingItemsPastEndTime(s.now(), 50)
+	if listErr != nil {
+		err = listErr
+		return
+	}
+	if len(items) == 0 {
 		return
 	}
 	for _, iwr := range items {
@@ -352,8 +405,10 @@ func (s *Service) EndExpiredAuctions() {
 		item.WinnerID = winnerID
 		item.DealPrice = dealPrice
 		if err := s.store.UpdateItemWithRule(item, rule); err != nil {
+			logx.Warnw("item.EndExpiredAuctions update failed", "item_id", item.ID, "err", err)
 			continue
 		}
+		endedCount++
 		if s.cache != nil {
 			_ = s.cache.DeleteAuctionState(context.Background(), item.ID)
 		}
@@ -371,7 +426,7 @@ func (s *Service) EndExpiredAuctions() {
 			var orderID string
 			if order, err := s.orderSvc.CreateOrder(item.ID, winnerID, dealPrice); err != nil {
 				// non-fatal: compensation cron will retry
-				_ = err
+				logx.Warnw("item.EndExpiredAuctions create order failed", "item_id", item.ID, "winner_id", winnerID, "err", err)
 			} else if order != nil {
 				orderID = order.ID
 			}

@@ -2,6 +2,7 @@ package logx
 
 import (
 	"sync"
+	"time"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -18,6 +19,7 @@ type LogP struct {
 var (
 	rootLogger *LogP
 	setupOnce  sync.Once
+	nopLogger  = zap.NewNop().Sugar()
 )
 
 func WithZapConfig(config *zap.Config) Option {
@@ -80,6 +82,9 @@ func Stop() {
 
 // SetLevel changes the log level at runtime.
 func SetLevel(level zapcore.Level) {
+	if rootLogger == nil {
+		SetUp()
+	}
 	rootLogger.zapConf.Level.SetLevel(level)
 }
 
@@ -106,23 +111,49 @@ func defaultConfig() *zap.Config {
 	}
 }
 
+func sugar() *zap.SugaredLogger {
+	if rootLogger == nil || rootLogger.logger == nil {
+		return nopLogger
+	}
+	return rootLogger.logger.Sugar()
+}
+
+// Track logs a service operation start and returns a completion logger.
+func Track(op string, fields ...any) func(*error, ...any) {
+	start := time.Now()
+	base := append([]any{"op", op}, fields...)
+	Infow("service started", base...)
+	return func(errp *error, extra ...any) {
+		kv := make([]any, 0, len(base)+len(extra)+4)
+		kv = append(kv, base...)
+		kv = append(kv, extra...)
+		kv = append(kv, "elapsed", time.Since(start))
+		if errp != nil && *errp != nil {
+			kv = append(kv, "err", *errp)
+			Warnw("service failed", kv...)
+			return
+		}
+		Infow("service completed", kv...)
+	}
+}
+
 // Package-level logging functions — these call the global root logger.
 
-func Debug(v ...any)                       { rootLogger.logger.Sugar().Debug(v...) }
-func Info(v ...any)                        { rootLogger.logger.Sugar().Info(v...) }
-func Warn(v ...any)                        { rootLogger.logger.Sugar().Warn(v...) }
-func Error(v ...any)                       { rootLogger.logger.Sugar().Error(v...) }
-func Panic(v ...any)                       { rootLogger.logger.Sugar().Panic(v...) }
-func Fatal(v ...any)                       { rootLogger.logger.Sugar().Fatal(v...) }
-func Debugf(format string, v ...any)       { rootLogger.logger.Sugar().Debugf(format, v...) }
-func Infof(format string, v ...any)        { rootLogger.logger.Sugar().Infof(format, v...) }
-func Warnf(format string, v ...any)        { rootLogger.logger.Sugar().Warnf(format, v...) }
-func Errorf(format string, v ...any)       { rootLogger.logger.Sugar().Errorf(format, v...) }
-func Panicf(format string, v ...any)       { rootLogger.logger.Sugar().Panicf(format, v...) }
-func Fatalf(format string, v ...any)       { rootLogger.logger.Sugar().Fatalf(format, v...) }
-func Debugw(msg string, kv ...any)         { rootLogger.logger.Sugar().Debugw(msg, kv...) }
-func Infow(msg string, kv ...any)          { rootLogger.logger.Sugar().Infow(msg, kv...) }
-func Warnw(msg string, kv ...any)          { rootLogger.logger.Sugar().Warnw(msg, kv...) }
-func Errorw(msg string, kv ...any)         { rootLogger.logger.Sugar().Errorw(msg, kv...) }
-func Panicw(msg string, kv ...any)         { rootLogger.logger.Sugar().Panicw(msg, kv...) }
-func Fatalw(msg string, kv ...any)         { rootLogger.logger.Sugar().Fatalw(msg, kv...) }
+func Debug(v ...any)                 { sugar().Debug(v...) }
+func Info(v ...any)                  { sugar().Info(v...) }
+func Warn(v ...any)                  { sugar().Warn(v...) }
+func Error(v ...any)                 { sugar().Error(v...) }
+func Panic(v ...any)                 { sugar().Panic(v...) }
+func Fatal(v ...any)                 { sugar().Fatal(v...) }
+func Debugf(format string, v ...any) { sugar().Debugf(format, v...) }
+func Infof(format string, v ...any)  { sugar().Infof(format, v...) }
+func Warnf(format string, v ...any)  { sugar().Warnf(format, v...) }
+func Errorf(format string, v ...any) { sugar().Errorf(format, v...) }
+func Panicf(format string, v ...any) { sugar().Panicf(format, v...) }
+func Fatalf(format string, v ...any) { sugar().Fatalf(format, v...) }
+func Debugw(msg string, kv ...any)   { sugar().Debugw(msg, kv...) }
+func Infow(msg string, kv ...any)    { sugar().Infow(msg, kv...) }
+func Warnw(msg string, kv ...any)    { sugar().Warnw(msg, kv...) }
+func Errorw(msg string, kv ...any)   { sugar().Errorw(msg, kv...) }
+func Panicw(msg string, kv ...any)   { sugar().Panicw(msg, kv...) }
+func Fatalw(msg string, kv ...any)   { sugar().Fatalw(msg, kv...) }

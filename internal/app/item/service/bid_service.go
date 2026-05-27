@@ -11,14 +11,23 @@ import (
 	"github.com/zet-plane/live-auction-backend/internal/app/item/model"
 	usermodel "github.com/zet-plane/live-auction-backend/internal/app/user/model"
 	"github.com/zet-plane/live-auction-backend/pkg/errorx"
+	"github.com/zet-plane/live-auction-backend/pkg/logx"
 	"github.com/zet-plane/live-auction-backend/pkg/snowflake"
 	"github.com/zet-plane/live-auction-backend/pkg/wsevent"
 )
 
 var ErrDepositRequired = errorx.New(http.StatusBadRequest, 40005, "deposit required")
 
-func (s *Service) PlaceBid(current *usermodel.User, itemID string, input dto.PlaceBidInput) (*dto.PlaceBidResult, error) {
-	item, rule, err := s.store.FindItemWithRule(strings.TrimSpace(itemID))
+func (s *Service) PlaceBid(current *usermodel.User, itemID string, input dto.PlaceBidInput) (result *dto.PlaceBidResult, err error) {
+	itemID = strings.TrimSpace(itemID)
+	var bidID string
+	status := ""
+	finish := logx.Track("item.PlaceBid", "user_id", userID(current), "item_id", itemID, "price", input.Price)
+	defer func() {
+		finish(&err, "bid_id", bidID, "status", status)
+	}()
+
+	item, rule, err := s.store.FindItemWithRule(itemID)
 	if err != nil {
 		return nil, err
 	}
@@ -41,7 +50,7 @@ func (s *Service) PlaceBid(current *usermodel.User, itemID string, input dto.Pla
 		return nil, errorx.ErrInternal
 	}
 
-	bidID := "bid_" + snowflake.MakeUUID()
+	bidID = "bid_" + snowflake.MakeUUID()
 	luaResult, err := s.cache.PlaceBidLua(context.Background(), item.ID, itemcache.BidLuaArgs{
 		UserID:            current.ID,
 		UserName:          input.UserName,
@@ -63,6 +72,8 @@ func (s *Service) PlaceBid(current *usermodel.User, itemID string, input dto.Pla
 
 	switch luaResult.Code {
 	case 1: // idempotent: already bid, return current state without writing BidLog again
+		bidID = luaResult.BidID
+		status = "ongoing"
 		return &dto.PlaceBidResult{
 			BidID:        luaResult.BidID,
 			CurrentPrice: luaResult.CurrentPrice,
@@ -129,7 +140,7 @@ func (s *Service) PlaceBid(current *usermodel.User, itemID string, input dto.Pla
 		}
 	}
 
-	status := "ongoing"
+	status = "ongoing"
 	if luaResult.IsCapped {
 		item.Status = model.ItemEnded
 		item.WinnerID = current.ID
@@ -178,7 +189,8 @@ func (s *Service) PlaceBid(current *usermodel.User, itemID string, input dto.Pla
 	}, nil
 }
 
-func (s *Service) GetRanking(itemID string, page, pageSize int) (*dto.RankingResult, error) {
+func (s *Service) GetRanking(itemID string, page, pageSize int) (result *dto.RankingResult, err error) {
+	itemID = strings.TrimSpace(itemID)
 	if page <= 0 {
 		page = 1
 	}
@@ -188,12 +200,14 @@ func (s *Service) GetRanking(itemID string, page, pageSize int) (*dto.RankingRes
 	case pageSize <= 0:
 		pageSize = 10
 	}
+	defer logx.Track("item.GetRanking", "item_id", itemID, "page", page, "page_size", pageSize)(&err)
+
 	offset := (page - 1) * pageSize
 
 	var entries []dto.BidderPrice
 	if s.cache != nil {
 		var err error
-		entries, err = s.cache.GetRanking(context.Background(), strings.TrimSpace(itemID), offset, pageSize)
+		entries, err = s.cache.GetRanking(context.Background(), itemID, offset, pageSize)
 		if err != nil {
 			entries = nil // degrade to MySQL fallback; read errors are non-fatal
 		}
@@ -202,7 +216,7 @@ func (s *Service) GetRanking(itemID string, page, pageSize int) (*dto.RankingRes
 	if len(entries) == 0 {
 		// TODO: ListBidRanking takes a single limit; we pass offset+pageSize and slice in Go.
 		// For large page numbers this is an O(page) query — acceptable given leaderboard caps.
-		all, err := s.store.ListBidRanking(strings.TrimSpace(itemID), offset+pageSize)
+		all, err := s.store.ListBidRanking(itemID, offset+pageSize)
 		if err != nil {
 			return nil, err
 		}

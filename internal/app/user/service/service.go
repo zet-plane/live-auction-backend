@@ -10,6 +10,7 @@ import (
 	"github.com/zet-plane/live-auction-backend/internal/app/user/model"
 	"github.com/zet-plane/live-auction-backend/pkg/crypto"
 	"github.com/zet-plane/live-auction-backend/pkg/errorx"
+	"github.com/zet-plane/live-auction-backend/pkg/logx"
 	"github.com/zet-plane/live-auction-backend/pkg/snowflake"
 )
 
@@ -32,8 +33,10 @@ func NewService(store dao.Store, opts Options) *Service {
 	}
 }
 
-func (s *Service) Register(input dto.RegisterInput) (*dto.LoginResult, error) {
+func (s *Service) Register(input dto.RegisterInput) (result *dto.LoginResult, err error) {
 	account := normalizeAccount(input.Account)
+	defer logx.Track("user.Register", "account", account)(&err)
+
 	password := strings.TrimSpace(input.Password)
 	if !validAccount(account) || !validPassword(password) {
 		return nil, errorx.ErrInvalidRequest
@@ -58,8 +61,14 @@ func (s *Service) Register(input dto.RegisterInput) (*dto.LoginResult, error) {
 	return s.loginResult(u)
 }
 
-func (s *Service) Login(account string, password string) (*dto.LoginResult, error) {
+func (s *Service) Login(account string, password string) (result *dto.LoginResult, err error) {
 	account = normalizeAccount(account)
+	var userID string
+	finish := logx.Track("user.Login", "account", account)
+	defer func() {
+		finish(&err, "user_id", userID)
+	}()
+
 	password = strings.TrimSpace(password)
 	if !validAccount(account) || !validPassword(password) {
 		return nil, errorx.ErrInvalidRequest
@@ -75,11 +84,18 @@ func (s *Service) Login(account string, password string) (*dto.LoginResult, erro
 	if !crypto.PasswordCompare(password, u.Password, account) {
 		return nil, errorx.ErrUnauthorized
 	}
+	userID = u.ID
 	return s.loginResult(u)
 }
 
-func (s *Service) Authenticate(token string) (*model.User, error) {
-	userID, err := s.tokens.Verify(token, s.now())
+func (s *Service) Authenticate(token string) (result *model.User, err error) {
+	var userID string
+	finish := logx.Track("user.Authenticate")
+	defer func() {
+		finish(&err, "user_id", userID)
+	}()
+
+	userID, err = s.tokens.Verify(token, s.now())
 	if err != nil {
 		return nil, err
 	}
@@ -90,7 +106,15 @@ func (s *Service) Authenticate(token string) (*model.User, error) {
 	return u, err
 }
 
-func (s *Service) UpdateProfile(u *model.User, input dto.UpdateProfileInput) error {
+func (s *Service) UpdateProfile(u *model.User, input dto.UpdateProfileInput) (err error) {
+	defer logx.Track("user.UpdateProfile",
+		"user_id", userID(u),
+		"has_name", input.Name != nil,
+		"has_avatar_url", input.AvatarURL != nil,
+		"has_motto", input.Motto != nil,
+		"has_identity", input.Identity != nil,
+	)(&err)
+
 	if input.Name != nil {
 		u.Name = strings.TrimSpace(*input.Name)
 	}
@@ -109,7 +133,9 @@ func (s *Service) UpdateProfile(u *model.User, input dto.UpdateProfileInput) err
 	return s.store.UpdateUser(u)
 }
 
-func (s *Service) DeleteMe(u *model.User) error {
+func (s *Service) DeleteMe(u *model.User) (err error) {
+	defer logx.Track("user.DeleteMe", "user_id", userID(u))(&err)
+
 	if err := s.store.DeleteUser(u.ID); err != nil {
 		if errors.Is(err, errorx.ErrNotFound) {
 			return errorx.ErrNotFound
@@ -117,6 +143,13 @@ func (s *Service) DeleteMe(u *model.User) error {
 		return err
 	}
 	return nil
+}
+
+func userID(u *model.User) string {
+	if u == nil {
+		return ""
+	}
+	return u.ID
 }
 
 func (s *Service) loginResult(u *model.User) (*dto.LoginResult, error) {
