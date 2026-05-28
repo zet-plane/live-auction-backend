@@ -20,6 +20,7 @@ import (
 	"github.com/zet-plane/live-auction-backend/internal/core/cache"
 	"github.com/zet-plane/live-auction-backend/internal/core/database"
 	"github.com/zet-plane/live-auction-backend/internal/core/kernel"
+	"github.com/zet-plane/live-auction-backend/internal/core/observability"
 	appCron "github.com/zet-plane/live-auction-backend/internal/cron"
 	"github.com/zet-plane/live-auction-backend/internal/middleware/gw"
 	"github.com/zet-plane/live-auction-backend/internal/middleware/response"
@@ -35,10 +36,36 @@ var StartCmd = &cobra.Command{
 	Example: "live-auction server -c config.yaml",
 	PreRun: func(cmd *cobra.Command, args []string) {
 		config.LoadConfig(configPath)
+		cfg := config.GetConfig()
+		if cfg.Observability.Logs.Format == "json" {
+			logx.SetUp(logx.WithZapConfig(logx.JSONConfig()))
+			return
+		}
 		logx.SetUp()
 	},
 	Run: func(cmd *cobra.Command, args []string) {
 		cfg := config.GetConfig()
+
+		shutdown, err := observability.Setup(context.Background(), cfg.Observability)
+		if err != nil {
+			logx.Errorf("observability setup failed: %v", err)
+			shutdown = func(context.Context) error { return nil }
+		}
+		defer func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := shutdown(ctx); err != nil {
+				logx.Errorf("observability shutdown failed: %v", err)
+			}
+		}()
+
+		rec, err := observability.NewRecorder()
+		if err != nil {
+			logx.Errorf("observability recorder setup failed: %v", err)
+			observability.SetDefaultRecorder(nil)
+		} else {
+			observability.SetDefaultRecorder(rec)
+		}
 
 		db, err := database.Open(database.Config{
 			Driver:          cfg.Database.Driver,
@@ -81,6 +108,7 @@ func buildEngine(cfg *config.Config, db *gorm.DB, rdb *redis.Client) (*kernel.En
 	f := flamego.New()
 	f.Use(
 		flamego.Recovery(),
+		observability.HTTPMiddleware(observability.DefaultRecorder()),
 		gw.RequestLog(),
 		flamego.Renderer(),
 		cors.CORS(cors.Options{
