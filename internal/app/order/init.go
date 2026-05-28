@@ -12,6 +12,7 @@ import (
 	"github.com/zet-plane/live-auction-backend/internal/app/order/router"
 	"github.com/zet-plane/live-auction-backend/internal/app/order/service"
 	"github.com/zet-plane/live-auction-backend/internal/core/kernel"
+	"github.com/zet-plane/live-auction-backend/internal/core/observability"
 )
 
 // Svc is the package-level service instance exported for use by item and payment modules.
@@ -39,8 +40,8 @@ func (o *Order) Load(engine *kernel.Engine) error {
 	handler.Init(Svc)
 	router.RegisterRoutes(engine.Flame)
 
-	engine.Cron.AddFunc("@every 5m", func() { Svc.ScanExpiredOrders(context.Background()) })
-	engine.Cron.AddFunc("@every 10m", func() { Svc.ScanCompensation(context.Background()) })
+	engine.Cron.AddFunc("@every 5m", observability.WrapCron("order.scan_expired_orders", Svc.ScanExpiredOrders))
+	engine.Cron.AddFunc("@every 10m", observability.WrapCron("order.scan_compensation", Svc.ScanCompensation))
 	return nil
 }
 

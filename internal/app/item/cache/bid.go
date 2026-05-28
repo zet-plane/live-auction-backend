@@ -4,9 +4,14 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 	"github.com/zet-plane/live-auction-backend/internal/app/item/dto"
+	"github.com/zet-plane/live-auction-backend/internal/core/observability"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 )
 
 const bidLuaScript = `
@@ -102,6 +107,10 @@ func idempotencyKey(itemID, key string) string {
 }
 
 func (c *RedisCache) PlaceBidLua(ctx context.Context, itemID string, args BidLuaArgs) (*BidLuaResult, error) {
+	ctx, span := otel.Tracer("github.com/zet-plane/live-auction-backend/redis").Start(ctx, "redis.place_bid_lua")
+	defer span.End()
+	start := time.Now()
+
 	keys := []string{
 		itemStateKey(itemID),
 		rankingKey(itemID),
@@ -125,16 +134,23 @@ func (c *RedisCache) PlaceBidLua(ctx context.Context, itemID string, args BidLua
 
 	res, err := bidScript.Run(ctx, c.client, keys, argv...).Slice()
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		observability.DefaultRecorder().RedisLua(ctx, observability.RedisLuaMetric{Code: "error", Duration: time.Since(start)})
 		return nil, err
 	}
 	if len(res) < 8 {
-		return nil, fmt.Errorf("lua result length unexpected: %d", len(res))
+		err := fmt.Errorf("lua result length unexpected: %d", len(res))
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		observability.DefaultRecorder().RedisLua(ctx, observability.RedisLuaMetric{Code: "error", Duration: time.Since(start)})
+		return nil, err
 	}
 
 	toI64 := func(v any) int64 { n, _ := v.(int64); return n }
 	toStr := func(v any) string { s, _ := v.(string); return s }
 
-	return &BidLuaResult{
+	result := &BidLuaResult{
 		Code:             int(toI64(res[0])),
 		BidID:            toStr(res[1]),
 		CurrentPrice:     toI64(res[2]),
@@ -143,7 +159,10 @@ func (c *RedisCache) PlaceBidLua(ctx context.Context, itemID string, args BidLua
 		IsExtended:       toI64(res[5]) == 1,
 		IsCapped:         toI64(res[6]) == 1,
 		PrevLeaderUserID: toStr(res[7]),
-	}, nil
+	}
+	span.SetAttributes(attribute.String("auction.item_id", itemID), attribute.Int("auction.lua.code", result.Code))
+	observability.DefaultRecorder().RedisLua(ctx, observability.RedisLuaMetric{Code: strconv.Itoa(result.Code), Duration: time.Since(start)})
+	return result, nil
 }
 
 func (c *RedisCache) GetRanking(ctx context.Context, itemID string, offset, limit int) ([]dto.BidderPrice, error) {

@@ -16,6 +16,7 @@ import (
 	orderapp "github.com/zet-plane/live-auction-backend/internal/app/order"
 	wsapp "github.com/zet-plane/live-auction-backend/internal/app/ws"
 	"github.com/zet-plane/live-auction-backend/internal/core/kernel"
+	"github.com/zet-plane/live-auction-backend/internal/core/observability"
 )
 
 var ErrEmptyDatabase = errors.New("database pointer is nil")
@@ -61,7 +62,7 @@ func (i *Item) Load(engine *kernel.Engine) error {
 	svc := service.NewService(store, policy, c, orderapp.Svc, depositapp.Svc, wsapp.Hub)
 	handler.Init(svc)
 	router.RegisterRoutes(engine.Flame)
-	engine.Cron.AddFunc("@every 1m", func() { svc.EndExpiredAuctions(context.Background()) })
+	engine.Cron.AddFunc("@every 1m", observability.WrapCron("item.end_expired_auctions", svc.EndExpiredAuctions))
 	return nil
 }
 

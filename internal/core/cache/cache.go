@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/redis/go-redis/extra/redisotel/v9"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -23,6 +24,12 @@ func Open(cfg Config) (*redis.Client, error) {
 		Password: cfg.Password,
 		DB:       cfg.DB,
 	})
+	if err := redisotel.InstrumentTracing(client); err != nil {
+		return nil, fmt.Errorf("instrument redis tracing: %w", err)
+	}
+	if err := redisotel.InstrumentMetrics(client); err != nil {
+		return nil, fmt.Errorf("instrument redis metrics: %w", err)
+	}
 
 	if err := client.Ping(context.Background()).Err(); err != nil {
 		return nil, fmt.Errorf("ping redis: %w", err)
