@@ -23,3 +23,16 @@ auction:
   auto_extend_sec: 10
   max_extend_count: 6
   max_total_extend_sec: 300
+observability:
+  enabled: true
+  service_name: live-auction-backend
+  service_version: 0.1.0
+  environment: local
+  otlp_endpoint: 127.0.0.1:4317
+  otlp_insecure: true
+  trace_sample_ratio: 1.0
+  metrics_interval: 15s
+  logs:
+    format: json
+    output: stdout
+    include_trace_context: true

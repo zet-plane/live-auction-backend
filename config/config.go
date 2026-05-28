@@ -79,6 +79,10 @@ func (c *GlobalConfig) AuthTokenTTL() time.Duration {
 	return parseDuration(c.Auth.TokenTTL, 24*time.Hour)
 }
 
+func (c *GlobalConfig) ObservabilityMetricsInterval() time.Duration {
+	return parseDuration(c.Observability.MetricsInterval, 15*time.Second)
+}
+
 func parseDuration(value string, fallback time.Duration) time.Duration {
 	d, err := time.ParseDuration(value)
 	if err != nil || d <= 0 {
