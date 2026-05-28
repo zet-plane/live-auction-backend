@@ -12,11 +12,17 @@
 
 ## P1 — 工程深度
 
+### WebSocket 稳定性（题目明确要求）
+
+- [ ] **心跳保活** — `StartReadLoop` 处理 `ping` 消息回 `pong`，服务端定时发 `ping` 检测僵尸连接；NAT 超时静默断连的根本解法
+- [ ] **倒计时毫秒级同步** — 服务端每秒广播 `time_sync { item_id, ends_at_unix_ms }`，客户端以服务端时间为准，解决本地时钟漂移（反狙击延时后尤为关键）
+- [ ] **出价防抖限流** — Redis 滑动窗口，同一用户对同一商品 1s 内最多 5 次，超出返回 429；题目提到「防抖节流」，此处为服务端侧实现
+
 ### 可观测性（设计文档已有：`docs/superpowers/specs/2026-05-25-observability-design.md`）
 
 - [ ] **结构化日志** — 引入 `zap` 或 `zerolog`，关键链路（出价、竞拍结束、订单创建）打带 `trace_id` 的 JSON 日志
 - [ ] **Prometheus metrics** — 出价 QPS、Lua 脚本延迟、WebSocket 连接数、HTTP 错误率
-- [ ] **健康检查接口** — `GET /health`，检查 MySQL + Redis 连通性，返回各组件状态
+- [x] **健康检查接口** — `GET /health`，检查 MySQL + Redis 连通性，返回各组件状态
 - [ ] **Grafana 看板** — 出价链路 P99 延迟、在线连接数、错误率趋势
 
 ---
@@ -48,10 +54,12 @@
 
 ### ✅ 有深度（代码量小，收益大）
 
-- [ ] **出价限流** — 用 Redis 滑动窗口实现每用户每商品的出价频率限制（建议 1s 内最多 5 次），返回 429；展示安全思维
 - [ ] **pprof 性能剖析** — 对 WebSocket 广播做 CPU profile，定位 `json.Marshal` 热点，用 `sync.Pool` 复用 buffer，展示 Go 工程能力
 
 ### 📌 面试话题（不用实现，能讲清楚即可）
 
+- **Lua 原子脚本 vs 乐观锁** — 题目提到乐观锁，实际用的是 Redis Lua 原子脚本：乐观锁需要「读-校验-写」三步，高竞争时重试率高；Lua 把所有校验和写操作压成一次原子操作，无锁无重试，P99 延迟更稳定
 - **Redis Cluster CROSSSLOT 陷阱** — 当前 Lua 脚本的 4 个 key 在单节点无问题；迁移 Redis Cluster 时需用 `{itemID}` hash tag 保证同 slot，否则报 `CROSSSLOT` 错误
 - **WebSocket 多实例扩展路径** — 现有 Hub 是进程内内存实现；多实例时改为 Redis Pub/Sub，各节点订阅自己管理的 room channel，`Broadcaster` 接口无需改动（设计文档 Section 10 已有）
+
+![alt text](image.png)
