@@ -52,7 +52,7 @@ internal/core/observability/
   provider.go      // OTel resource、tracer provider、meter provider、exporter 初始化
   http.go          // Flamego HTTP middleware
   metrics.go       // 系统和业务指标定义
-  trace.go         // 业务 span helper
+  trace.go         // 业务 span helper，替换现有 logx.Track
   log.go           // zap 日志 trace_id/span_id 注入
   cron.go          // cron job wrapper
 ```
@@ -103,6 +103,38 @@ observability:
 - local/debug 环境默认采样率为 `1.0`。
 - OTel 初始化失败时服务降级启动，并记录 error 日志；监控系统不可用不应阻断业务服务启动。
 - 关闭服务时调用 observability shutdown，确保 exporter flush。
+
+## `logx.Track` 迁移
+
+当前 service 层已经大量使用 `logx.Track` 记录操作开始、结束、耗时和错误。第一期不继续扩展 `logx.Track`，而是新增 `observability.Track` 作为业务操作的统一入口，并逐步替换现有调用。
+
+目标接口形态：
+
+```go
+finish := observability.Track(ctx, "auction.place_bid",
+	"user_id", userID(current),
+	"item_id", itemID,
+	"price", input.Price,
+)
+defer func() {
+	finish(&err, "bid_id", bidID, "status", status)
+}()
+```
+
+`observability.Track` 同时负责：
+
+- 在 active parent span 下创建业务 span。
+- 记录业务操作耗时指标。
+- 记录成功、失败状态和错误码。
+- 输出带 trace context 的结构化日志。
+
+迁移规则：
+
+- 新代码不再新增 `logx.Track` 调用。
+- 现有 `logx.Track("item.PlaceBid", ...)` 等调用迁移到 `observability.Track(ctx, "...", ...)`。
+- operation name 使用低基数 snake_case 枚举，例如 `auction.place_bid`、`auction.get_ranking`、`auction.end_expired`、`order.create_from_auction`。
+- 高基数字段如 `user_id`、`item_id`、`bid_id` 只作为 span/log 属性，不作为 metric label。
+- `logx` 保留为底层日志 facade，继续提供 `Infow/Warnw/Errorw`，但不再负责业务操作追踪。
 
 ## HTTP 埋点
 
@@ -408,10 +440,11 @@ rtk go run main.go server -c config.yaml
 4. 接入 GORM 和 Redis 基础埋点。
 5. 接入 cron wrapper。
 6. 接入竞拍核心业务指标和 span。
-7. 调整日志为 JSON 并注入 trace context。
-8. 新增 docker-compose 观测服务和 `deploy/observability` 配置。
-9. 新增 Grafana datasource 和初始 dashboard。
-10. 补充单元测试和本地验证文档。
+7. 将现有 `logx.Track` 调用替换为 `observability.Track`。
+8. 调整日志为 JSON 并注入 trace context。
+9. 新增 docker-compose 观测服务和 `deploy/observability` 配置。
+10. 新增 Grafana datasource 和初始 dashboard。
+11. 补充单元测试和本地验证文档。
 
 ## 风险与约束
 
