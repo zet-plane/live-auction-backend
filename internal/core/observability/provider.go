@@ -47,12 +47,7 @@ func Setup(ctx context.Context, cfg config.Observability) (Shutdown, error) {
 		return func(context.Context) error { return nil }, nil
 	}
 
-	res, err := resource.Merge(resource.Default(), resource.NewWithAttributes(
-		semconv.SchemaURL,
-		semconv.ServiceName(cfg.ServiceName),
-		semconv.ServiceVersion(cfg.ServiceVersion),
-		attribute.String("deployment.environment", cfg.Environment),
-	))
+	res, err := newResource(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -89,6 +84,14 @@ func Setup(ctx context.Context, cfg config.Observability) (Shutdown, error) {
 	return func(ctx context.Context) error {
 		return errors.Join(tp.Shutdown(ctx), mp.Shutdown(ctx))
 	}, nil
+}
+
+func newResource(cfg config.Observability) (*resource.Resource, error) {
+	return resource.Merge(resource.Default(), resource.NewSchemaless(
+		semconv.ServiceName(cfg.ServiceName),
+		semconv.ServiceVersion(cfg.ServiceVersion),
+		attribute.String("deployment.environment", cfg.Environment),
+	))
 }
 
 func metricsInterval(cfg config.Observability) time.Duration {

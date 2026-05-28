@@ -9,6 +9,7 @@
 | 任务 | 下一步读取 |
 | --- | --- |
 | 执行模块、流程、接口、并发或状态一致性测试 | `guides/runner.md`，再读目标 `modules/<module>.md` 或 `flows/<flow>.md` |
+| 设计或执行并发测试 | `guides/runner.md` -> `guides/concurrency.md` -> `guides/go-runner.md`，再读目标契约 |
 | 准备环境、连接 DB/Redis、启动服务、创建测试数据 | `guides/environment.md` |
 | 使用 Go runner 采集结构化证据 | `guides/runner.md` -> `guides/go-runner.md` |
 | 生成或补充模块测试文档 | `guides/module-generator.md` -> `templates/module.md` |
@@ -22,6 +23,7 @@ docs/agent-testing/
 ├── guides/
 │   ├── runner.md
 │   ├── environment.md
+│   ├── concurrency.md
 │   ├── go-runner.md
 │   └── module-generator.md
 ├── templates/
@@ -47,6 +49,7 @@ docs/agent-testing/
 
 - 不要一次性读取整个目录。
 - 先读 `README.md`，再读任务指南，再读目标契约。
+- 设计或执行并发测试时，先读 `guides/runner.md`，再读 `guides/concurrency.md` 和目标契约。
 - 流程文档要求关联模块时，只读取流程明确点名的模块文档。
 - 只有生成文档时才读 `templates/module.md`。
 - 只有编写 Go runner 时才读 `templates/runner.go`。

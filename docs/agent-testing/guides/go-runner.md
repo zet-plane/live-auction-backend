@@ -86,7 +86,7 @@ cd /tmp/agent-runner-<batch> && go run main.go
 
 - 每个场景是一个 `func() Result` 函数，追加到 `scenarios()` 返回的切片。
 - 场景之间需要传递中间状态时（如第一步创建的 item_id 供后续步骤使用），使用 package 级别变量。
-- 并发场景使用 `runConcurrent(n, fn)` helper。wrapper 函数内部调用 `printResult` 打印每个并发结果，最后返回一个汇总 `Result` 供 `main()` 计入总统计：
+- 普通并发场景可使用 `runConcurrent(n, fn)` helper。需要证明真实并发窗口时，按 `guides/concurrency.md` 在场景内编写带 start gate 和请求时间记录的 helper。wrapper 函数内部调用 `printResult` 打印每个并发结果，最后返回一个汇总 `Result` 供 `main()` 计入总统计：
 - 函数名建议以 `case` 开头，例如 `caseCreateItem`、`casePublishItem`。
 
 示例：
@@ -168,7 +168,7 @@ func caseConcurrentBid() Result {
 | `redisGet` | `(key string) string` | GET key；key 不存在或出错时返回 `""` |
 | `redisHGetAll` | `(key string) map[string]string` | HGETALL key；出错时返回 nil |
 | `redisZMembers` | `(key string) []string` | ZRANGE key 0 -1；出错时返回 nil |
-| `runConcurrent` | `(n int, fn func() Result) []Result` | 并发执行 fn n 次，返回全部结果 |
+| `runConcurrent` | `(n int, fn func() Result) []Result` | 并发执行 fn n 次，返回全部结果；严格并发证据场景按 `guides/concurrency.md` 记录请求时间窗口 |
 | `mustStr` | `(m map[string]any, keys ...string) string` | 嵌套 map 取值；路径缺失时返回 `""` |
 | `safeGet` | `(rows []map[string]string, idx int, key string) string` | 安全取行；下标越界时返回 `""` |
 | `jsonStr` | `(v any) string` | 将值序列化为紧凑 JSON，用于 Result 字段打印 |

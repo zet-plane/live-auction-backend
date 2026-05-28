@@ -1,9 +1,11 @@
 services:
   app:
-    image: ghcr.io/zet-plane/live-auction-backend:${IMAGE_TAG}
+    image: ghcr.io/zet-plane/live-auction-backend:${IMAGE_TAG:?IMAGE_TAG is required}
     container_name: live-auction-backend
     restart: unless-stopped
     depends_on:
+      otel-collector:
+        condition: service_started
       mysql:
         condition: service_healthy
       redis:
@@ -30,10 +32,10 @@ services:
     container_name: live-auction-mysql
     restart: unless-stopped
     environment:
-      MYSQL_DATABASE: ${MYSQL_DATABASE}
-      MYSQL_USER: ${MYSQL_USER}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-live_auction}
+      MYSQL_USER: ${MYSQL_USER:-live_auction}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD is required}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required}
       TZ: Asia/Shanghai
     volumes:
       - mysql-data:/var/lib/mysql
@@ -43,6 +45,85 @@ services:
       timeout: 3s
       retries: 20
 
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.103.0
+    container_name: live-auction-otel-collector
+    restart: unless-stopped
+    command: ["--config=/etc/otel-collector.yaml"]
+    volumes:
+      - ./observability/otel-collector.yaml:/etc/otel-collector.yaml:ro
+    depends_on:
+      - prometheus
+      - tempo
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: live-auction-prometheus
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yaml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-15d}"
+    volumes:
+      - ./observability/prometheus.yaml:/etc/prometheus/prometheus.yaml:ro
+      - prometheus-data:/prometheus
+
+  tempo:
+    image: grafana/tempo:2.5.0
+    container_name: live-auction-tempo
+    restart: unless-stopped
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./observability/tempo.yaml:/etc/tempo.yaml:ro
+      - tempo-data:/var/tempo
+
+  loki:
+    image: grafana/loki:3.1.0
+    container_name: live-auction-loki
+    restart: unless-stopped
+    command: ["-config.file=/etc/loki.yaml"]
+    volumes:
+      - ./observability/loki.yaml:/etc/loki.yaml:ro
+      - loki-data:/loki
+
+  promtail:
+    image: grafana/promtail:3.1.0
+    container_name: live-auction-promtail
+    restart: unless-stopped
+    command: ["-config.file=/etc/promtail.yaml"]
+    volumes:
+      - ./observability/promtail.yaml:/etc/promtail.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - promtail-positions:/tmp
+    depends_on:
+      - loki
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    container_name: live-auction-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD is required}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+    ports:
+      - "${GRAFANA_BIND_ADDR:-127.0.0.1}:${GRAFANA_PORT:-3000}:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./observability/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ./observability/grafana/dashboards/dashboard-provider.yaml:/etc/grafana/provisioning/dashboards/dashboard-provider.yaml:ro
+    depends_on:
+      - prometheus
+      - tempo
+      - loki
+
 volumes:
   mysql-data:
   redis-data:
+  prometheus-data:
+  tempo-data:
+  loki-data:
+  promtail-positions:
+  grafana-data:

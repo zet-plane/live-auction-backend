@@ -1,0 +1,462 @@
+{
+  "uid": "live-auction-command-center",
+  "title": "Live Auction 应用数据大屏",
+  "tags": ["live-auction", "observability", "big-screen"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 2,
+  "refresh": "5s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "",
+      "options": {
+        "mode": "markdown",
+        "content": "# Live Auction\n## 应用数据大屏"
+      },
+      "fieldConfig": {"defaults": {}, "overrides": []},
+      "gridPos": {"x": 0, "y": 0, "w": 5, "h": 5}
+    },
+    {
+      "id": 2,
+      "type": "bargauge",
+      "title": "各接口请求量",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [
+        {
+          "expr": "topk(6, sum by (http_route) (increase(http_server_request_count_total[$__range])))",
+          "legendFormat": "{{http_route}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "color": {"mode": "continuous-GrYlRd"}
+        },
+        "overrides": []
+      },
+      "options": {
+        "displayMode": "gradient",
+        "orientation": "horizontal",
+        "reduceOptions": {"values": false, "calcs": ["lastNotNull"], "fields": ""},
+        "showUnfilled": true,
+        "minVizWidth": 0,
+        "minVizHeight": 8
+      },
+      "gridPos": {"x": 5, "y": 0, "w": 5, "h": 5}
+    },
+    {
+      "id": 3,
+      "type": "gauge",
+      "title": "错误率",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [
+        {
+          "expr": "sum(rate(http_server_request_count_total{http_status_code=~\"4..|5..\"}[$__rate_interval])) / clamp_min(sum(rate(http_server_request_count_total[$__rate_interval])), 0.001)",
+          "legendFormat": "error ratio",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 2,
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 0.05},
+              {"color": "red", "value": 0.15}
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {"values": false, "calcs": ["lastNotNull"], "fields": ""},
+        "orientation": "auto",
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true
+      },
+      "gridPos": {"x": 10, "y": 0, "w": 4, "h": 5}
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "P95 / P99 延迟",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(http_server_request_duration_bucket[$__rate_interval])) by (le))",
+          "legendFormat": "p95",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(http_server_request_duration_bucket[$__rate_interval])) by (le))",
+          "legendFormat": "p99",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 3,
+          "color": {"mode": "thresholds"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 0.2},
+              {"color": "red", "value": 1}
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {"values": false, "calcs": ["lastNotNull"], "fields": ""},
+        "orientation": "horizontal",
+        "textMode": "value_and_name",
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "center"
+      },
+      "gridPos": {"x": 14, "y": 0, "w": 5, "h": 5}
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "DB 查询速率",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [
+        {
+          "expr": "sum(rate(db_client_operation_count_total[$__rate_interval]))",
+          "legendFormat": "queries/s",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "ops", "decimals": 2, "color": {"mode": "palette-classic"}},
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {"values": false, "calcs": ["lastNotNull"], "fields": ""},
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "center"
+      },
+      "gridPos": {"x": 19, "y": 0, "w": 5, "h": 5}
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "请求处理速度",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [
+        {
+          "expr": "sum(rate(http_server_request_count_total[$__rate_interval])) by (http_route)",
+          "legendFormat": "{{http_route}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "decimals": 2,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "axisPlacement": "auto",
+            "axisLabel": ""
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {"displayMode": "table", "placement": "right", "calcs": ["mean", "max"]},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "gridPos": {"x": 0, "y": 5, "w": 15, "h": 10}
+    },
+    {
+      "id": 7,
+      "type": "bargauge",
+      "title": "请求排行",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [
+        {
+          "expr": "topk(12, sum by (http_route) (increase(http_server_request_count_total[$__range])))",
+          "legendFormat": "{{http_route}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "color": {"mode": "continuous-GrYlRd"}
+        },
+        "overrides": []
+      },
+      "options": {
+        "displayMode": "gradient",
+        "orientation": "horizontal",
+        "reduceOptions": {"values": false, "calcs": ["lastNotNull"], "fields": ""},
+        "showUnfilled": true,
+        "minVizWidth": 0,
+        "minVizHeight": 10
+      },
+      "gridPos": {"x": 15, "y": 5, "w": 9, "h": 10}
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "HTTP 延迟趋势",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(http_server_request_duration_bucket[$__rate_interval])) by (le))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(http_server_request_duration_bucket[$__rate_interval])) by (le))",
+          "legendFormat": "p95",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(http_server_request_duration_bucket[$__rate_interval])) by (le))",
+          "legendFormat": "p99",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 3,
+          "custom": {"drawStyle": "line", "lineInterpolation": "smooth", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never"}
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "gridPos": {"x": 0, "y": 15, "w": 12, "h": 8}
+    },
+    {
+      "id": 9,
+      "type": "bargauge",
+      "title": "耗时排行",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [
+        {
+          "expr": "topk(12, histogram_quantile(0.95, sum(rate(http_server_request_duration_bucket[$__rate_interval])) by (le, http_route)))",
+          "legendFormat": "{{http_route}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 3,
+          "color": {"mode": "continuous-GrYlRd"}
+        },
+        "overrides": []
+      },
+      "options": {
+        "displayMode": "gradient",
+        "orientation": "horizontal",
+        "reduceOptions": {"values": false, "calcs": ["lastNotNull"], "fields": ""},
+        "showUnfilled": true,
+        "minVizWidth": 0,
+        "minVizHeight": 10
+      },
+      "gridPos": {"x": 12, "y": 15, "w": 12, "h": 8}
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "DB 查询趋势",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [
+        {
+          "expr": "sum(rate(db_client_operation_count_total[$__rate_interval])) by (db_sql_table, result)",
+          "legendFormat": "{{db_sql_table}} {{result}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "decimals": 2,
+          "custom": {"drawStyle": "line", "lineInterpolation": "smooth", "lineWidth": 2, "fillOpacity": 12, "showPoints": "never"}
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean"]},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "gridPos": {"x": 0, "y": 23, "w": 12, "h": 8}
+    },
+    {
+      "id": 11,
+      "type": "bargauge",
+      "title": "DB 耗时排行",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [
+        {
+          "expr": "topk(10, histogram_quantile(0.95, sum(rate(db_client_operation_duration_bucket[$__rate_interval])) by (le, db_operation, db_sql_table)))",
+          "legendFormat": "{{db_operation}} {{db_sql_table}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 3,
+          "color": {"mode": "continuous-GrYlRd"}
+        },
+        "overrides": []
+      },
+      "options": {
+        "displayMode": "gradient",
+        "orientation": "horizontal",
+        "reduceOptions": {"values": false, "calcs": ["lastNotNull"], "fields": ""},
+        "showUnfilled": true,
+        "minVizWidth": 0,
+        "minVizHeight": 10
+      },
+      "gridPos": {"x": 12, "y": 23, "w": 12, "h": 8}
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "竞拍指标",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [
+        {
+          "expr": "sum(rate(auction_bid_count_total[$__rate_interval])) by (result, reason)",
+          "legendFormat": "bid {{result}} {{reason}}",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(auction_place_bid_lua_result_count_total[$__rate_interval])) by (code)",
+          "legendFormat": "lua code {{code}}",
+          "refId": "B"
+        },
+        {
+          "expr": "sum(rate(order_auction_create_count_total[$__rate_interval])) by (result)",
+          "legendFormat": "order {{result}}",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "decimals": 2,
+          "custom": {"drawStyle": "line", "lineInterpolation": "smooth", "lineWidth": 2, "fillOpacity": 12, "showPoints": "never"}
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "gridPos": {"x": 0, "y": 31, "w": 12, "h": 8}
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "竞拍延迟与金额",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(auction_bid_duration_bucket[$__rate_interval])) by (le, result))",
+          "legendFormat": "bid duration p95 {{result}}",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(auction_bid_amount_bucket[$__rate_interval])) by (le, result))",
+          "legendFormat": "bid amount p95 {{result}}",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 2,
+          "custom": {"drawStyle": "line", "lineInterpolation": "smooth", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never"}
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "gridPos": {"x": 12, "y": 31, "w": 12, "h": 8}
+    },
+    {
+      "id": 14,
+      "type": "logs",
+      "title": "日志流",
+      "datasource": {"type": "loki", "uid": "Loki"},
+      "targets": [
+        {
+          "expr": "{service_name=\"live-auction-backend\"}",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "showLabels": false,
+        "showCommonLabels": false,
+        "wrapLogMessage": false,
+        "prettifyLogMessage": false,
+        "enableLogDetails": true,
+        "dedupStrategy": "none",
+        "sortOrder": "Descending"
+      },
+      "gridPos": {"x": 0, "y": 39, "w": 24, "h": 10}
+    },
+    {
+      "id": 15,
+      "type": "logs",
+      "title": "Warn / Error 日志",
+      "datasource": {"type": "loki", "uid": "Loki"},
+      "targets": [
+        {
+          "expr": "{service_name=\"live-auction-backend\"} | json | level =~ \"warn|error\"",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "showLabels": false,
+        "showCommonLabels": false,
+        "wrapLogMessage": false,
+        "prettifyLogMessage": false,
+        "enableLogDetails": true,
+        "dedupStrategy": "none",
+        "sortOrder": "Descending"
+      },
+      "gridPos": {"x": 0, "y": 49, "w": 24, "h": 10}
+    }
+  ],
+  "templating": {"list": []},
+  "annotations": {"list": []}
+}

@@ -39,3 +39,17 @@ func TestNormalizeConfigDefaults(t *testing.T) {
 		t.Fatalf("metrics interval = %v, want 15s", metricsInterval(cfg))
 	}
 }
+
+func TestResourceMergesWithDefaultResource(t *testing.T) {
+	res, err := newResource(config.Observability{
+		ServiceName:    "live-auction-backend",
+		ServiceVersion: "0.1.0",
+		Environment:    "local",
+	})
+	if err != nil {
+		t.Fatalf("newResource returned error: %v", err)
+	}
+	if res == nil {
+		t.Fatal("resource is nil")
+	}
+}

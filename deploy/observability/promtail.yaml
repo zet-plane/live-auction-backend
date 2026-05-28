@@ -9,10 +9,19 @@ clients:
   - url: http://loki:3100/loki/api/v1/push
 
 scrape_configs:
-  - job_name: live-auction-backend
-    static_configs:
-      - targets: [localhost]
-        labels:
-          service_name: live-auction-backend
-          environment: local
-          __path__: /var/log/live-auction/*.log
+  - job_name: docker-live-auction-backend
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 10s
+    relabel_configs:
+      - source_labels: ["__meta_docker_container_name"]
+        regex: "/live-auction-backend"
+        action: keep
+      - target_label: service_name
+        replacement: live-auction-backend
+      - target_label: environment
+        replacement: production
+      - source_labels: ["__meta_docker_container_log_stream"]
+        target_label: stream
+    pipeline_stages:
+      - docker: {}
