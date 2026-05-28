@@ -111,6 +111,13 @@ func defaultConfig() *zap.Config {
 	}
 }
 
+func JSONConfig() *zap.Config {
+	cfg := defaultConfig()
+	cfg.Encoding = "json"
+	cfg.EncoderConfig.EncodeLevel = zapcore.LowercaseLevelEncoder
+	return cfg
+}
+
 func sugar() *zap.SugaredLogger {
 	if rootLogger == nil || rootLogger.logger == nil {
 		return nopLogger
