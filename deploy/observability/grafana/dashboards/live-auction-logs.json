@@ -1,0 +1,1 @@
+{"title":"Live Auction Logs","schemaVersion":39,"version":1,"refresh":"10s","panels":[{"type":"logs","title":"Application Logs","targets":[{"datasource":{"type":"loki","uid":"Loki"},"expr":"{service_name=\"live-auction-backend\"}"}],"gridPos":{"x":0,"y":0,"w":24,"h":12}}]}

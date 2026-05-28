@@ -31,6 +31,62 @@ services:
       timeout: 3s
       retries: 20
 
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.103.0
+    command: ["--config=/etc/otel-collector.yaml"]
+    volumes:
+      - ./deploy/observability/otel-collector.yaml:/etc/otel-collector.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "8889:8889"
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    command: ["--config.file=/etc/prometheus/prometheus.yaml"]
+    volumes:
+      - ./deploy/observability/prometheus.yaml:/etc/prometheus/prometheus.yaml:ro
+    ports:
+      - "9090:9090"
+
+  tempo:
+    image: grafana/tempo:2.5.0
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./deploy/observability/tempo.yaml:/etc/tempo.yaml:ro
+    ports:
+      - "3200:3200"
+
+  loki:
+    image: grafana/loki:3.1.0
+    command: ["-config.file=/etc/loki.yaml"]
+    volumes:
+      - ./deploy/observability/loki.yaml:/etc/loki.yaml:ro
+    ports:
+      - "3100:3100"
+
+  promtail:
+    image: grafana/promtail:3.1.0
+    command: ["-config.file=/etc/promtail.yaml"]
+    volumes:
+      - ./deploy/observability/promtail.yaml:/etc/promtail.yaml:ro
+      - ./logs:/var/log/live-auction:ro
+    depends_on:
+      - loki
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    volumes:
+      - ./deploy/observability/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./deploy/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ./deploy/observability/grafana/dashboards/dashboard-provider.yaml:/etc/grafana/provisioning/dashboards/dashboard-provider.yaml:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+      - tempo
+      - loki
+
 volumes:
   mysql-data:
   redis-data:
