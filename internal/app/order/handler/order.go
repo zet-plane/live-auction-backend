@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"net/http"
+
 	"github.com/flamego/flamego"
 	"github.com/zet-plane/live-auction-backend/internal/app/order/dto"
 	"github.com/zet-plane/live-auction-backend/internal/app/order/model"
@@ -30,7 +32,7 @@ func Init(s *service.Service) {
 // @Failure 401 {object} response.Body
 // @Failure 500 {object} response.Body
 // @Router /api/v1/orders [get]
-func ListOrders(r flamego.Render, c flamego.Context, current *usermodel.User) {
+func ListOrders(r flamego.Render, req *http.Request, c flamego.Context, current *usermodel.User) {
 	if svc == nil {
 		response.Error(r, errorx.ErrInternal)
 		return
@@ -40,7 +42,7 @@ func ListOrders(r flamego.Render, c flamego.Context, current *usermodel.User) {
 		Page:     c.QueryInt("page"),
 		PageSize: c.QueryInt("page_size"),
 	}
-	result, err := svc.ListOrders(current, input)
+	result, err := svc.ListOrders(req.Context(), current, input)
 	if err != nil {
 		logx.Warnw("ListOrders failed", "user_id", current.ID, "status", input.Status, "err", err)
 		response.Error(r, err)
@@ -61,12 +63,12 @@ func ListOrders(r flamego.Render, c flamego.Context, current *usermodel.User) {
 // @Failure 404 {object} response.Body
 // @Failure 500 {object} response.Body
 // @Router /api/v1/orders/{order_id} [get]
-func GetOrder(r flamego.Render, c flamego.Context, current *usermodel.User) {
+func GetOrder(r flamego.Render, req *http.Request, c flamego.Context, current *usermodel.User) {
 	if svc == nil {
 		response.Error(r, errorx.ErrInternal)
 		return
 	}
-	detail, err := svc.GetOrder(current, c.Param("order_id"))
+	detail, err := svc.GetOrder(req.Context(), current, c.Param("order_id"))
 	if err != nil {
 		logx.Warnw("GetOrder failed", "user_id", current.ID, "order_id", c.Param("order_id"), "err", err)
 		response.Error(r, err)

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"time"
 
@@ -8,8 +9,8 @@ import (
 	"github.com/zet-plane/live-auction-backend/internal/app/order/dto"
 	"github.com/zet-plane/live-auction-backend/internal/app/order/model"
 	usermodel "github.com/zet-plane/live-auction-backend/internal/app/user/model"
+	"github.com/zet-plane/live-auction-backend/internal/core/observability"
 	"github.com/zet-plane/live-auction-backend/pkg/errorx"
-	"github.com/zet-plane/live-auction-backend/pkg/logx"
 	"github.com/zet-plane/live-auction-backend/pkg/snowflake"
 )
 
@@ -27,11 +28,15 @@ func NewService(store dao.Store, paymentTimeout time.Duration) *Service {
 	}
 }
 
-func (s *Service) CreateOrder(itemID, userID string, price int64) (result *model.Order, err error) {
+func (s *Service) CreateOrder(ctx context.Context, itemID, userID string, price int64) (result *model.Order, err error) {
 	var orderID string
-	finish := logx.Track("order.CreateOrder", "item_id", itemID, "user_id", userID, "price", price)
+	orderResult := "success"
+	finish := observability.Track(ctx, "order.create_from_auction", "item_id", itemID, "user_id", userID, "price", price)
 	defer func() {
-		finish(&err, "order_id", orderID)
+		if err != nil {
+			orderResult = "error"
+		}
+		finish(&err, "order_id", orderID, "result", orderResult)
 	}()
 
 	existing, err := s.store.FindOrderByItemID(itemID)
@@ -57,8 +62,8 @@ func (s *Service) CreateOrder(itemID, userID string, price int64) (result *model
 	return order, nil
 }
 
-func (s *Service) Pay(current *usermodel.User, orderID string) (err error) {
-	defer logx.Track("order.Pay", "user_id", currentID(current), "order_id", orderID)(&err)
+func (s *Service) Pay(ctx context.Context, current *usermodel.User, orderID string) (err error) {
+	defer observability.Track(ctx, "order.pay", "user_id", currentID(current), "order_id", orderID)(&err)
 
 	order, err := s.store.FindOrder(orderID)
 	if err != nil {
@@ -88,8 +93,8 @@ func (s *Service) Pay(current *usermodel.User, orderID string) (err error) {
 	return nil
 }
 
-func (s *Service) Cancel(current *usermodel.User, orderID string) (err error) {
-	defer logx.Track("order.Cancel", "user_id", currentID(current), "order_id", orderID)(&err)
+func (s *Service) Cancel(ctx context.Context, current *usermodel.User, orderID string) (err error) {
+	defer observability.Track(ctx, "order.cancel", "user_id", currentID(current), "order_id", orderID)(&err)
 
 	order, err := s.store.FindOrder(orderID)
 	if err != nil {
@@ -108,7 +113,7 @@ func (s *Service) Cancel(current *usermodel.User, orderID string) (err error) {
 	return nil
 }
 
-func (s *Service) ListOrders(current *usermodel.User, input dto.ListOrdersInput) (result *dto.ListOrdersResult, err error) {
+func (s *Service) ListOrders(ctx context.Context, current *usermodel.User, input dto.ListOrdersInput) (result *dto.ListOrdersResult, err error) {
 	if input.Page <= 0 {
 		input.Page = 1
 	}
@@ -120,7 +125,7 @@ func (s *Service) ListOrders(current *usermodel.User, input dto.ListOrdersInput)
 	} else {
 		input.UserID = current.ID
 	}
-	defer logx.Track("order.ListOrders",
+	defer observability.Track(ctx, "order.list",
 		"user_id", currentID(current),
 		"identity", current.Identity,
 		"status", input.Status,
@@ -140,8 +145,8 @@ func (s *Service) ListOrders(current *usermodel.User, input dto.ListOrdersInput)
 	}, nil
 }
 
-func (s *Service) GetOrder(current *usermodel.User, orderID string) (result *dto.OrderDetail, err error) {
-	defer logx.Track("order.GetOrder", "user_id", currentID(current), "order_id", orderID)(&err)
+func (s *Service) GetOrder(ctx context.Context, current *usermodel.User, orderID string) (result *dto.OrderDetail, err error) {
+	defer observability.Track(ctx, "order.get", "user_id", currentID(current), "order_id", orderID)(&err)
 
 	detail, err := s.store.FindOrderDetail(orderID)
 	if err != nil {

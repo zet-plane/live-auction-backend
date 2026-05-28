@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
@@ -26,7 +27,7 @@ var (
 func seedOngoingItem(t *testing.T, svc *Service, merchantID, roomID string, startPrice, bidIncrement, priceCap int64, endTime time.Time) string {
 	t.Helper()
 	start := endTime.Add(-10 * time.Minute)
-	result, err := svc.CreateItem(
+	result, err := svc.CreateItem(context.Background(),
 		&usermodel.User{ID: merchantID, Identity: usermodel.IdentityMerchant},
 		itemdto.CreateItemInput{
 			RoomID: roomID,
@@ -44,10 +45,10 @@ func seedOngoingItem(t *testing.T, svc *Service, merchantID, roomID string, star
 		t.Fatalf("CreateItem failed: %v", err)
 	}
 	merchant := &usermodel.User{ID: merchantID, Identity: usermodel.IdentityMerchant}
-	if err := svc.PublishItem(merchant, result.ItemID); err != nil {
+	if err := svc.PublishItem(context.Background(), merchant, result.ItemID); err != nil {
 		t.Fatalf("PublishItem failed: %v", err)
 	}
-	if err := svc.StartItem(merchant, result.ItemID); err != nil {
+	if err := svc.StartItem(context.Background(), merchant, result.ItemID); err != nil {
 		t.Fatalf("StartItem failed: %v", err)
 	}
 	return result.ItemID
@@ -60,7 +61,7 @@ func TestPlaceBidSucceeds(t *testing.T) {
 	endTime := time.Now().Add(5 * time.Minute)
 	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 0, endTime)
 
-	result, err := svc.PlaceBid(bidder, itemID, itemdto.PlaceBidInput{
+	result, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
 		Price:          100,
 		IdempotencyKey: "idem_001",
 		UserName:       "Alice",
@@ -94,7 +95,7 @@ func TestPlaceBidRejectsNonOngoingItem(t *testing.T) {
 	svc := NewService(store, testPolicy, fc, nil, nil, nil)
 	itemID := seedPublishedItem(t, svc, "merchant_1", "room_1")
 
-	_, err := svc.PlaceBid(bidder, itemID, itemdto.PlaceBidInput{Price: 100, IdempotencyKey: "k1"})
+	_, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{Price: 100, IdempotencyKey: "k1"})
 	if !errors.Is(err, errorx.ErrInvalidRequest) {
 		t.Fatalf("expected invalid request for non-ongoing item, got %v", err)
 	}
@@ -108,7 +109,7 @@ func TestPlaceBidRejectsPriceTooLow(t *testing.T) {
 	endTime := time.Now().Add(5 * time.Minute)
 	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 0, endTime)
 
-	_, err := svc.PlaceBid(bidder, itemID, itemdto.PlaceBidInput{Price: 50, IdempotencyKey: "k1"})
+	_, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{Price: 50, IdempotencyKey: "k1"})
 	if err == nil {
 		t.Fatal("expected error for price too low")
 	}
@@ -126,7 +127,7 @@ func TestPlaceBidRejectsInvalidIncrement(t *testing.T) {
 	endTime := time.Now().Add(5 * time.Minute)
 	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 0, endTime)
 
-	_, err := svc.PlaceBid(bidder, itemID, itemdto.PlaceBidInput{Price: 150, IdempotencyKey: "k1"})
+	_, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{Price: 150, IdempotencyKey: "k1"})
 	if err == nil {
 		t.Fatal("expected error for invalid increment")
 	}
@@ -144,7 +145,7 @@ func TestPlaceBidRejectsEndedAuction(t *testing.T) {
 	endTime := time.Now().Add(5 * time.Minute)
 	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 0, endTime)
 
-	_, err := svc.PlaceBid(bidder, itemID, itemdto.PlaceBidInput{Price: 100, IdempotencyKey: "k1"})
+	_, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{Price: 100, IdempotencyKey: "k1"})
 	if err == nil {
 		t.Fatal("expected error for ended auction")
 	}
@@ -161,14 +162,14 @@ func TestPlaceBidIdempotent(t *testing.T) {
 	endTime := time.Now().Add(5 * time.Minute)
 	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 0, endTime)
 
-	if _, err := svc.PlaceBid(bidder, itemID, itemdto.PlaceBidInput{
+	if _, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
 		Price: 100, IdempotencyKey: "idem_dup", UserName: "Alice",
 	}); err != nil {
 		t.Fatalf("first bid failed: %v", err)
 	}
 	// Force idempotency code on second call (fakeCache returns code=1, skips BidLog write)
 	fc.bidLuaCode = 1
-	if _, err := svc.PlaceBid(bidder, itemID, itemdto.PlaceBidInput{
+	if _, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
 		Price: 100, IdempotencyKey: "idem_dup", UserName: "Alice",
 	}); err != nil {
 		t.Fatalf("idempotent bid should not fail: %v", err)
@@ -192,7 +193,7 @@ func TestPlaceBidPriceCapEndsAuction(t *testing.T) {
 	endTime := time.Now().Add(5 * time.Minute)
 	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 500, endTime)
 
-	result, err := svc.PlaceBid(bidder, itemID, itemdto.PlaceBidInput{Price: 500, IdempotencyKey: "idem_cap"})
+	result, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{Price: 500, IdempotencyKey: "idem_cap"})
 	if err != nil {
 		t.Fatalf("PlaceBid failed: %v", err)
 	}
@@ -217,7 +218,7 @@ type fakeDepositChecker struct {
 	calls int
 }
 
-func (f *fakeDepositChecker) HasPaidDeposit(itemID, userID string, requiredAmount int64) (bool, error) {
+func (f *fakeDepositChecker) HasPaidDeposit(_ context.Context, itemID, userID string, requiredAmount int64) (bool, error) {
 	f.calls++
 	if f.err != nil {
 		return false, f.err
@@ -233,7 +234,7 @@ func TestPlaceBidSkipsDepositCheckWhenNotRequired(t *testing.T) {
 	endTime := time.Now().Add(5 * time.Minute)
 	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 0, endTime)
 
-	_, err := svc.PlaceBid(bidder, itemID, itemdto.PlaceBidInput{
+	_, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
 		Price: 100, IdempotencyKey: "no_deposit_required", UserName: "Alice",
 	})
 	if err != nil {
@@ -254,7 +255,7 @@ func TestPlaceBidRejectsMissingDepositBeforeRedis(t *testing.T) {
 	rule := store.rules[store.items[itemID].RuleID]
 	rule.DepositAmount = 5000
 
-	_, err := svc.PlaceBid(bidder, itemID, itemdto.PlaceBidInput{
+	_, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
 		Price: 100, IdempotencyKey: "missing_deposit", UserName: "Alice",
 	})
 	if err == nil {
@@ -285,7 +286,7 @@ func TestPlaceBidAllowsPaidDeposit(t *testing.T) {
 	rule := store.rules[store.items[itemID].RuleID]
 	rule.DepositAmount = 5000
 
-	result, err := svc.PlaceBid(bidder, itemID, itemdto.PlaceBidInput{
+	result, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
 		Price: 100, IdempotencyKey: "paid_deposit", UserName: "Alice",
 	})
 	if err != nil {
@@ -319,14 +320,14 @@ func TestGetRankingFromCache(t *testing.T) {
 		{&usermodel.User{ID: "u2", Name: "Bob"}, 500, "k2"},
 	}
 	for _, u := range users {
-		if _, err := svc.PlaceBid(u.user, itemID, itemdto.PlaceBidInput{
+		if _, err := svc.PlaceBid(context.Background(), u.user, itemID, itemdto.PlaceBidInput{
 			Price: u.price, IdempotencyKey: u.idem, UserName: u.user.Name,
 		}); err != nil {
 			t.Fatalf("PlaceBid for %s failed: %v", u.user.ID, err)
 		}
 	}
 
-	result, err := svc.GetRanking(itemID, 1, 10)
+	result, err := svc.GetRanking(context.Background(), itemID, 1, 10)
 	if err != nil {
 		t.Fatalf("GetRanking failed: %v", err)
 	}
@@ -361,7 +362,7 @@ func TestGetRankingFallsBackToMySQL(t *testing.T) {
 	)
 	// No bids placed via service so fc.ranking[itemID] was never populated — cache miss is natural.
 
-	result, err := svc.GetRanking(itemID, 1, 10)
+	result, err := svc.GetRanking(context.Background(), itemID, 1, 10)
 	if err != nil {
 		t.Fatalf("GetRanking fallback failed: %v", err)
 	}
@@ -382,7 +383,7 @@ func TestGetRankingPagination(t *testing.T) {
 
 	for i := 1; i <= 5; i++ {
 		u := &usermodel.User{ID: fmt.Sprintf("u%d", i), Name: fmt.Sprintf("User%d", i)}
-		_, err := svc.PlaceBid(u, itemID, itemdto.PlaceBidInput{
+		_, err := svc.PlaceBid(context.Background(), u, itemID, itemdto.PlaceBidInput{
 			Price:          int64(i * 100),
 			IdempotencyKey: fmt.Sprintf("k%d", i),
 			UserName:       u.Name,
@@ -392,7 +393,7 @@ func TestGetRankingPagination(t *testing.T) {
 		}
 	}
 
-	r, err := svc.GetRanking(itemID, 1, 2)
+	r, err := svc.GetRanking(context.Background(), itemID, 1, 2)
 	if err != nil {
 		t.Fatalf("GetRanking page 1 failed: %v", err)
 	}
@@ -403,7 +404,7 @@ func TestGetRankingPagination(t *testing.T) {
 		t.Fatalf("expected ranks 1,2 on page 1, got %d,%d", r.List[0].Rank, r.List[1].Rank)
 	}
 
-	r2, err := svc.GetRanking(itemID, 2, 2)
+	r2, err := svc.GetRanking(context.Background(), itemID, 2, 2)
 	if err != nil {
 		t.Fatalf("GetRanking page 2 failed: %v", err)
 	}
@@ -445,7 +446,7 @@ func TestPlaceBidBroadcastsBidSuccess(t *testing.T) {
 	endTime := time.Now().Add(5 * time.Minute)
 	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 0, endTime)
 
-	_, err := svc.PlaceBid(bidder, itemID, itemdto.PlaceBidInput{
+	_, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
 		Price: 100, IdempotencyKey: "k1", UserName: "Alice",
 	})
 	if err != nil {
@@ -473,10 +474,10 @@ func TestPlaceBidBroadcastsUserOutbid(t *testing.T) {
 	user1 := &usermodel.User{ID: "user_1", Name: "Alice", Identity: usermodel.IdentityUser}
 	user2 := &usermodel.User{ID: "user_2", Name: "Bob", Identity: usermodel.IdentityUser}
 
-	_, _ = svc.PlaceBid(user1, itemID, itemdto.PlaceBidInput{Price: 100, IdempotencyKey: "k1", UserName: "Alice"})
+	_, _ = svc.PlaceBid(context.Background(), user1, itemID, itemdto.PlaceBidInput{Price: 100, IdempotencyKey: "k1", UserName: "Alice"})
 	fb.unicasts = nil
 
-	_, err := svc.PlaceBid(user2, itemID, itemdto.PlaceBidInput{Price: 200, IdempotencyKey: "k2", UserName: "Bob"})
+	_, err := svc.PlaceBid(context.Background(), user2, itemID, itemdto.PlaceBidInput{Price: 200, IdempotencyKey: "k2", UserName: "Bob"})
 	if err != nil {
 		t.Fatalf("second PlaceBid failed: %v", err)
 	}

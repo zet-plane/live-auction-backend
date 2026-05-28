@@ -142,7 +142,7 @@ func merchant() *usermodel.User {
 func TestActivateRoomRequiresMerchant(t *testing.T) {
 	svc := NewService(newFakeStore(), newFakeCache())
 	user := &usermodel.User{ID: "user_1", Identity: usermodel.IdentityUser}
-	_, err := svc.ActivateRoom(user, dto.CreateRoomInput{Title: "My Room"})
+	_, err := svc.ActivateRoom(context.Background(), user, dto.CreateRoomInput{Title: "My Room"})
 	if !errors.Is(err, errorx.ErrUnauthorized) {
 		t.Fatalf("expected ErrUnauthorized, got %v", err)
 	}
@@ -153,12 +153,12 @@ func TestActivateRoomIsIdempotent(t *testing.T) {
 	svc := NewService(store, newFakeCache())
 	m := merchant()
 
-	r1, err := svc.ActivateRoom(m, dto.CreateRoomInput{Title: "My Room"})
+	r1, err := svc.ActivateRoom(context.Background(), m, dto.CreateRoomInput{Title: "My Room"})
 	if err != nil {
 		t.Fatalf("first call: %v", err)
 	}
 
-	r2, err := svc.ActivateRoom(m, dto.CreateRoomInput{Title: "Different Title"})
+	r2, err := svc.ActivateRoom(context.Background(), m, dto.CreateRoomInput{Title: "Different Title"})
 	if err != nil {
 		t.Fatalf("second call: %v", err)
 	}
@@ -176,8 +176,8 @@ func TestStartRoomTransitionsToLive(t *testing.T) {
 	svc := NewService(store, newFakeCache())
 	m := merchant()
 
-	r, _ := svc.ActivateRoom(m, dto.CreateRoomInput{Title: "My Room"})
-	if err := svc.StartRoom(m, r.ID); err != nil {
+	r, _ := svc.ActivateRoom(context.Background(), m, dto.CreateRoomInput{Title: "My Room"})
+	if err := svc.StartRoom(context.Background(), m, r.ID); err != nil {
 		t.Fatalf("StartRoom: %v", err)
 	}
 
@@ -192,10 +192,10 @@ func TestStartRoomRejectsNonIdle(t *testing.T) {
 	svc := NewService(store, newFakeCache())
 	m := merchant()
 
-	r, _ := svc.ActivateRoom(m, dto.CreateRoomInput{Title: "My Room"})
-	_ = svc.StartRoom(m, r.ID)
+	r, _ := svc.ActivateRoom(context.Background(), m, dto.CreateRoomInput{Title: "My Room"})
+	_ = svc.StartRoom(context.Background(), m, r.ID)
 
-	if err := svc.StartRoom(m, r.ID); !errors.Is(err, errorx.ErrInvalidRequest) {
+	if err := svc.StartRoom(context.Background(), m, r.ID); !errors.Is(err, errorx.ErrInvalidRequest) {
 		t.Fatalf("expected ErrInvalidRequest, got %v", err)
 	}
 }
@@ -205,10 +205,10 @@ func TestEndRoomTransitionsToIdle(t *testing.T) {
 	svc := NewService(store, newFakeCache())
 	m := merchant()
 
-	r, _ := svc.ActivateRoom(m, dto.CreateRoomInput{Title: "My Room"})
-	_ = svc.StartRoom(m, r.ID)
+	r, _ := svc.ActivateRoom(context.Background(), m, dto.CreateRoomInput{Title: "My Room"})
+	_ = svc.StartRoom(context.Background(), m, r.ID)
 
-	if err := svc.EndRoom(m, r.ID); err != nil {
+	if err := svc.EndRoom(context.Background(), m, r.ID); err != nil {
 		t.Fatalf("EndRoom: %v", err)
 	}
 
@@ -223,9 +223,9 @@ func TestEndRoomRejectsNonLive(t *testing.T) {
 	svc := NewService(store, newFakeCache())
 	m := merchant()
 
-	r, _ := svc.ActivateRoom(m, dto.CreateRoomInput{Title: "My Room"})
+	r, _ := svc.ActivateRoom(context.Background(), m, dto.CreateRoomInput{Title: "My Room"})
 
-	if err := svc.EndRoom(m, r.ID); !errors.Is(err, errorx.ErrInvalidRequest) {
+	if err := svc.EndRoom(context.Background(), m, r.ID); !errors.Is(err, errorx.ErrInvalidRequest) {
 		t.Fatalf("expected ErrInvalidRequest, got %v", err)
 	}
 }
@@ -236,8 +236,8 @@ func TestStartRoomInitializesRedisState(t *testing.T) {
 	svc := NewService(store, fc)
 	m := merchant()
 
-	r, _ := svc.ActivateRoom(m, dto.CreateRoomInput{Title: "My Room"})
-	_ = svc.StartRoom(m, r.ID)
+	r, _ := svc.ActivateRoom(context.Background(), m, dto.CreateRoomInput{Title: "My Room"})
+	_ = svc.StartRoom(context.Background(), m, r.ID)
 
 	state, ok := fc.states[r.ID]
 	if !ok {
@@ -254,9 +254,9 @@ func TestEndRoomUpdatesRedisStatus(t *testing.T) {
 	svc := NewService(store, fc)
 	m := merchant()
 
-	r, _ := svc.ActivateRoom(m, dto.CreateRoomInput{Title: "My Room"})
-	_ = svc.StartRoom(m, r.ID)
-	_ = svc.EndRoom(m, r.ID)
+	r, _ := svc.ActivateRoom(context.Background(), m, dto.CreateRoomInput{Title: "My Room"})
+	_ = svc.StartRoom(context.Background(), m, r.ID)
+	_ = svc.EndRoom(context.Background(), m, r.ID)
 
 	state, ok := fc.states[r.ID]
 	if !ok {
@@ -273,10 +273,10 @@ func TestGetRoomEnrichesOnlineCountFromCache(t *testing.T) {
 	svc := NewService(store, fc)
 	m := merchant()
 
-	r, _ := svc.ActivateRoom(m, dto.CreateRoomInput{Title: "My Room"})
+	r, _ := svc.ActivateRoom(context.Background(), m, dto.CreateRoomInput{Title: "My Room"})
 	fc.states[r.ID] = &roomcache.RoomState{Status: "live", OnlineCount: 42}
 
-	result, err := svc.GetRoom(r.ID)
+	result, err := svc.GetRoom(context.Background(), r.ID)
 	if err != nil {
 		t.Fatalf("GetRoom: %v", err)
 	}
@@ -291,10 +291,10 @@ func TestGetRoomReturnsItemQueue(t *testing.T) {
 	svc := NewService(store, fc)
 	m := merchant()
 
-	r, _ := svc.ActivateRoom(m, dto.CreateRoomInput{Title: "My Room"})
+	r, _ := svc.ActivateRoom(context.Background(), m, dto.CreateRoomInput{Title: "My Room"})
 	fc.queues[r.ID] = []string{"item_1", "item_2"}
 
-	result, err := svc.GetRoom(r.ID)
+	result, err := svc.GetRoom(context.Background(), r.ID)
 	if err != nil {
 		t.Fatalf("GetRoom: %v", err)
 	}
@@ -308,9 +308,9 @@ func TestGetRoomFallsBackWhenCacheMiss(t *testing.T) {
 	svc := NewService(store, newFakeCache())
 	m := merchant()
 
-	r, _ := svc.ActivateRoom(m, dto.CreateRoomInput{Title: "My Room"})
+	r, _ := svc.ActivateRoom(context.Background(), m, dto.CreateRoomInput{Title: "My Room"})
 
-	result, err := svc.GetRoom(r.ID)
+	result, err := svc.GetRoom(context.Background(), r.ID)
 	if err != nil {
 		t.Fatalf("GetRoom: %v", err)
 	}

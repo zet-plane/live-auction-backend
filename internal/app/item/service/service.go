@@ -11,6 +11,7 @@ import (
 	"github.com/zet-plane/live-auction-backend/internal/app/item/model"
 	orderservice "github.com/zet-plane/live-auction-backend/internal/app/order/service"
 	usermodel "github.com/zet-plane/live-auction-backend/internal/app/user/model"
+	"github.com/zet-plane/live-auction-backend/internal/core/observability"
 	"github.com/zet-plane/live-auction-backend/pkg/errorx"
 	"github.com/zet-plane/live-auction-backend/pkg/logx"
 	"github.com/zet-plane/live-auction-backend/pkg/snowflake"
@@ -28,7 +29,7 @@ type Service struct {
 }
 
 type DepositChecker interface {
-	HasPaidDeposit(itemID, userID string, requiredAmount int64) (bool, error)
+	HasPaidDeposit(ctx context.Context, itemID, userID string, requiredAmount int64) (bool, error)
 }
 
 func NewService(store dao.Store, policy dto.AuctionPolicy, cache itemcache.Cache, orderSvc *orderservice.Service, depositSvc DepositChecker, broadcaster wsevent.Broadcaster) *Service {
@@ -43,9 +44,9 @@ func NewService(store dao.Store, policy dto.AuctionPolicy, cache itemcache.Cache
 	}
 }
 
-func (s *Service) CreateItem(current *usermodel.User, input dto.CreateItemInput) (result *dto.CreateItemResult, err error) {
+func (s *Service) CreateItem(ctx context.Context, current *usermodel.User, input dto.CreateItemInput) (result *dto.CreateItemResult, err error) {
 	var itemID string
-	finish := logx.Track("item.CreateItem", "merchant_id", userID(current), "room_id", strings.TrimSpace(input.RoomID))
+	finish := observability.Track(ctx, "item.create", "merchant_id", userID(current), "room_id", strings.TrimSpace(input.RoomID))
 	defer func() {
 		finish(&err, "item_id", itemID)
 	}()
@@ -87,9 +88,9 @@ func (s *Service) CreateItem(current *usermodel.User, input dto.CreateItemInput)
 	return &dto.CreateItemResult{ItemID: itemID, RuleID: ruleID}, nil
 }
 
-func (s *Service) ListItems(query dto.ListItemsInput) (result *dto.ItemListResult, err error) {
+func (s *Service) ListItems(ctx context.Context, query dto.ListItemsInput) (result *dto.ItemListResult, err error) {
 	query = normalizeListInput(query)
-	defer logx.Track("item.ListItems",
+	defer observability.Track(ctx, "item.list",
 		"status", query.Status,
 		"merchant_id", query.MerchantID,
 		"page", query.Page,
@@ -105,7 +106,7 @@ func (s *Service) ListItems(query dto.ListItemsInput) (result *dto.ItemListResul
 	for _, iwr := range items {
 		d := dto.NewItemListDTO(iwr.Item, iwr.Rule, s.policy, now)
 		if iwr.Item.Status == model.ItemOngoing && s.cache != nil {
-			if state, ok, _ := s.cache.GetAuctionState(context.Background(), iwr.Item.ID); ok {
+			if state, ok, _ := s.cache.GetAuctionState(ctx, iwr.Item.ID); ok {
 				applyStateToList(&d, state, now)
 			}
 		}
@@ -119,8 +120,8 @@ func (s *Service) ListItems(query dto.ListItemsInput) (result *dto.ItemListResul
 	}, nil
 }
 
-func (s *Service) ListMerchantItems(current *usermodel.User, query dto.ListItemsInput) (result *dto.MerchantItemListResult, err error) {
-	finish := logx.Track("item.ListMerchantItems",
+func (s *Service) ListMerchantItems(ctx context.Context, current *usermodel.User, query dto.ListItemsInput) (result *dto.MerchantItemListResult, err error) {
+	finish := observability.Track(ctx, "item.list_merchant",
 		"merchant_id", userID(current),
 	)
 	defer func() {
@@ -142,7 +143,7 @@ func (s *Service) ListMerchantItems(current *usermodel.User, query dto.ListItems
 	for _, iwr := range items {
 		d := dto.NewMerchantItemDTO(iwr.Item, iwr.Rule, s.policy, now)
 		if iwr.Item.Status == model.ItemOngoing && s.cache != nil {
-			if state, ok, _ := s.cache.GetAuctionState(context.Background(), iwr.Item.ID); ok {
+			if state, ok, _ := s.cache.GetAuctionState(ctx, iwr.Item.ID); ok {
 				d.Progress.CurrentPrice = state.CurrentPrice
 				d.Progress.LeaderUserID = state.LeaderUserID
 				d.Progress.BidCount = state.BidCount
@@ -165,9 +166,9 @@ func (s *Service) ListMerchantItems(current *usermodel.User, query dto.ListItems
 	}, nil
 }
 
-func (s *Service) GetItem(itemID string) (result *dto.ItemDetailDTO, err error) {
+func (s *Service) GetItem(ctx context.Context, itemID string) (result *dto.ItemDetailDTO, err error) {
 	itemID = strings.TrimSpace(itemID)
-	defer logx.Track("item.GetItem", "item_id", itemID)(&err)
+	defer observability.Track(ctx, "item.get", "item_id", itemID)(&err)
 
 	item, rule, err := s.store.FindItemWithRule(itemID)
 	if err != nil {
@@ -176,15 +177,15 @@ func (s *Service) GetItem(itemID string) (result *dto.ItemDetailDTO, err error) 
 	now := s.now()
 	detail := dto.NewItemDetailDTO(item, rule, s.policy, now)
 	if item.Status == model.ItemOngoing && s.cache != nil {
-		if state, ok, _ := s.cache.GetAuctionState(context.Background(), item.ID); ok {
+		if state, ok, _ := s.cache.GetAuctionState(ctx, item.ID); ok {
 			applyStateToDetail(&detail, state, now)
 		}
 	}
 	return &detail, nil
 }
 
-func (s *Service) UpdateItem(current *usermodel.User, itemID string, input dto.CreateItemInput) (err error) {
-	defer logx.Track("item.UpdateItem", "merchant_id", userID(current), "item_id", strings.TrimSpace(itemID))(&err)
+func (s *Service) UpdateItem(ctx context.Context, current *usermodel.User, itemID string, input dto.CreateItemInput) (err error) {
+	defer observability.Track(ctx, "item.update", "merchant_id", userID(current), "item_id", strings.TrimSpace(itemID))(&err)
 
 	item, rule, err := s.findMerchantItem(current, itemID)
 	if err != nil {
@@ -211,8 +212,8 @@ func (s *Service) UpdateItem(current *usermodel.User, itemID string, input dto.C
 	return s.store.UpdateItemWithRule(item, rule)
 }
 
-func (s *Service) DeleteItem(current *usermodel.User, itemID string) (err error) {
-	defer logx.Track("item.DeleteItem", "merchant_id", userID(current), "item_id", strings.TrimSpace(itemID))(&err)
+func (s *Service) DeleteItem(ctx context.Context, current *usermodel.User, itemID string) (err error) {
+	defer observability.Track(ctx, "item.delete", "merchant_id", userID(current), "item_id", strings.TrimSpace(itemID))(&err)
 
 	item, _, err := s.findMerchantItem(current, itemID)
 	if err != nil {
@@ -224,8 +225,8 @@ func (s *Service) DeleteItem(current *usermodel.User, itemID string) (err error)
 	return s.store.DeleteItem(item.ID)
 }
 
-func (s *Service) PublishItem(current *usermodel.User, itemID string) (err error) {
-	defer logx.Track("item.PublishItem", "merchant_id", userID(current), "item_id", strings.TrimSpace(itemID))(&err)
+func (s *Service) PublishItem(ctx context.Context, current *usermodel.User, itemID string) (err error) {
+	defer observability.Track(ctx, "item.publish", "merchant_id", userID(current), "item_id", strings.TrimSpace(itemID))(&err)
 
 	item, rule, err := s.findMerchantItem(current, itemID)
 	if err != nil {
@@ -239,13 +240,13 @@ func (s *Service) PublishItem(current *usermodel.User, itemID string) (err error
 		return err
 	}
 	if s.cache != nil {
-		_ = s.cache.PushToRoomQueue(context.Background(), item.RoomID, item.ID, float64(s.now().Unix()))
+		_ = s.cache.PushToRoomQueue(ctx, item.RoomID, item.ID, float64(s.now().Unix()))
 	}
 	return nil
 }
 
-func (s *Service) StartItem(current *usermodel.User, itemID string) (err error) {
-	defer logx.Track("item.StartItem", "merchant_id", userID(current), "item_id", strings.TrimSpace(itemID))(&err)
+func (s *Service) StartItem(ctx context.Context, current *usermodel.User, itemID string) (err error) {
+	defer observability.Track(ctx, "item.start", "merchant_id", userID(current), "item_id", strings.TrimSpace(itemID))(&err)
 
 	item, rule, err := s.findMerchantItem(current, itemID)
 	if err != nil {
@@ -259,14 +260,14 @@ func (s *Service) StartItem(current *usermodel.User, itemID string) (err error) 
 			CurrentPrice: rule.StartPrice,
 			EndTime:      rule.EndTime,
 		}
-		if err := s.cache.InitAuctionState(context.Background(), item.ID, state); err != nil {
+		if err := s.cache.InitAuctionState(ctx, item.ID, state); err != nil {
 			return err
 		}
 	}
 	item.Status = model.ItemOngoing
 	if err := s.store.UpdateItemWithRule(item, rule); err != nil {
 		if s.cache != nil {
-			_ = s.cache.DeleteAuctionState(context.Background(), item.ID)
+			_ = s.cache.DeleteAuctionState(ctx, item.ID)
 		}
 		return err
 	}
@@ -284,8 +285,8 @@ func (s *Service) StartItem(current *usermodel.User, itemID string) (err error) 
 	return nil
 }
 
-func (s *Service) CancelItem(current *usermodel.User, itemID string) (err error) {
-	defer logx.Track("item.CancelItem", "merchant_id", userID(current), "item_id", strings.TrimSpace(itemID))(&err)
+func (s *Service) CancelItem(ctx context.Context, current *usermodel.User, itemID string) (err error) {
+	defer observability.Track(ctx, "item.cancel", "merchant_id", userID(current), "item_id", strings.TrimSpace(itemID))(&err)
 
 	item, rule, err := s.findMerchantItem(current, itemID)
 	if err != nil {
@@ -299,8 +300,8 @@ func (s *Service) CancelItem(current *usermodel.User, itemID string) (err error)
 		return err
 	}
 	if s.cache != nil {
-		_ = s.cache.RemoveFromRoomQueue(context.Background(), item.RoomID, item.ID)
-		_ = s.cache.DeleteAuctionState(context.Background(), item.ID)
+		_ = s.cache.RemoveFromRoomQueue(ctx, item.RoomID, item.ID)
+		_ = s.cache.DeleteAuctionState(ctx, item.ID)
 	}
 	if s.broadcaster != nil {
 		_ = s.broadcaster.Fanout(wsevent.RoomTopic(item.RoomID), wsevent.Event{
@@ -375,10 +376,10 @@ func normalizeListInput(query dto.ListItemsInput) dto.ListItemsInput {
 	return query
 }
 
-func (s *Service) EndExpiredAuctions() {
+func (s *Service) EndExpiredAuctions(ctx context.Context) {
 	var err error
 	endedCount := 0
-	finish := logx.Track("item.EndExpiredAuctions")
+	finish := observability.Track(ctx, "auction.end_expired")
 	defer func() {
 		finish(&err, "ended_count", endedCount)
 	}()
@@ -396,7 +397,7 @@ func (s *Service) EndExpiredAuctions() {
 		var winnerID string
 		var dealPrice int64
 		if s.cache != nil {
-			if state, ok, _ := s.cache.GetAuctionState(context.Background(), item.ID); ok {
+			if state, ok, _ := s.cache.GetAuctionState(ctx, item.ID); ok {
 				winnerID = state.LeaderUserID
 				dealPrice = state.CurrentPrice
 			}
@@ -410,7 +411,7 @@ func (s *Service) EndExpiredAuctions() {
 		}
 		endedCount++
 		if s.cache != nil {
-			_ = s.cache.DeleteAuctionState(context.Background(), item.ID)
+			_ = s.cache.DeleteAuctionState(ctx, item.ID)
 		}
 		if s.broadcaster != nil {
 			_ = s.broadcaster.Fanout(wsevent.RoomTopic(item.RoomID), wsevent.Event{
@@ -424,7 +425,7 @@ func (s *Service) EndExpiredAuctions() {
 		}
 		if winnerID != "" && s.orderSvc != nil {
 			var orderID string
-			if order, err := s.orderSvc.CreateOrder(item.ID, winnerID, dealPrice); err != nil {
+			if order, err := s.orderSvc.CreateOrder(ctx, item.ID, winnerID, dealPrice); err != nil {
 				// non-fatal: compensation cron will retry
 				logx.Warnw("item.EndExpiredAuctions create order failed", "item_id", item.ID, "winner_id", winnerID, "err", err)
 			} else if order != nil {

@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"net/http"
+
 	"github.com/flamego/binding"
 	"github.com/flamego/flamego"
 	orderdto "github.com/zet-plane/live-auction-backend/internal/app/order/dto"
@@ -32,7 +34,7 @@ func Init(s *orderservice.Service) {
 // @Failure 401 {object} response.Body
 // @Failure 500 {object} response.Body
 // @Router /api/v1/orders/{order_id}/pay [post]
-func Pay(r flamego.Render, c flamego.Context, current *usermodel.User, body orderdto.PayOrderRequest, errs binding.Errors) {
+func Pay(r flamego.Render, req *http.Request, c flamego.Context, current *usermodel.User, body orderdto.PayOrderRequest, errs binding.Errors) {
 	if web.BindingErrors(r, errs) {
 		return
 	}
@@ -45,7 +47,7 @@ func Pay(r flamego.Render, c flamego.Context, current *usermodel.User, body orde
 		response.Error(r, errorx.ErrInternal)
 		return
 	}
-	if err := orderSvc.Pay(current, c.Param("order_id")); err != nil {
+	if err := orderSvc.Pay(req.Context(), current, c.Param("order_id")); err != nil {
 		logx.Warnw("Pay failed", "user_id", current.ID, "order_id", c.Param("order_id"), "err", err)
 		response.Error(r, err)
 		return
@@ -64,12 +66,12 @@ func Pay(r flamego.Render, c flamego.Context, current *usermodel.User, body orde
 // @Failure 401 {object} response.Body
 // @Failure 500 {object} response.Body
 // @Router /api/v1/orders/{order_id}/cancel [post]
-func Cancel(r flamego.Render, c flamego.Context, current *usermodel.User) {
+func Cancel(r flamego.Render, req *http.Request, c flamego.Context, current *usermodel.User) {
 	if orderSvc == nil {
 		response.Error(r, errorx.ErrInternal)
 		return
 	}
-	if err := orderSvc.Cancel(current, c.Param("order_id")); err != nil {
+	if err := orderSvc.Cancel(req.Context(), current, c.Param("order_id")); err != nil {
 		logx.Warnw("Cancel failed", "user_id", current.ID, "order_id", c.Param("order_id"), "err", err)
 		response.Error(r, err)
 		return

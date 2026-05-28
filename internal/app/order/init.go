@@ -39,8 +39,8 @@ func (o *Order) Load(engine *kernel.Engine) error {
 	handler.Init(Svc)
 	router.RegisterRoutes(engine.Flame)
 
-	engine.Cron.AddFunc("@every 5m", Svc.ScanExpiredOrders)
-	engine.Cron.AddFunc("@every 10m", Svc.ScanCompensation)
+	engine.Cron.AddFunc("@every 5m", func() { Svc.ScanExpiredOrders(context.Background()) })
+	engine.Cron.AddFunc("@every 10m", func() { Svc.ScanCompensation(context.Background()) })
 	return nil
 }
 

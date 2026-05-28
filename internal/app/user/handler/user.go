@@ -1,6 +1,9 @@
 package handler
 
 import (
+	"context"
+	"net/http"
+
 	"github.com/flamego/binding"
 	"github.com/flamego/flamego"
 	"github.com/zet-plane/live-auction-backend/internal/app/user/dto"
@@ -18,11 +21,11 @@ func Init(s *service.Service) {
 	svc = s
 }
 
-func AuthenticateToken(token string) (any, error) {
+func AuthenticateToken(ctx context.Context, token string) (any, error) {
 	if svc == nil {
 		return nil, errorx.ErrInternal
 	}
-	result, err := svc.Authenticate(token)
+	result, err := svc.Authenticate(ctx, token)
 	if err != nil {
 		logx.Warnw("AuthenticateToken failed", "err", err)
 	}
@@ -40,7 +43,7 @@ func AuthenticateToken(token string) (any, error) {
 // @Failure 400 {object} response.Body
 // @Failure 500 {object} response.Body
 // @Router /api/v1/auth/register [post]
-func Register(r flamego.Render, body dto.RegisterRequest, errs binding.Errors) {
+func Register(r flamego.Render, req *http.Request, body dto.RegisterRequest, errs binding.Errors) {
 	if web.BindingErrors(r, errs) {
 		return
 	}
@@ -48,7 +51,7 @@ func Register(r flamego.Render, body dto.RegisterRequest, errs binding.Errors) {
 		response.Error(r, errorx.ErrInternal)
 		return
 	}
-	result, err := svc.Register(dto.RegisterInput{
+	result, err := svc.Register(req.Context(), dto.RegisterInput{
 		Account:  body.Account,
 		Password: body.Password,
 	})
@@ -72,7 +75,7 @@ func Register(r flamego.Render, body dto.RegisterRequest, errs binding.Errors) {
 // @Failure 401 {object} response.Body
 // @Failure 500 {object} response.Body
 // @Router /api/v1/auth/login [post]
-func Login(r flamego.Render, body dto.LoginRequest, errs binding.Errors) {
+func Login(r flamego.Render, req *http.Request, body dto.LoginRequest, errs binding.Errors) {
 	if web.BindingErrors(r, errs) {
 		return
 	}
@@ -80,7 +83,7 @@ func Login(r flamego.Render, body dto.LoginRequest, errs binding.Errors) {
 		response.Error(r, errorx.ErrInternal)
 		return
 	}
-	result, err := svc.Login(body.Account, body.Password)
+	result, err := svc.Login(req.Context(), body.Account, body.Password)
 	if err != nil {
 		logx.Warnw("Login failed", "account", body.Account, "err", err)
 		response.Error(r, err)
@@ -116,7 +119,7 @@ func Me(r flamego.Render, current *model.User) {
 // @Failure 401 {object} response.Body
 // @Failure 500 {object} response.Body
 // @Router /api/v1/users/me [put]
-func UpdateMe(r flamego.Render, current *model.User, body dto.UpdateProfileRequest, errs binding.Errors) {
+func UpdateMe(r flamego.Render, req *http.Request, current *model.User, body dto.UpdateProfileRequest, errs binding.Errors) {
 	if web.BindingErrors(r, errs) {
 		return
 	}
@@ -124,7 +127,7 @@ func UpdateMe(r flamego.Render, current *model.User, body dto.UpdateProfileReque
 		response.Error(r, errorx.ErrInternal)
 		return
 	}
-	err := svc.UpdateProfile(current, dto.UpdateProfileInput{
+	err := svc.UpdateProfile(req.Context(), current, dto.UpdateProfileInput{
 		Name:      body.Name,
 		AvatarURL: body.AvatarURL,
 		Motto:     body.Motto,
@@ -148,12 +151,12 @@ func UpdateMe(r flamego.Render, current *model.User, body dto.UpdateProfileReque
 // @Failure 401 {object} response.Body
 // @Failure 500 {object} response.Body
 // @Router /api/v1/users/me [delete]
-func DeleteMe(r flamego.Render, current *model.User) {
+func DeleteMe(r flamego.Render, req *http.Request, current *model.User) {
 	if svc == nil {
 		response.Error(r, errorx.ErrInternal)
 		return
 	}
-	if err := svc.DeleteMe(current); err != nil {
+	if err := svc.DeleteMe(req.Context(), current); err != nil {
 		logx.Warnw("DeleteMe failed", "user_id", current.ID, "err", err)
 		response.Error(r, err)
 		return

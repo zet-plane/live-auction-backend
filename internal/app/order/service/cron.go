@@ -1,16 +1,19 @@
 package service
 
 import (
+	"context"
+
 	"github.com/zet-plane/live-auction-backend/internal/app/order/model"
+	"github.com/zet-plane/live-auction-backend/internal/core/observability"
 	"github.com/zet-plane/live-auction-backend/pkg/logx"
 )
 
 // ScanExpiredOrders updates pending orders past their ExpiredAt to expired.
 // Called by cron every 5 minutes. Processes up to 100 orders per run.
-func (s *Service) ScanExpiredOrders() {
+func (s *Service) ScanExpiredOrders(ctx context.Context) {
 	var err error
 	updatedCount := 0
-	finish := logx.Track("order.ScanExpiredOrders")
+	finish := observability.Track(ctx, "order.scan_expired")
 	defer func() {
 		finish(&err, "updated_count", updatedCount)
 	}()
@@ -32,10 +35,10 @@ func (s *Service) ScanExpiredOrders() {
 
 // ScanCompensation creates orders for ended auction items that have no order yet.
 // Called by cron every 10 minutes as a safety net for CreateOrder failures.
-func (s *Service) ScanCompensation() {
+func (s *Service) ScanCompensation(ctx context.Context) {
 	var err error
 	createdCount := 0
-	finish := logx.Track("order.ScanCompensation")
+	finish := observability.Track(ctx, "order.compensation_scan")
 	defer func() {
 		finish(&err, "created_count", createdCount)
 	}()
@@ -47,7 +50,7 @@ func (s *Service) ScanCompensation() {
 		return
 	}
 	for _, item := range items {
-		if _, err := s.CreateOrder(item.ItemID, item.WinnerID, item.DealPrice); err != nil {
+		if _, err := s.CreateOrder(ctx, item.ItemID, item.WinnerID, item.DealPrice); err != nil {
 			logx.Errorf("[order] ScanCompensation create order for item %s error: %v", item.ItemID, err)
 			continue
 		}

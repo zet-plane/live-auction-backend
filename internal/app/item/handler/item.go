@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"context"
+	"net/http"
 	"strconv"
 
 	"github.com/flamego/binding"
@@ -34,7 +36,7 @@ func Init(s *service.Service) {
 // @Failure 401 {object} response.Body
 // @Failure 500 {object} response.Body
 // @Router /api/v1/items [post]
-func CreateItem(r flamego.Render, current *usermodel.User, body dto.CreateItemRequest, errs binding.Errors) {
+func CreateItem(r flamego.Render, req *http.Request, current *usermodel.User, body dto.CreateItemRequest, errs binding.Errors) {
 	if web.BindingErrors(r, errs) {
 		return
 	}
@@ -42,7 +44,7 @@ func CreateItem(r flamego.Render, current *usermodel.User, body dto.CreateItemRe
 		response.Error(r, errorx.ErrInternal)
 		return
 	}
-	result, err := svc.CreateItem(current, body.Input())
+	result, err := svc.CreateItem(req.Context(), current, body.Input())
 	if err != nil {
 		logx.Warnw("CreateItem failed", "user_id", current.ID, "err", err)
 		response.Error(r, err)
@@ -63,12 +65,12 @@ func CreateItem(r flamego.Render, current *usermodel.User, body dto.CreateItemRe
 // @Success 200 {object} response.Body{data=dto.ItemListResult}
 // @Failure 500 {object} response.Body
 // @Router /api/v1/items [get]
-func ListItems(r flamego.Render, c flamego.Context) {
+func ListItems(r flamego.Render, req *http.Request, c flamego.Context) {
 	if svc == nil {
 		response.Error(r, errorx.ErrInternal)
 		return
 	}
-	result, err := svc.ListItems(listInput(c))
+	result, err := svc.ListItems(req.Context(), listInput(c))
 	if err != nil {
 		logx.Warnw("ListItems failed", "err", err)
 		response.Error(r, err)
@@ -91,12 +93,12 @@ func ListItems(r flamego.Render, c flamego.Context) {
 // @Failure 401 {object} response.Body
 // @Failure 500 {object} response.Body
 // @Router /api/v1/merchant/items [get]
-func ListMerchantItems(r flamego.Render, c flamego.Context, current *usermodel.User) {
+func ListMerchantItems(r flamego.Render, req *http.Request, c flamego.Context, current *usermodel.User) {
 	if svc == nil {
 		response.Error(r, errorx.ErrInternal)
 		return
 	}
-	result, err := svc.ListMerchantItems(current, listInput(c))
+	result, err := svc.ListMerchantItems(req.Context(), current, listInput(c))
 	if err != nil {
 		logx.Warnw("ListMerchantItems failed", "user_id", current.ID, "err", err)
 		response.Error(r, err)
@@ -116,12 +118,12 @@ func ListMerchantItems(r flamego.Render, c flamego.Context, current *usermodel.U
 // @Failure 404 {object} response.Body
 // @Failure 500 {object} response.Body
 // @Router /api/v1/items/{item_id} [get]
-func GetItem(r flamego.Render, c flamego.Context) {
+func GetItem(r flamego.Render, req *http.Request, c flamego.Context) {
 	if svc == nil {
 		response.Error(r, errorx.ErrInternal)
 		return
 	}
-	result, err := svc.GetItem(c.Param("item_id"))
+	result, err := svc.GetItem(req.Context(), c.Param("item_id"))
 	if err != nil {
 		logx.Warnw("GetItem failed", "item_id", c.Param("item_id"), "err", err)
 		response.Error(r, err)
@@ -144,7 +146,7 @@ func GetItem(r flamego.Render, c flamego.Context) {
 // @Failure 401 {object} response.Body
 // @Failure 500 {object} response.Body
 // @Router /api/v1/items/{item_id} [put]
-func UpdateItem(r flamego.Render, c flamego.Context, current *usermodel.User, body dto.CreateItemRequest, errs binding.Errors) {
+func UpdateItem(r flamego.Render, req *http.Request, c flamego.Context, current *usermodel.User, body dto.CreateItemRequest, errs binding.Errors) {
 	if web.BindingErrors(r, errs) {
 		return
 	}
@@ -152,7 +154,7 @@ func UpdateItem(r flamego.Render, c flamego.Context, current *usermodel.User, bo
 		response.Error(r, errorx.ErrInternal)
 		return
 	}
-	if err := svc.UpdateItem(current, c.Param("item_id"), body.Input()); err != nil {
+	if err := svc.UpdateItem(req.Context(), current, c.Param("item_id"), body.Input()); err != nil {
 		logx.Warnw("UpdateItem failed", "user_id", current.ID, "item_id", c.Param("item_id"), "err", err)
 		response.Error(r, err)
 		return
@@ -171,12 +173,12 @@ func UpdateItem(r flamego.Render, c flamego.Context, current *usermodel.User, bo
 // @Failure 401 {object} response.Body
 // @Failure 500 {object} response.Body
 // @Router /api/v1/items/{item_id} [delete]
-func DeleteItem(r flamego.Render, c flamego.Context, current *usermodel.User) {
+func DeleteItem(r flamego.Render, req *http.Request, c flamego.Context, current *usermodel.User) {
 	if svc == nil {
 		response.Error(r, errorx.ErrInternal)
 		return
 	}
-	if err := svc.DeleteItem(current, c.Param("item_id")); err != nil {
+	if err := svc.DeleteItem(req.Context(), current, c.Param("item_id")); err != nil {
 		logx.Warnw("DeleteItem failed", "user_id", current.ID, "item_id", c.Param("item_id"), "err", err)
 		response.Error(r, err)
 		return
@@ -195,8 +197,8 @@ func DeleteItem(r flamego.Render, c flamego.Context, current *usermodel.User) {
 // @Failure 401 {object} response.Body
 // @Failure 500 {object} response.Body
 // @Router /api/v1/items/{item_id}/publish [post]
-func PublishItem(r flamego.Render, c flamego.Context, current *usermodel.User) {
-	statusAction(r, c, current, "PublishItem", svc.PublishItem)
+func PublishItem(r flamego.Render, req *http.Request, c flamego.Context, current *usermodel.User) {
+	statusAction(r, req, c, current, "PublishItem", svc.PublishItem)
 }
 
 // StartItem starts a published auction item.
@@ -210,8 +212,8 @@ func PublishItem(r flamego.Render, c flamego.Context, current *usermodel.User) {
 // @Failure 401 {object} response.Body
 // @Failure 500 {object} response.Body
 // @Router /api/v1/items/{item_id}/start [post]
-func StartItem(r flamego.Render, c flamego.Context, current *usermodel.User) {
-	statusAction(r, c, current, "StartItem", svc.StartItem)
+func StartItem(r flamego.Render, req *http.Request, c flamego.Context, current *usermodel.User) {
+	statusAction(r, req, c, current, "StartItem", svc.StartItem)
 }
 
 // CancelItem cancels a published or ongoing auction item.
@@ -225,16 +227,16 @@ func StartItem(r flamego.Render, c flamego.Context, current *usermodel.User) {
 // @Failure 401 {object} response.Body
 // @Failure 500 {object} response.Body
 // @Router /api/v1/items/{item_id}/cancel [post]
-func CancelItem(r flamego.Render, c flamego.Context, current *usermodel.User) {
-	statusAction(r, c, current, "CancelItem", svc.CancelItem)
+func CancelItem(r flamego.Render, req *http.Request, c flamego.Context, current *usermodel.User) {
+	statusAction(r, req, c, current, "CancelItem", svc.CancelItem)
 }
 
-func statusAction(r flamego.Render, c flamego.Context, current *usermodel.User, op string, action func(*usermodel.User, string) error) {
+func statusAction(r flamego.Render, req *http.Request, c flamego.Context, current *usermodel.User, op string, action func(context.Context, *usermodel.User, string) error) {
 	if svc == nil {
 		response.Error(r, errorx.ErrInternal)
 		return
 	}
-	if err := action(current, c.Param("item_id")); err != nil {
+	if err := action(req.Context(), current, c.Param("item_id")); err != nil {
 		logx.Warnw(op+" failed", "user_id", current.ID, "item_id", c.Param("item_id"), "err", err)
 		response.Error(r, err)
 		return

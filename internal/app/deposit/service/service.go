@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"time"
@@ -9,8 +10,8 @@ import (
 	"github.com/zet-plane/live-auction-backend/internal/app/deposit/dto"
 	"github.com/zet-plane/live-auction-backend/internal/app/deposit/model"
 	usermodel "github.com/zet-plane/live-auction-backend/internal/app/user/model"
+	"github.com/zet-plane/live-auction-backend/internal/core/observability"
 	"github.com/zet-plane/live-auction-backend/pkg/errorx"
-	"github.com/zet-plane/live-auction-backend/pkg/logx"
 	"github.com/zet-plane/live-auction-backend/pkg/snowflake"
 )
 
@@ -23,8 +24,8 @@ func NewService(store dao.Store) *Service {
 	return &Service{store: store, now: time.Now}
 }
 
-func (s *Service) PayDeposit(current *usermodel.User, itemID string) (result *dto.DepositDetail, err error) {
-	defer logx.Track("deposit.PayDeposit", "user_id", userID(current), "item_id", strings.TrimSpace(itemID))(&err)
+func (s *Service) PayDeposit(ctx context.Context, current *usermodel.User, itemID string) (result *dto.DepositDetail, err error) {
+	defer observability.Track(ctx, "deposit.pay", "user_id", userID(current), "item_id", strings.TrimSpace(itemID))(&err)
 
 	if current == nil || strings.TrimSpace(current.ID) == "" {
 		return nil, errorx.ErrUnauthorized
@@ -77,8 +78,8 @@ func (s *Service) PayDeposit(current *usermodel.User, itemID string) (result *dt
 	return dto.NewDepositDetail(deposit), nil
 }
 
-func (s *Service) GetMyDeposit(current *usermodel.User, itemID string) (result *dto.DepositDetail, err error) {
-	defer logx.Track("deposit.GetMyDeposit", "user_id", userID(current), "item_id", strings.TrimSpace(itemID))(&err)
+func (s *Service) GetMyDeposit(ctx context.Context, current *usermodel.User, itemID string) (result *dto.DepositDetail, err error) {
+	defer observability.Track(ctx, "deposit.get_my", "user_id", userID(current), "item_id", strings.TrimSpace(itemID))(&err)
 
 	if current == nil || strings.TrimSpace(current.ID) == "" {
 		return nil, errorx.ErrUnauthorized
@@ -94,8 +95,8 @@ func (s *Service) GetMyDeposit(current *usermodel.User, itemID string) (result *
 	return dto.NewDepositDetail(deposit), nil
 }
 
-func (s *Service) HasPaidDeposit(itemID, userID string, requiredAmount int64) (ok bool, err error) {
-	defer logx.Track("deposit.HasPaidDeposit",
+func (s *Service) HasPaidDeposit(ctx context.Context, itemID, userID string, requiredAmount int64) (ok bool, err error) {
+	defer observability.Track(ctx, "deposit.check",
 		"item_id", strings.TrimSpace(itemID),
 		"user_id", strings.TrimSpace(userID),
 		"required_amount", requiredAmount,

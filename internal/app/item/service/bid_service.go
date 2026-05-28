@@ -10,48 +10,66 @@ import (
 	"github.com/zet-plane/live-auction-backend/internal/app/item/dto"
 	"github.com/zet-plane/live-auction-backend/internal/app/item/model"
 	usermodel "github.com/zet-plane/live-auction-backend/internal/app/user/model"
+	"github.com/zet-plane/live-auction-backend/internal/core/observability"
 	"github.com/zet-plane/live-auction-backend/pkg/errorx"
-	"github.com/zet-plane/live-auction-backend/pkg/logx"
 	"github.com/zet-plane/live-auction-backend/pkg/snowflake"
 	"github.com/zet-plane/live-auction-backend/pkg/wsevent"
 )
 
 var ErrDepositRequired = errorx.New(http.StatusBadRequest, 40005, "deposit required")
 
-func (s *Service) PlaceBid(current *usermodel.User, itemID string, input dto.PlaceBidInput) (result *dto.PlaceBidResult, err error) {
+func (s *Service) PlaceBid(ctx context.Context, current *usermodel.User, itemID string, input dto.PlaceBidInput) (result *dto.PlaceBidResult, err error) {
 	itemID = strings.TrimSpace(itemID)
 	var bidID string
 	status := ""
-	finish := logx.Track("item.PlaceBid", "user_id", userID(current), "item_id", itemID, "price", input.Price)
+	bidResult := "success"
+	bidReason := "accepted"
+	finish := observability.Track(ctx, "auction.place_bid", "user_id", userID(current), "item_id", itemID, "price", input.Price)
 	defer func() {
-		finish(&err, "bid_id", bidID, "status", status)
+		if err != nil && bidResult == "success" {
+			bidResult = "error"
+			bidReason = "internal"
+		}
+		finish(&err, "bid_id", bidID, "status", status, "result", bidResult, "reason", bidReason)
 	}()
 
 	item, rule, err := s.store.FindItemWithRule(itemID)
 	if err != nil {
+		bidResult = "error"
+		bidReason = "db_error"
 		return nil, err
 	}
 	if item.Status != model.ItemOngoing {
+		bidResult = "rejected"
+		bidReason = "item_not_ongoing"
 		return nil, errorx.ErrInvalidRequest
 	}
 	if rule.DepositAmount > 0 {
 		if s.depositSvc == nil {
+			bidResult = "error"
+			bidReason = "internal"
 			return nil, errorx.ErrInternal
 		}
-		ok, err := s.depositSvc.HasPaidDeposit(item.ID, current.ID, rule.DepositAmount)
+		ok, err := s.depositSvc.HasPaidDeposit(ctx, item.ID, current.ID, rule.DepositAmount)
 		if err != nil {
+			bidResult = "error"
+			bidReason = "db_error"
 			return nil, err
 		}
 		if !ok {
+			bidResult = "rejected"
+			bidReason = "deposit_required"
 			return nil, ErrDepositRequired
 		}
 	}
 	if s.cache == nil {
+		bidResult = "error"
+		bidReason = "internal"
 		return nil, errorx.ErrInternal
 	}
 
 	bidID = "bid_" + snowflake.MakeUUID()
-	luaResult, err := s.cache.PlaceBidLua(context.Background(), item.ID, itemcache.BidLuaArgs{
+	luaResult, err := s.cache.PlaceBidLua(ctx, item.ID, itemcache.BidLuaArgs{
 		UserID:            current.ID,
 		UserName:          input.UserName,
 		BidID:             bidID,
@@ -67,6 +85,8 @@ func (s *Service) PlaceBid(current *usermodel.User, itemID string, input dto.Pla
 		IdempotencyTTL:    86400,
 	})
 	if err != nil {
+		bidResult = "error"
+		bidReason = "redis_error"
 		return nil, err
 	}
 
@@ -74,6 +94,8 @@ func (s *Service) PlaceBid(current *usermodel.User, itemID string, input dto.Pla
 	case 1: // idempotent: already bid, return current state without writing BidLog again
 		bidID = luaResult.BidID
 		status = "ongoing"
+		bidResult = "idempotent"
+		bidReason = "idempotency_key"
 		return &dto.PlaceBidResult{
 			BidID:        luaResult.BidID,
 			CurrentPrice: luaResult.CurrentPrice,
@@ -82,13 +104,21 @@ func (s *Service) PlaceBid(current *usermodel.User, itemID string, input dto.Pla
 			Status:       "ongoing",
 		}, nil
 	case 2:
+		bidResult = "rejected"
+		bidReason = "auction_ended"
 		return nil, errorx.New(http.StatusBadRequest, 40002, "auction has ended")
 	case 3:
+		bidResult = "rejected"
+		bidReason = "price_too_low"
 		return nil, errorx.New(http.StatusBadRequest, 40003, "price too low")
 	case 4:
+		bidResult = "rejected"
+		bidReason = "invalid_bid_increment"
 		return nil, errorx.New(http.StatusBadRequest, 40004, "invalid bid increment")
 	default:
 		if luaResult.Code != 0 {
+			bidResult = "error"
+			bidReason = "internal"
 			return nil, errorx.ErrInternal
 		}
 	}
@@ -102,6 +132,8 @@ func (s *Service) PlaceBid(current *usermodel.User, itemID string, input dto.Pla
 		Price:  input.Price,
 	}
 	if err := s.store.CreateBidLog(bidLog); err != nil {
+		bidResult = "error"
+		bidReason = "db_error"
 		return nil, err
 	}
 
@@ -146,12 +178,14 @@ func (s *Service) PlaceBid(current *usermodel.User, itemID string, input dto.Pla
 		item.WinnerID = current.ID
 		item.DealPrice = input.Price
 		if err := s.store.UpdateItemWithRule(item, rule); err != nil {
+			bidResult = "error"
+			bidReason = "db_error"
 			return nil, err
 		}
 		status = "ended"
 		var orderID string
 		if s.orderSvc != nil {
-			if order, err := s.orderSvc.CreateOrder(item.ID, current.ID, input.Price); err == nil && order != nil {
+			if order, err := s.orderSvc.CreateOrder(ctx, item.ID, current.ID, input.Price); err == nil && order != nil {
 				orderID = order.ID
 			}
 		}
@@ -189,7 +223,7 @@ func (s *Service) PlaceBid(current *usermodel.User, itemID string, input dto.Pla
 	}, nil
 }
 
-func (s *Service) GetRanking(itemID string, page, pageSize int) (result *dto.RankingResult, err error) {
+func (s *Service) GetRanking(ctx context.Context, itemID string, page, pageSize int) (result *dto.RankingResult, err error) {
 	itemID = strings.TrimSpace(itemID)
 	if page <= 0 {
 		page = 1
@@ -200,14 +234,14 @@ func (s *Service) GetRanking(itemID string, page, pageSize int) (result *dto.Ran
 	case pageSize <= 0:
 		pageSize = 10
 	}
-	defer logx.Track("item.GetRanking", "item_id", itemID, "page", page, "page_size", pageSize)(&err)
+	defer observability.Track(ctx, "auction.get_ranking", "item_id", itemID, "page", page, "page_size", pageSize)(&err)
 
 	offset := (page - 1) * pageSize
 
 	var entries []dto.BidderPrice
 	if s.cache != nil {
 		var err error
-		entries, err = s.cache.GetRanking(context.Background(), itemID, offset, pageSize)
+		entries, err = s.cache.GetRanking(ctx, itemID, offset, pageSize)
 		if err != nil {
 			entries = nil // degrade to MySQL fallback; read errors are non-fatal
 		}

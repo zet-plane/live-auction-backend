@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"net/http"
 	"strings"
 
@@ -13,7 +14,7 @@ import (
 // returned user value into the flamego DI container.
 // verify must return a concrete pointer type (e.g. *model.User) so that
 // flamego can inject it by type into downstream handlers.
-func Authorization(verify func(string) (any, error)) flamego.Handler {
+func Authorization(verify func(context.Context, string) (any, error)) flamego.Handler {
 	return func(c flamego.Context, r flamego.Render, req *http.Request) {
 		header := req.Header.Get("Authorization")
 		token := strings.TrimSpace(strings.TrimPrefix(header, "Bearer "))
@@ -21,7 +22,7 @@ func Authorization(verify func(string) (any, error)) flamego.Handler {
 			response.Error(r, errorx.ErrUnauthorized)
 			return
 		}
-		u, err := verify(token)
+		u, err := verify(req.Context(), token)
 		if err != nil {
 			response.Error(r, err)
 			return

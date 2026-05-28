@@ -149,7 +149,7 @@ func TestCreateItemRequiresMerchantAndCreatesDraftItemWithRule(t *testing.T) {
 	start := time.Date(2026, 5, 21, 20, 0, 0, 0, time.FixedZone("CST", 8*60*60))
 	end := start.Add(10 * time.Minute)
 
-	_, err := svc.CreateItem(&usermodel.User{ID: "user_1", Identity: usermodel.IdentityUser}, itemdto.CreateItemInput{
+	_, err := svc.CreateItem(context.Background(), &usermodel.User{ID: "user_1", Identity: usermodel.IdentityUser}, itemdto.CreateItemInput{
 		Title:       "翡翠手镯",
 		Description: "天然翡翠，支持鉴定",
 		ImageURL:    "https://example.com/item.png",
@@ -167,7 +167,7 @@ func TestCreateItemRequiresMerchantAndCreatesDraftItemWithRule(t *testing.T) {
 		t.Fatalf("expected unauthorized for non-merchant, got %v", err)
 	}
 
-	result, err := svc.CreateItem(&usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}, itemdto.CreateItemInput{
+	result, err := svc.CreateItem(context.Background(), &usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}, itemdto.CreateItemInput{
 		RoomID:      "room_abc",
 		Title:       " 翡翠手镯 ",
 		Description: " 天然翡翠，支持鉴定 ",
@@ -219,7 +219,7 @@ func TestCreateItemRejectsMissingRoomID(t *testing.T) {
 	svc := NewService(store, itemdto.AuctionPolicy{}, nil, nil, nil, nil)
 	start := time.Date(2026, 5, 21, 20, 0, 0, 0, time.UTC)
 
-	_, err := svc.CreateItem(
+	_, err := svc.CreateItem(context.Background(),
 		&usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant},
 		itemdto.CreateItemInput{
 			Title: "翡翠手镯",
@@ -244,28 +244,28 @@ func TestPublishStartAndCancelValidateOwnerAndStatus(t *testing.T) {
 	svc := NewService(store, itemdto.AuctionPolicy{}, nil, nil, nil, nil)
 	itemID := seedDraftItem(t, svc, "merchant_1")
 
-	if err := svc.PublishItem(&usermodel.User{ID: "merchant_2", Identity: usermodel.IdentityMerchant}, itemID); !errors.Is(err, errorx.ErrNotFound) {
+	if err := svc.PublishItem(context.Background(), &usermodel.User{ID: "merchant_2", Identity: usermodel.IdentityMerchant}, itemID); !errors.Is(err, errorx.ErrNotFound) {
 		t.Fatalf("expected not found for another merchant, got %v", err)
 	}
-	if err := svc.StartItem(&usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}, itemID); !errors.Is(err, errorx.ErrInvalidRequest) {
+	if err := svc.StartItem(context.Background(), &usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}, itemID); !errors.Is(err, errorx.ErrInvalidRequest) {
 		t.Fatalf("expected invalid request when starting draft item, got %v", err)
 	}
-	if err := svc.PublishItem(&usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}, itemID); err != nil {
+	if err := svc.PublishItem(context.Background(), &usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}, itemID); err != nil {
 		t.Fatalf("PublishItem returned error: %v", err)
 	}
 	if store.items[itemID].Status != itemmodel.ItemPublished {
 		t.Fatalf("expected published status, got %q", store.items[itemID].Status)
 	}
-	if err := svc.StartItem(&usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}, itemID); err != nil {
+	if err := svc.StartItem(context.Background(), &usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}, itemID); err != nil {
 		t.Fatalf("StartItem returned error: %v", err)
 	}
 	if store.items[itemID].Status != itemmodel.ItemOngoing {
 		t.Fatalf("expected ongoing status, got %q", store.items[itemID].Status)
 	}
-	if err := svc.PublishItem(&usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}, itemID); !errors.Is(err, errorx.ErrInvalidRequest) {
+	if err := svc.PublishItem(context.Background(), &usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}, itemID); !errors.Is(err, errorx.ErrInvalidRequest) {
 		t.Fatalf("expected invalid request when publishing ongoing item, got %v", err)
 	}
-	if err := svc.CancelItem(&usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}, itemID); err != nil {
+	if err := svc.CancelItem(context.Background(), &usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}, itemID); err != nil {
 		t.Fatalf("CancelItem returned error: %v", err)
 	}
 	if store.items[itemID].Status != itemmodel.ItemCancelled {
@@ -428,7 +428,7 @@ func TestCreateItemStoresRoomID(t *testing.T) {
 	start := time.Date(2026, 5, 21, 20, 0, 0, 0, time.UTC)
 	end := start.Add(10 * time.Minute)
 
-	result, err := svc.CreateItem(
+	result, err := svc.CreateItem(context.Background(),
 		&usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant},
 		itemdto.CreateItemInput{
 			RoomID: "room_abc",
@@ -452,7 +452,7 @@ func TestUpdateItemRejectsBlankRoomIDAndKeepsExistingRoomID(t *testing.T) {
 	itemID := seedDraftItem(t, svc, merchant.ID)
 	start := time.Date(2026, 5, 21, 20, 0, 0, 0, time.UTC)
 
-	err := svc.UpdateItem(merchant, itemID, itemdto.CreateItemInput{
+	err := svc.UpdateItem(context.Background(), merchant, itemID, itemdto.CreateItemInput{
 		RoomID: "   ",
 		Title:  "Updated Item",
 		Rule: itemdto.RuleInput{
@@ -477,7 +477,7 @@ func TestUpdateItemPersistsRoomID(t *testing.T) {
 	itemID := seedDraftItem(t, svc, merchant.ID)
 	start := time.Date(2026, 5, 21, 20, 0, 0, 0, time.UTC)
 
-	err := svc.UpdateItem(merchant, itemID, itemdto.CreateItemInput{
+	err := svc.UpdateItem(context.Background(), merchant, itemID, itemdto.CreateItemInput{
 		RoomID: " room_xyz ",
 		Title:  "Updated Item",
 		Rule: itemdto.RuleInput{
@@ -502,7 +502,7 @@ func TestPublishItemPushesToRoomQueue(t *testing.T) {
 	start := time.Date(2026, 5, 21, 20, 0, 0, 0, time.UTC)
 	end := start.Add(10 * time.Minute)
 
-	result, _ := svc.CreateItem(
+	result, _ := svc.CreateItem(context.Background(),
 		&usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant},
 		itemdto.CreateItemInput{
 			RoomID: "room_abc",
@@ -510,7 +510,7 @@ func TestPublishItemPushesToRoomQueue(t *testing.T) {
 			Rule:   itemdto.RuleInput{BidIncrement: 100, StartTime: start, EndTime: end},
 		},
 	)
-	if err := svc.PublishItem(&usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}, result.ItemID); err != nil {
+	if err := svc.PublishItem(context.Background(), &usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}, result.ItemID); err != nil {
 		t.Fatalf("PublishItem failed: %v", err)
 	}
 	if len(fc.queues["room_abc"]) == 0 || fc.queues["room_abc"][0] != result.ItemID {
@@ -524,7 +524,7 @@ func TestStartItemInitializesRedisState(t *testing.T) {
 	svc := NewService(store, itemdto.AuctionPolicy{}, fc, nil, nil, nil)
 	itemID := seedPublishedItem(t, svc, "merchant_1", "room_abc")
 
-	if err := svc.StartItem(&usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}, itemID); err != nil {
+	if err := svc.StartItem(context.Background(), &usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}, itemID); err != nil {
 		t.Fatalf("StartItem failed: %v", err)
 	}
 	state, ok := fc.states[itemID]
@@ -546,7 +546,7 @@ func TestStartItemFailsWhenRedisInitFails(t *testing.T) {
 	svc := NewService(store, itemdto.AuctionPolicy{}, fc, nil, nil, nil)
 	itemID := seedPublishedItem(t, svc, "merchant_1", "room_abc")
 
-	if err := svc.StartItem(&usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}, itemID); err == nil {
+	if err := svc.StartItem(context.Background(), &usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}, itemID); err == nil {
 		t.Fatal("expected error when Redis init fails")
 	}
 	item := store.items[itemID]
@@ -563,7 +563,7 @@ func TestStartItemRollsBackRedisOnMySQLFailure(t *testing.T) {
 
 	store.updateErr = errors.New("mysql down")
 
-	if err := svc.StartItem(&usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}, itemID); err == nil {
+	if err := svc.StartItem(context.Background(), &usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}, itemID); err == nil {
 		t.Fatal("expected error when MySQL fails")
 	}
 	if _, ok := fc.states[itemID]; ok {
@@ -577,7 +577,7 @@ func TestGetItemEnrichesFromCacheWhenOngoing(t *testing.T) {
 	svc := NewService(store, itemdto.AuctionPolicy{}, fc, nil, nil, nil)
 	merchant := &usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}
 	itemID := seedPublishedItem(t, svc, "merchant_1", "room_abc")
-	_ = svc.StartItem(merchant, itemID)
+	_ = svc.StartItem(context.Background(), merchant, itemID)
 
 	fc.states[itemID] = &itemcache.AuctionState{
 		CurrentPrice: 5000,
@@ -586,7 +586,7 @@ func TestGetItemEnrichesFromCacheWhenOngoing(t *testing.T) {
 		BidCount:     3,
 	}
 
-	detail, err := svc.GetItem(itemID)
+	detail, err := svc.GetItem(context.Background(), itemID)
 	if err != nil {
 		t.Fatalf("GetItem failed: %v", err)
 	}
@@ -604,10 +604,10 @@ func TestGetItemFallsBackToMySQLWhenCacheMiss(t *testing.T) {
 	svc := NewService(store, itemdto.AuctionPolicy{}, fc, nil, nil, nil)
 	merchant := &usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}
 	itemID := seedPublishedItem(t, svc, "merchant_1", "room_abc")
-	_ = svc.StartItem(merchant, itemID)
+	_ = svc.StartItem(context.Background(), merchant, itemID)
 	delete(fc.states, itemID)
 
-	detail, err := svc.GetItem(itemID)
+	detail, err := svc.GetItem(context.Background(), itemID)
 	if err != nil {
 		t.Fatalf("GetItem should not fail on cache miss, got %v", err)
 	}
@@ -623,9 +623,9 @@ func TestCancelItemRemovesFromRoomQueueAndState(t *testing.T) {
 	itemID := seedPublishedItem(t, svc, "merchant_1", "room_abc")
 	merchant := &usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}
 
-	_ = svc.StartItem(merchant, itemID)
+	_ = svc.StartItem(context.Background(), merchant, itemID)
 
-	if err := svc.CancelItem(merchant, itemID); err != nil {
+	if err := svc.CancelItem(context.Background(), merchant, itemID); err != nil {
 		t.Fatalf("CancelItem failed: %v", err)
 	}
 	if _, ok := fc.states[itemID]; ok {
@@ -642,7 +642,7 @@ func seedPublishedItem(t *testing.T, svc *Service, merchantID, roomID string) st
 	t.Helper()
 	start := time.Date(2026, 5, 21, 20, 0, 0, 0, time.UTC)
 	end := start.Add(10 * time.Minute)
-	result, err := svc.CreateItem(
+	result, err := svc.CreateItem(context.Background(),
 		&usermodel.User{ID: merchantID, Identity: usermodel.IdentityMerchant},
 		itemdto.CreateItemInput{
 			RoomID: roomID,
@@ -653,7 +653,7 @@ func seedPublishedItem(t *testing.T, svc *Service, merchantID, roomID string) st
 	if err != nil {
 		t.Fatalf("CreateItem failed: %v", err)
 	}
-	if err := svc.PublishItem(&usermodel.User{ID: merchantID, Identity: usermodel.IdentityMerchant}, result.ItemID); err != nil {
+	if err := svc.PublishItem(context.Background(), &usermodel.User{ID: merchantID, Identity: usermodel.IdentityMerchant}, result.ItemID); err != nil {
 		t.Fatalf("PublishItem failed: %v", err)
 	}
 	return result.ItemID
@@ -675,7 +675,7 @@ func TestEndExpiredAuctionsBroadcastsAuctionEnded(t *testing.T) {
 	// Advance time past the end time
 	svc.now = func() time.Time { return time.Now().Add(10 * time.Minute) }
 
-	svc.EndExpiredAuctions()
+	svc.EndExpiredAuctions(context.Background())
 
 	found := false
 	for _, f := range fb.fanouts {
@@ -691,7 +691,7 @@ func TestEndExpiredAuctionsBroadcastsAuctionEnded(t *testing.T) {
 func seedDraftItem(t *testing.T, svc *Service, merchantID string) string {
 	t.Helper()
 	start := time.Date(2026, 5, 21, 20, 0, 0, 0, time.UTC)
-	result, err := svc.CreateItem(&usermodel.User{ID: merchantID, Identity: usermodel.IdentityMerchant}, itemdto.CreateItemInput{
+	result, err := svc.CreateItem(context.Background(), &usermodel.User{ID: merchantID, Identity: usermodel.IdentityMerchant}, itemdto.CreateItemInput{
 		RoomID:   "room_abc",
 		Title:    "item",
 		ImageURL: "https://example.com/item.png",

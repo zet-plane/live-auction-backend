@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"net/http"
+
 	"github.com/flamego/flamego"
 	"github.com/zet-plane/live-auction-backend/internal/app/deposit/service"
 	usermodel "github.com/zet-plane/live-auction-backend/internal/app/user/model"
@@ -26,12 +28,12 @@ func Init(s *service.Service) {
 // @Failure 401 {object} response.Body
 // @Failure 500 {object} response.Body
 // @Router /api/v1/items/{item_id}/deposit/pay [post]
-func PayDeposit(r flamego.Render, c flamego.Context, current *usermodel.User) {
+func PayDeposit(r flamego.Render, req *http.Request, c flamego.Context, current *usermodel.User) {
 	if svc == nil {
 		response.Error(r, errorx.ErrInternal)
 		return
 	}
-	result, err := svc.PayDeposit(current, c.Param("item_id"))
+	result, err := svc.PayDeposit(req.Context(), current, c.Param("item_id"))
 	if err != nil {
 		logx.Warnw("PayDeposit failed", "user_id", current.ID, "item_id", c.Param("item_id"), "err", err)
 		response.Error(r, err)
@@ -51,12 +53,12 @@ func PayDeposit(r flamego.Render, c flamego.Context, current *usermodel.User) {
 // @Failure 401 {object} response.Body
 // @Failure 500 {object} response.Body
 // @Router /api/v1/items/{item_id}/deposit [get]
-func GetMyDeposit(r flamego.Render, c flamego.Context, current *usermodel.User) {
+func GetMyDeposit(r flamego.Render, req *http.Request, c flamego.Context, current *usermodel.User) {
 	if svc == nil {
 		response.Error(r, errorx.ErrInternal)
 		return
 	}
-	result, err := svc.GetMyDeposit(current, c.Param("item_id"))
+	result, err := svc.GetMyDeposit(req.Context(), current, c.Param("item_id"))
 	if err != nil {
 		logx.Warnw("GetMyDeposit failed", "user_id", current.ID, "item_id", c.Param("item_id"), "err", err)
 		response.Error(r, err)

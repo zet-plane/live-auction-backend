@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -66,7 +67,7 @@ func TestPayDepositCreatesPaidDepositUsingRuleAmount(t *testing.T) {
 	svc := NewService(store)
 	svc.now = func() time.Time { return store.now }
 
-	result, err := svc.PayDeposit(&usermodel.User{ID: "user_1"}, " item_1 ")
+	result, err := svc.PayDeposit(context.Background(), &usermodel.User{ID: "user_1"}, " item_1 ")
 	if err != nil {
 		t.Fatalf("PayDeposit returned error: %v", err)
 	}
@@ -94,11 +95,11 @@ func TestPayDepositIsIdempotentWhenAlreadyPaid(t *testing.T) {
 	svc.now = func() time.Time { return store.now }
 	user := &usermodel.User{ID: "user_1"}
 
-	first, err := svc.PayDeposit(user, "item_1")
+	first, err := svc.PayDeposit(context.Background(), user, "item_1")
 	if err != nil {
 		t.Fatalf("first PayDeposit returned error: %v", err)
 	}
-	second, err := svc.PayDeposit(user, "item_1")
+	second, err := svc.PayDeposit(context.Background(), user, "item_1")
 	if err != nil {
 		t.Fatalf("second PayDeposit returned error: %v", err)
 	}
@@ -115,7 +116,7 @@ func TestPayDepositRejectsItemWithoutRequiredDeposit(t *testing.T) {
 	store.amounts["item_1"] = 0
 	svc := NewService(store)
 
-	_, err := svc.PayDeposit(&usermodel.User{ID: "user_1"}, "item_1")
+	_, err := svc.PayDeposit(context.Background(), &usermodel.User{ID: "user_1"}, "item_1")
 	if !errors.Is(err, errorx.ErrInvalidRequest) {
 		t.Fatalf("expected invalid request, got %v", err)
 	}
@@ -128,8 +129,8 @@ func TestGetMyDepositReturnsExistingDeposit(t *testing.T) {
 	svc.now = func() time.Time { return store.now }
 	user := &usermodel.User{ID: "user_1"}
 
-	created, _ := svc.PayDeposit(user, "item_1")
-	found, err := svc.GetMyDeposit(user, "item_1")
+	created, _ := svc.PayDeposit(context.Background(), user, "item_1")
+	found, err := svc.GetMyDeposit(context.Background(), user, "item_1")
 	if err != nil {
 		t.Fatalf("GetMyDeposit returned error: %v", err)
 	}
@@ -167,7 +168,7 @@ func TestHasPaidDeposit(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := svc.HasPaidDeposit(tt.itemID, "user_1", tt.amount)
+			got, err := svc.HasPaidDeposit(context.Background(), tt.itemID, "user_1", tt.amount)
 			if err != nil {
 				t.Fatalf("HasPaidDeposit returned error: %v", err)
 			}

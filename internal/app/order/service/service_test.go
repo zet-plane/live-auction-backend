@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -120,7 +121,7 @@ func TestCreateOrder_CreatesWithPendingStatus(t *testing.T) {
 	store := newFakeStore()
 	svc := newTestService(store)
 
-	order, err := svc.CreateOrder("item_1", "user_1", 5000)
+	order, err := svc.CreateOrder(context.Background(), "item_1", "user_1", 5000)
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -144,8 +145,8 @@ func TestCreateOrder_Idempotent(t *testing.T) {
 	store := newFakeStore()
 	svc := newTestService(store)
 
-	first, _ := svc.CreateOrder("item_1", "user_1", 5000)
-	second, err := svc.CreateOrder("item_1", "user_1", 5000)
+	first, _ := svc.CreateOrder(context.Background(), "item_1", "user_1", 5000)
+	second, err := svc.CreateOrder(context.Background(), "item_1", "user_1", 5000)
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -158,10 +159,10 @@ func TestCreateOrder_Idempotent(t *testing.T) {
 func TestPay_Success(t *testing.T) {
 	store := newFakeStore()
 	svc := newTestService(store)
-	order, _ := svc.CreateOrder("item_1", "user_1", 5000)
+	order, _ := svc.CreateOrder(context.Background(), "item_1", "user_1", 5000)
 
 	user := &usermodel.User{ID: "user_1"}
-	err := svc.Pay(user, order.ID)
+	err := svc.Pay(context.Background(), user, order.ID)
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -175,11 +176,11 @@ func TestPay_Success(t *testing.T) {
 func TestPay_AlreadyPaid_IsIdempotent(t *testing.T) {
 	store := newFakeStore()
 	svc := newTestService(store)
-	order, _ := svc.CreateOrder("item_1", "user_1", 5000)
+	order, _ := svc.CreateOrder(context.Background(), "item_1", "user_1", 5000)
 	user := &usermodel.User{ID: "user_1"}
 
-	_ = svc.Pay(user, order.ID)
-	err := svc.Pay(user, order.ID) // second call
+	_ = svc.Pay(context.Background(), user, order.ID)
+	err := svc.Pay(context.Background(), user, order.ID) // second call
 
 	if err != nil {
 		t.Errorf("paying an already-paid order should be idempotent, got: %v", err)
@@ -189,10 +190,10 @@ func TestPay_AlreadyPaid_IsIdempotent(t *testing.T) {
 func TestPay_WrongUser_ReturnsUnauthorized(t *testing.T) {
 	store := newFakeStore()
 	svc := newTestService(store)
-	order, _ := svc.CreateOrder("item_1", "user_1", 5000)
+	order, _ := svc.CreateOrder(context.Background(), "item_1", "user_1", 5000)
 
 	user := &usermodel.User{ID: "user_other"}
-	err := svc.Pay(user, order.ID)
+	err := svc.Pay(context.Background(), user, order.ID)
 
 	if !errors.Is(err, errorx.ErrUnauthorized) {
 		t.Errorf("want ErrUnauthorized, got %v", err)
@@ -202,10 +203,10 @@ func TestPay_WrongUser_ReturnsUnauthorized(t *testing.T) {
 func TestCancel_Success(t *testing.T) {
 	store := newFakeStore()
 	svc := newTestService(store)
-	order, _ := svc.CreateOrder("item_1", "user_1", 5000)
+	order, _ := svc.CreateOrder(context.Background(), "item_1", "user_1", 5000)
 
 	user := &usermodel.User{ID: "user_1"}
-	err := svc.Cancel(user, order.ID)
+	err := svc.Cancel(context.Background(), user, order.ID)
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -219,11 +220,11 @@ func TestCancel_Success(t *testing.T) {
 func TestCancel_PaidOrder_ReturnsInvalidRequest(t *testing.T) {
 	store := newFakeStore()
 	svc := newTestService(store)
-	order, _ := svc.CreateOrder("item_1", "user_1", 5000)
+	order, _ := svc.CreateOrder(context.Background(), "item_1", "user_1", 5000)
 	user := &usermodel.User{ID: "user_1"}
-	_ = svc.Pay(user, order.ID)
+	_ = svc.Pay(context.Background(), user, order.ID)
 
-	err := svc.Cancel(user, order.ID)
+	err := svc.Cancel(context.Background(), user, order.ID)
 
 	if !errors.Is(err, errorx.ErrInvalidRequest) {
 		t.Errorf("want ErrInvalidRequest, got %v", err)
@@ -233,12 +234,12 @@ func TestCancel_PaidOrder_ReturnsInvalidRequest(t *testing.T) {
 func TestPay_ExpiredOrder_ReturnsInvalidRequest(t *testing.T) {
 	store := newFakeStore()
 	svc := newTestService(store)
-	order, _ := svc.CreateOrder("item_1", "user_1", 5000)
+	order, _ := svc.CreateOrder(context.Background(), "item_1", "user_1", 5000)
 	// manually set expired_at to the past
 	store.orders[order.ID].ExpiredAt = svc.now().Add(-1 * time.Hour)
 
 	user := &usermodel.User{ID: "user_1"}
-	err := svc.Pay(user, order.ID)
+	err := svc.Pay(context.Background(), user, order.ID)
 
 	if !errors.Is(err, errorx.ErrInvalidRequest) {
 		t.Errorf("want ErrInvalidRequest for expired order, got %v", err)
@@ -250,7 +251,7 @@ func TestListOrders_UserSeesOwnOrders(t *testing.T) {
 	svc := newTestService(store)
 
 	user := &usermodel.User{ID: "user_1", Identity: usermodel.IdentityUser}
-	result, err := svc.ListOrders(user, dto.ListOrdersInput{})
+	result, err := svc.ListOrders(context.Background(), user, dto.ListOrdersInput{})
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -272,7 +273,7 @@ func TestListOrders_MerchantSeesMerchantOrders(t *testing.T) {
 	svc := newTestService(store)
 
 	merchant := &usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}
-	result, err := svc.ListOrders(merchant, dto.ListOrdersInput{})
+	result, err := svc.ListOrders(context.Background(), merchant, dto.ListOrdersInput{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -284,10 +285,10 @@ func TestListOrders_MerchantSeesMerchantOrders(t *testing.T) {
 func TestGetOrder_WrongUser_ReturnsUnauthorized(t *testing.T) {
 	store := newFakeStore()
 	svc := newTestService(store)
-	order, _ := svc.CreateOrder("item_1", "user_1", 5000)
+	order, _ := svc.CreateOrder(context.Background(), "item_1", "user_1", 5000)
 
 	other := &usermodel.User{ID: "user_other", Identity: usermodel.IdentityUser}
-	_, err := svc.GetOrder(other, order.ID)
+	_, err := svc.GetOrder(context.Background(), other, order.ID)
 
 	if !errors.Is(err, errorx.ErrUnauthorized) {
 		t.Errorf("want ErrUnauthorized, got %v", err)
@@ -297,10 +298,10 @@ func TestGetOrder_WrongUser_ReturnsUnauthorized(t *testing.T) {
 func TestGetOrder_CorrectUser_ReturnsDetail(t *testing.T) {
 	store := newFakeStore()
 	svc := newTestService(store)
-	order, _ := svc.CreateOrder("item_1", "user_1", 5000)
+	order, _ := svc.CreateOrder(context.Background(), "item_1", "user_1", 5000)
 
 	user := &usermodel.User{ID: "user_1", Identity: usermodel.IdentityUser}
-	detail, err := svc.GetOrder(user, order.ID)
+	detail, err := svc.GetOrder(context.Background(), user, order.ID)
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -313,10 +314,10 @@ func TestGetOrder_CorrectUser_ReturnsDetail(t *testing.T) {
 func TestGetOrder_MerchantOwner_ReturnsDetail(t *testing.T) {
 	store := newFakeStore()
 	svc := newTestService(store)
-	order, _ := svc.CreateOrder("item_1", "user_1", 5000)
+	order, _ := svc.CreateOrder(context.Background(), "item_1", "user_1", 5000)
 	// fakeStore.FindOrderDetail returns ItemMerchantID="merchant_test" for orders not in details map
 	merchant := &usermodel.User{ID: "merchant_test", Identity: usermodel.IdentityMerchant}
-	detail, err := svc.GetOrder(merchant, order.ID)
+	detail, err := svc.GetOrder(context.Background(), merchant, order.ID)
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -329,10 +330,10 @@ func TestGetOrder_MerchantOwner_ReturnsDetail(t *testing.T) {
 func TestGetOrder_WrongMerchant_ReturnsUnauthorized(t *testing.T) {
 	store := newFakeStore()
 	svc := newTestService(store)
-	order, _ := svc.CreateOrder("item_1", "user_1", 5000)
+	order, _ := svc.CreateOrder(context.Background(), "item_1", "user_1", 5000)
 	// fakeStore returns ItemMerchantID="merchant_test", so a different merchant gets 401
 	merchant := &usermodel.User{ID: "merchant_other", Identity: usermodel.IdentityMerchant}
-	_, err := svc.GetOrder(merchant, order.ID)
+	_, err := svc.GetOrder(context.Background(), merchant, order.ID)
 
 	if !errors.Is(err, errorx.ErrUnauthorized) {
 		t.Errorf("want ErrUnauthorized, got %v", err)

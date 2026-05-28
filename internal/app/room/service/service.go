@@ -10,8 +10,8 @@ import (
 	"github.com/zet-plane/live-auction-backend/internal/app/room/dto"
 	"github.com/zet-plane/live-auction-backend/internal/app/room/model"
 	usermodel "github.com/zet-plane/live-auction-backend/internal/app/user/model"
+	"github.com/zet-plane/live-auction-backend/internal/core/observability"
 	"github.com/zet-plane/live-auction-backend/pkg/errorx"
-	"github.com/zet-plane/live-auction-backend/pkg/logx"
 	"github.com/zet-plane/live-auction-backend/pkg/snowflake"
 )
 
@@ -24,9 +24,9 @@ func NewService(store dao.Store, cache roomcache.Cache) *Service {
 	return &Service{store: store, cache: cache}
 }
 
-func (s *Service) ActivateRoom(current *usermodel.User, input dto.CreateRoomInput) (result *dto.MerchantRoomDTO, err error) {
+func (s *Service) ActivateRoom(ctx context.Context, current *usermodel.User, input dto.CreateRoomInput) (result *dto.MerchantRoomDTO, err error) {
 	var roomID string
-	finish := logx.Track("room.ActivateRoom", "merchant_id", userID(current))
+	finish := observability.Track(ctx, "room.activate", "merchant_id", userID(current))
 	defer func() {
 		finish(&err, "room_id", roomID)
 	}()
@@ -38,10 +38,10 @@ func (s *Service) ActivateRoom(current *usermodel.User, input dto.CreateRoomInpu
 	if err == nil {
 		roomID = existing.ID
 		onlineCount := 0
-		if state, ok, _ := s.cache.GetRoomState(context.Background(), existing.ID); ok {
+		if state, ok, _ := s.cache.GetRoomState(ctx, existing.ID); ok {
 			onlineCount = state.OnlineCount
 		}
-		itemQueue, _ := s.cache.GetItemQueue(context.Background(), existing.ID)
+		itemQueue, _ := s.cache.GetItemQueue(ctx, existing.ID)
 		detail := dto.NewMerchantRoomDTO(existing, onlineCount, len(itemQueue))
 		return &detail, nil
 	}
@@ -62,9 +62,9 @@ func (s *Service) ActivateRoom(current *usermodel.User, input dto.CreateRoomInpu
 	return &detail, nil
 }
 
-func (s *Service) GetMerchantRoom(current *usermodel.User) (result *dto.MerchantRoomDTO, err error) {
+func (s *Service) GetMerchantRoom(ctx context.Context, current *usermodel.User) (result *dto.MerchantRoomDTO, err error) {
 	var roomID string
-	finish := logx.Track("room.GetMerchantRoom", "merchant_id", userID(current))
+	finish := observability.Track(ctx, "room.get_merchant_room", "merchant_id", userID(current))
 	defer func() {
 		finish(&err, "room_id", roomID)
 	}()
@@ -78,16 +78,16 @@ func (s *Service) GetMerchantRoom(current *usermodel.User) (result *dto.Merchant
 	}
 	roomID = room.ID
 	onlineCount := 0
-	if state, ok, _ := s.cache.GetRoomState(context.Background(), room.ID); ok {
+	if state, ok, _ := s.cache.GetRoomState(ctx, room.ID); ok {
 		onlineCount = state.OnlineCount
 	}
-	itemQueue, _ := s.cache.GetItemQueue(context.Background(), room.ID)
+	itemQueue, _ := s.cache.GetItemQueue(ctx, room.ID)
 	detail := dto.NewMerchantRoomDTO(room, onlineCount, len(itemQueue))
 	return &detail, nil
 }
 
-func (s *Service) StartRoom(current *usermodel.User, roomID string) (err error) {
-	defer logx.Track("room.StartRoom", "merchant_id", userID(current), "room_id", strings.TrimSpace(roomID))(&err)
+func (s *Service) StartRoom(ctx context.Context, current *usermodel.User, roomID string) (err error) {
+	defer observability.Track(ctx, "room.start", "merchant_id", userID(current), "room_id", strings.TrimSpace(roomID))(&err)
 
 	room, err := s.findMerchantRoom(current, roomID)
 	if err != nil {
@@ -100,7 +100,7 @@ func (s *Service) StartRoom(current *usermodel.User, roomID string) (err error) 
 	if err := s.store.UpdateRoom(room); err != nil {
 		return err
 	}
-	if initErr := s.cache.InitRoomState(context.Background(), room.ID, roomcache.RoomState{
+	if initErr := s.cache.InitRoomState(ctx, room.ID, roomcache.RoomState{
 		MerchantID: room.MerchantID,
 		Status:     "live",
 	}); initErr != nil {
@@ -109,8 +109,8 @@ func (s *Service) StartRoom(current *usermodel.User, roomID string) (err error) 
 	return nil
 }
 
-func (s *Service) EndRoom(current *usermodel.User, roomID string) (err error) {
-	defer logx.Track("room.EndRoom", "merchant_id", userID(current), "room_id", strings.TrimSpace(roomID))(&err)
+func (s *Service) EndRoom(ctx context.Context, current *usermodel.User, roomID string) (err error) {
+	defer observability.Track(ctx, "room.end", "merchant_id", userID(current), "room_id", strings.TrimSpace(roomID))(&err)
 
 	room, err := s.findMerchantRoom(current, roomID)
 	if err != nil {
@@ -123,34 +123,34 @@ func (s *Service) EndRoom(current *usermodel.User, roomID string) (err error) {
 	if err := s.store.UpdateRoom(room); err != nil {
 		return err
 	}
-	if updateErr := s.cache.UpdateRoomStatus(context.Background(), room.ID, "idle"); updateErr != nil {
+	if updateErr := s.cache.UpdateRoomStatus(ctx, room.ID, "idle"); updateErr != nil {
 		_ = updateErr // soft fail
 	}
 	return nil
 }
 
-func (s *Service) GetRoom(roomID string) (result *dto.RoomDetailDTO, err error) {
+func (s *Service) GetRoom(ctx context.Context, roomID string) (result *dto.RoomDetailDTO, err error) {
 	roomID = strings.TrimSpace(roomID)
-	defer logx.Track("room.GetRoom", "room_id", roomID)(&err)
+	defer observability.Track(ctx, "room.get", "room_id", roomID)(&err)
 
 	room, err := s.store.FindRoomByID(roomID)
 	if err != nil {
 		return nil, err
 	}
 	onlineCount := 0
-	if state, ok, _ := s.cache.GetRoomState(context.Background(), room.ID); ok {
+	if state, ok, _ := s.cache.GetRoomState(ctx, room.ID); ok {
 		onlineCount = state.OnlineCount
 	}
-	itemQueue, _ := s.cache.GetItemQueue(context.Background(), room.ID)
+	itemQueue, _ := s.cache.GetItemQueue(ctx, room.ID)
 	detail := dto.NewRoomDetailDTO(room, onlineCount, itemQueue)
 	return &detail, nil
 }
 
-func (s *Service) ListRooms(statusFilter model.RoomStatus) (result []*dto.RoomDetailDTO, err error) {
+func (s *Service) ListRooms(ctx context.Context, statusFilter model.RoomStatus) (result []*dto.RoomDetailDTO, err error) {
 	if statusFilter == "" {
 		statusFilter = model.RoomLive
 	}
-	defer logx.Track("room.ListRooms", "status", statusFilter)(&err)
+	defer observability.Track(ctx, "room.list", "status", statusFilter)(&err)
 
 	rooms, err := s.store.ListRooms(statusFilter)
 	if err != nil {
@@ -159,10 +159,10 @@ func (s *Service) ListRooms(statusFilter model.RoomStatus) (result []*dto.RoomDe
 	result = make([]*dto.RoomDetailDTO, 0, len(rooms))
 	for _, room := range rooms {
 		onlineCount := 0
-		if state, ok, _ := s.cache.GetRoomState(context.Background(), room.ID); ok {
+		if state, ok, _ := s.cache.GetRoomState(ctx, room.ID); ok {
 			onlineCount = state.OnlineCount
 		}
-		itemQueue, _ := s.cache.GetItemQueue(context.Background(), room.ID)
+		itemQueue, _ := s.cache.GetItemQueue(ctx, room.ID)
 		d := dto.NewRoomDetailDTO(room, onlineCount, itemQueue)
 		result = append(result, &d)
 	}

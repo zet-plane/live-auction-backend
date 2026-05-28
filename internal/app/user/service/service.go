@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"time"
@@ -8,9 +9,9 @@ import (
 	"github.com/zet-plane/live-auction-backend/internal/app/user/dao"
 	"github.com/zet-plane/live-auction-backend/internal/app/user/dto"
 	"github.com/zet-plane/live-auction-backend/internal/app/user/model"
+	"github.com/zet-plane/live-auction-backend/internal/core/observability"
 	"github.com/zet-plane/live-auction-backend/pkg/crypto"
 	"github.com/zet-plane/live-auction-backend/pkg/errorx"
-	"github.com/zet-plane/live-auction-backend/pkg/logx"
 	"github.com/zet-plane/live-auction-backend/pkg/snowflake"
 )
 
@@ -33,9 +34,9 @@ func NewService(store dao.Store, opts Options) *Service {
 	}
 }
 
-func (s *Service) Register(input dto.RegisterInput) (result *dto.LoginResult, err error) {
+func (s *Service) Register(ctx context.Context, input dto.RegisterInput) (result *dto.LoginResult, err error) {
 	account := normalizeAccount(input.Account)
-	defer logx.Track("user.Register", "account", account)(&err)
+	defer observability.Track(ctx, "user.register", "account", account)(&err)
 
 	password := strings.TrimSpace(input.Password)
 	if !validAccount(account) || !validPassword(password) {
@@ -61,10 +62,10 @@ func (s *Service) Register(input dto.RegisterInput) (result *dto.LoginResult, er
 	return s.loginResult(u)
 }
 
-func (s *Service) Login(account string, password string) (result *dto.LoginResult, err error) {
+func (s *Service) Login(ctx context.Context, account string, password string) (result *dto.LoginResult, err error) {
 	account = normalizeAccount(account)
 	var userID string
-	finish := logx.Track("user.Login", "account", account)
+	finish := observability.Track(ctx, "user.login", "account", account)
 	defer func() {
 		finish(&err, "user_id", userID)
 	}()
@@ -88,9 +89,9 @@ func (s *Service) Login(account string, password string) (result *dto.LoginResul
 	return s.loginResult(u)
 }
 
-func (s *Service) Authenticate(token string) (result *model.User, err error) {
+func (s *Service) Authenticate(ctx context.Context, token string) (result *model.User, err error) {
 	var userID string
-	finish := logx.Track("user.Authenticate")
+	finish := observability.Track(ctx, "user.authenticate")
 	defer func() {
 		finish(&err, "user_id", userID)
 	}()
@@ -106,8 +107,8 @@ func (s *Service) Authenticate(token string) (result *model.User, err error) {
 	return u, err
 }
 
-func (s *Service) UpdateProfile(u *model.User, input dto.UpdateProfileInput) (err error) {
-	defer logx.Track("user.UpdateProfile",
+func (s *Service) UpdateProfile(ctx context.Context, u *model.User, input dto.UpdateProfileInput) (err error) {
+	defer observability.Track(ctx, "user.update_profile",
 		"user_id", userID(u),
 		"has_name", input.Name != nil,
 		"has_avatar_url", input.AvatarURL != nil,
@@ -133,8 +134,8 @@ func (s *Service) UpdateProfile(u *model.User, input dto.UpdateProfileInput) (er
 	return s.store.UpdateUser(u)
 }
 
-func (s *Service) DeleteMe(u *model.User) (err error) {
-	defer logx.Track("user.DeleteMe", "user_id", userID(u))(&err)
+func (s *Service) DeleteMe(ctx context.Context, u *model.User) (err error) {
+	defer observability.Track(ctx, "user.delete_me", "user_id", userID(u))(&err)
 
 	if err := s.store.DeleteUser(u.ID); err != nil {
 		if errors.Is(err, errorx.ErrNotFound) {

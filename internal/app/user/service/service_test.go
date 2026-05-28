@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -73,7 +74,7 @@ func TestRegisterCreatesAccountUserWithDefaultNameAndReturnsToken(t *testing.T) 
 	store := newFakeStore()
 	svc := NewService(store, Options{TokenSecret: "test-secret", TokenTTL: time.Hour})
 
-	result, err := svc.Register(dto.RegisterInput{
+	result, err := svc.Register(context.Background(), dto.RegisterInput{
 		Account:  " alice ",
 		Password: "password123",
 	})
@@ -103,7 +104,7 @@ func TestRegisterRejectsAccountShorterThanThree(t *testing.T) {
 	store := newFakeStore()
 	svc := NewService(store, Options{TokenSecret: "test-secret", TokenTTL: time.Hour})
 
-	if _, err := svc.Register(dto.RegisterInput{
+	if _, err := svc.Register(context.Background(), dto.RegisterInput{
 		Account:  "ab",
 		Password: "password123",
 	}); !errors.Is(err, errorx.ErrInvalidRequest) {
@@ -128,7 +129,7 @@ func TestRegisterRejectsPasswordOutsideLengthBounds(t *testing.T) {
 			store := newFakeStore()
 			svc := NewService(store, Options{TokenSecret: "test-secret", TokenTTL: time.Hour})
 
-			if _, err := svc.Register(dto.RegisterInput{
+			if _, err := svc.Register(context.Background(), dto.RegisterInput{
 				Account:  "alice",
 				Password: tt.password,
 			}); !errors.Is(err, errorx.ErrInvalidRequest) {
@@ -144,14 +145,14 @@ func TestRegisterRejectsPasswordOutsideLengthBounds(t *testing.T) {
 func TestLoginUsesAccountPassword(t *testing.T) {
 	store := newFakeStore()
 	svc := NewService(store, Options{TokenSecret: "test-secret", TokenTTL: time.Hour})
-	if _, err := svc.Register(dto.RegisterInput{
+	if _, err := svc.Register(context.Background(), dto.RegisterInput{
 		Account:  "alice",
 		Password: "password123",
 	}); err != nil {
 		t.Fatalf("Register returned error: %v", err)
 	}
 
-	result, err := svc.Login("alice", "password123")
+	result, err := svc.Login(context.Background(), "alice", "password123")
 	if err != nil {
 		t.Fatalf("Login returned error: %v", err)
 	}
@@ -166,14 +167,14 @@ func TestLoginUsesAccountPassword(t *testing.T) {
 func TestLoginRejectsWrongPassword(t *testing.T) {
 	store := newFakeStore()
 	svc := NewService(store, Options{TokenSecret: "test-secret", TokenTTL: time.Hour})
-	if _, err := svc.Register(dto.RegisterInput{
+	if _, err := svc.Register(context.Background(), dto.RegisterInput{
 		Account:  "alice",
 		Password: "password123",
 	}); err != nil {
 		t.Fatalf("Register returned error: %v", err)
 	}
 
-	if _, err := svc.Login("alice", "wrong-password"); !errors.Is(err, errorx.ErrUnauthorized) {
+	if _, err := svc.Login(context.Background(), "alice", "wrong-password"); !errors.Is(err, errorx.ErrUnauthorized) {
 		t.Fatalf("expected unauthorized, got %v", err)
 	}
 }

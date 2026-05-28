@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -34,7 +35,7 @@ func TestScanExpiredOrders_UpdatesExpiredPendingOrders(t *testing.T) {
 	}
 	_ = store.CreateOrder(validOrder)
 
-	svc.ScanExpiredOrders()
+	svc.ScanExpiredOrders(context.Background())
 
 	exp, _ := store.FindOrder("order_exp1")
 	if exp.Status != model.OrderExpired {

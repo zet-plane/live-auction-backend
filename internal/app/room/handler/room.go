@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"net/http"
+
 	"github.com/flamego/binding"
 	"github.com/flamego/flamego"
 	"github.com/zet-plane/live-auction-backend/internal/app/room/dto"
@@ -30,7 +32,7 @@ func Init(s *service.Service) { svc = s }
 // @Failure 401 {object} response.Body
 // @Failure 500 {object} response.Body
 // @Router /api/v1/merchant/room [post]
-func ActivateRoom(r flamego.Render, current *usermodel.User, body dto.CreateRoomRequest, errs binding.Errors) {
+func ActivateRoom(r flamego.Render, req *http.Request, current *usermodel.User, body dto.CreateRoomRequest, errs binding.Errors) {
 	if web.BindingErrors(r, errs) {
 		return
 	}
@@ -38,7 +40,7 @@ func ActivateRoom(r flamego.Render, current *usermodel.User, body dto.CreateRoom
 		response.Error(r, errorx.ErrInternal)
 		return
 	}
-	result, err := svc.ActivateRoom(current, body.Input())
+	result, err := svc.ActivateRoom(req.Context(), current, body.Input())
 	if err != nil {
 		logx.Warnw("ActivateRoom failed", "user_id", current.ID, "err", err)
 		response.Error(r, err)
@@ -57,12 +59,12 @@ func ActivateRoom(r flamego.Render, current *usermodel.User, body dto.CreateRoom
 // @Failure 401 {object} response.Body
 // @Failure 500 {object} response.Body
 // @Router /api/v1/merchant/room [get]
-func GetMerchantRoom(r flamego.Render, current *usermodel.User) {
+func GetMerchantRoom(r flamego.Render, req *http.Request, current *usermodel.User) {
 	if svc == nil {
 		response.Error(r, errorx.ErrInternal)
 		return
 	}
-	result, err := svc.GetMerchantRoom(current)
+	result, err := svc.GetMerchantRoom(req.Context(), current)
 	if err != nil {
 		logx.Warnw("GetMerchantRoom failed", "user_id", current.ID, "err", err)
 		response.Error(r, err)
@@ -82,12 +84,12 @@ func GetMerchantRoom(r flamego.Render, current *usermodel.User) {
 // @Failure 401 {object} response.Body
 // @Failure 500 {object} response.Body
 // @Router /api/v1/rooms/{room_id}/start [post]
-func StartRoom(r flamego.Render, c flamego.Context, current *usermodel.User) {
+func StartRoom(r flamego.Render, req *http.Request, c flamego.Context, current *usermodel.User) {
 	if svc == nil {
 		response.Error(r, errorx.ErrInternal)
 		return
 	}
-	if err := svc.StartRoom(current, c.Param("room_id")); err != nil {
+	if err := svc.StartRoom(req.Context(), current, c.Param("room_id")); err != nil {
 		logx.Warnw("StartRoom failed", "user_id", current.ID, "room_id", c.Param("room_id"), "err", err)
 		response.Error(r, err)
 		return
@@ -106,12 +108,12 @@ func StartRoom(r flamego.Render, c flamego.Context, current *usermodel.User) {
 // @Failure 401 {object} response.Body
 // @Failure 500 {object} response.Body
 // @Router /api/v1/rooms/{room_id}/end [post]
-func EndRoom(r flamego.Render, c flamego.Context, current *usermodel.User) {
+func EndRoom(r flamego.Render, req *http.Request, c flamego.Context, current *usermodel.User) {
 	if svc == nil {
 		response.Error(r, errorx.ErrInternal)
 		return
 	}
-	if err := svc.EndRoom(current, c.Param("room_id")); err != nil {
+	if err := svc.EndRoom(req.Context(), current, c.Param("room_id")); err != nil {
 		logx.Warnw("EndRoom failed", "user_id", current.ID, "room_id", c.Param("room_id"), "err", err)
 		response.Error(r, err)
 		return
@@ -129,12 +131,12 @@ func EndRoom(r flamego.Render, c flamego.Context, current *usermodel.User) {
 // @Failure 400 {object} response.Body
 // @Failure 500 {object} response.Body
 // @Router /api/v1/rooms/{room_id} [get]
-func GetRoom(r flamego.Render, c flamego.Context) {
+func GetRoom(r flamego.Render, req *http.Request, c flamego.Context) {
 	if svc == nil {
 		response.Error(r, errorx.ErrInternal)
 		return
 	}
-	result, err := svc.GetRoom(c.Param("room_id"))
+	result, err := svc.GetRoom(req.Context(), c.Param("room_id"))
 	if err != nil {
 		logx.Warnw("GetRoom failed", "room_id", c.Param("room_id"), "err", err)
 		response.Error(r, err)
@@ -152,13 +154,13 @@ func GetRoom(r flamego.Render, c flamego.Context) {
 // @Success 200 {object} response.Body{data=[]dto.RoomDetailDTO}
 // @Failure 500 {object} response.Body
 // @Router /api/v1/rooms [get]
-func ListRooms(r flamego.Render, c flamego.Context) {
+func ListRooms(r flamego.Render, req *http.Request, c flamego.Context) {
 	if svc == nil {
 		response.Error(r, errorx.ErrInternal)
 		return
 	}
 	statusFilter := model.RoomStatus(c.Query("status"))
-	result, err := svc.ListRooms(statusFilter)
+	result, err := svc.ListRooms(req.Context(), statusFilter)
 	if err != nil {
 		logx.Warnw("ListRooms failed", "status", statusFilter, "err", err)
 		response.Error(r, err)
