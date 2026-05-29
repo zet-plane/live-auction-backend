@@ -63,3 +63,6 @@
 - **WebSocket 多实例扩展路径** — 现有 Hub 是进程内内存实现；多实例时改为 Redis Pub/Sub，各节点订阅自己管理的 room channel，`Broadcaster` 接口无需改动（设计文档 Section 10 已有）
 
 ![alt text](image.png)
+
+---
+告警 还没做
