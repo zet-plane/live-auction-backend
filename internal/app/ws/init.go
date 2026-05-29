@@ -9,6 +9,7 @@ import (
 	wshub "github.com/zet-plane/live-auction-backend/internal/app/ws/hub"
 	"github.com/zet-plane/live-auction-backend/internal/app/ws/router"
 	"github.com/zet-plane/live-auction-backend/internal/core/kernel"
+	"github.com/zet-plane/live-auction-backend/internal/middleware/web"
 	"github.com/zet-plane/live-auction-backend/pkg/wsevent"
 )
 
@@ -26,6 +27,7 @@ func (w *WS) Load(engine *kernel.Engine) error {
 	h := wshub.NewHub(engine.Cache)
 	Hub = h
 	handler.Init(h)
+	handler.ConfigureOriginChecker(web.NewOriginPolicy(engine.Config.Mode, engine.Config.Security.AllowedOrigins))
 	handler.InitTicket(engine.Cache)
 	router.RegisterRoutes(engine.Flame)
 	return nil

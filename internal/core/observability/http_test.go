@@ -44,3 +44,20 @@ func TestHTTPMiddlewareRecordsRequest(t *testing.T) {
 		t.Fatalf("duration = %v", rec.http.Duration)
 	}
 }
+
+func TestHTTPMiddlewareRecordsRoutePatternForParameterizedRoute(t *testing.T) {
+	rec := &httpCaptureRecorder{}
+	f := flamego.New()
+	f.Use(HTTPMiddleware(rec))
+	f.Get("/api/v1/items/{item_id}", func(w http.ResponseWriter) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/items/item_1", nil)
+	w := httptest.NewRecorder()
+	f.ServeHTTP(w, req)
+
+	if rec.http.Route != "/api/v1/items/{item_id}" {
+		t.Fatalf("route = %q", rec.http.Route)
+	}
+}

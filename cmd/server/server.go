@@ -11,7 +11,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/flamego/cors"
 	"github.com/flamego/flamego"
 	"github.com/redis/go-redis/v9"
 	"github.com/spf13/cobra"
@@ -24,6 +23,7 @@ import (
 	appCron "github.com/zet-plane/live-auction-backend/internal/cron"
 	"github.com/zet-plane/live-auction-backend/internal/middleware/gw"
 	"github.com/zet-plane/live-auction-backend/internal/middleware/response"
+	"github.com/zet-plane/live-auction-backend/internal/middleware/web"
 	"github.com/zet-plane/live-auction-backend/pkg/logx"
 	"gorm.io/gorm"
 )
@@ -106,23 +106,13 @@ func buildEngine(cfg *config.Config, db *gorm.DB, rdb *redis.Client) (*kernel.En
 
 	flamego.SetEnv(flamego.EnvType(cfg.Mode))
 	f := flamego.New()
+	originPolicy := web.NewOriginPolicy(cfg.Mode, cfg.Security.AllowedOrigins)
 	f.Use(
 		flamego.Recovery(),
 		observability.HTTPMiddleware(observability.DefaultRecorder()),
 		gw.RequestLog(),
 		flamego.Renderer(),
-		cors.CORS(cors.Options{
-			AllowCredentials: true,
-			AllowDomain:      []string{"!*"},
-			Methods: []string{
-				http.MethodGet,
-				http.MethodPost,
-				http.MethodPut,
-				http.MethodPatch,
-				http.MethodDelete,
-				http.MethodOptions,
-			},
-		}),
+		web.CORSMiddleware(originPolicy),
 	)
 
 	f.Get("/api/v1/health", func(r flamego.Render) {

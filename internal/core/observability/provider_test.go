@@ -2,10 +2,13 @@ package observability
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/zet-plane/live-auction-backend/config"
+	"go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
 func TestSetupDisabledReturnsNoopShutdown(t *testing.T) {
@@ -52,4 +55,53 @@ func TestResourceMergesWithDefaultResource(t *testing.T) {
 	if res == nil {
 		t.Fatal("resource is nil")
 	}
+}
+
+func TestMeterProviderUsesSubSecondDurationBuckets(t *testing.T) {
+	reader := metric.NewManualReader()
+	mp := newMeterProvider(nil, reader)
+
+	for _, name := range []string{
+		"http.server.request.duration",
+		"db.client.operation.duration",
+	} {
+		t.Run(name, func(t *testing.T) {
+			histogram, err := mp.Meter("test").Float64Histogram(name)
+			if err != nil {
+				t.Fatalf("Float64Histogram returned error: %v", err)
+			}
+			histogram.Record(context.Background(), 0.012)
+
+			var rm metricdata.ResourceMetrics
+			if err := reader.Collect(context.Background(), &rm); err != nil {
+				t.Fatalf("Collect returned error: %v", err)
+			}
+			got := histogramBounds(t, rm, name)
+			want := durationHistogramBoundaries()
+			if !slices.Equal(got, want) {
+				t.Fatalf("bounds = %v, want %v", got, want)
+			}
+		})
+	}
+}
+
+func histogramBounds(t *testing.T, rm metricdata.ResourceMetrics, name string) []float64 {
+	t.Helper()
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != name {
+				continue
+			}
+			data, ok := m.Data.(metricdata.Histogram[float64])
+			if !ok {
+				t.Fatalf("%s data type = %T, want Histogram[float64]", name, m.Data)
+			}
+			if len(data.DataPoints) != 1 {
+				t.Fatalf("%s datapoints = %d, want 1", name, len(data.DataPoints))
+			}
+			return data.DataPoints[0].Bounds
+		}
+	}
+	t.Fatalf("metric %s not found in collected data", name)
+	return nil
 }

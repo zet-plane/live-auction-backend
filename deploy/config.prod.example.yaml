@@ -18,6 +18,9 @@ redis:
 auth:
   token_secret: CHANGE_ME
   token_ttl: 24h
+security:
+  allowed_origins:
+    - "*"
 auction:
   extend_trigger_sec: 30
   auto_extend_sec: 10

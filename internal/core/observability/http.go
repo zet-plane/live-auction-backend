@@ -16,7 +16,7 @@ func HTTPMiddleware(rec Recorder) flamego.Handler {
 	}
 	tracer := otel.Tracer("github.com/zet-plane/live-auction-backend/http")
 	return func(c flamego.Context, req *http.Request) {
-		route := routePattern(req)
+		route := routePattern(c, req)
 		ctx, span := tracer.Start(req.Context(), req.Method+" "+route)
 		*req = *req.WithContext(ctx)
 		start := time.Now()
@@ -38,7 +38,12 @@ func HTTPMiddleware(rec Recorder) flamego.Handler {
 	}
 }
 
-func routePattern(req *http.Request) string {
+func routePattern(c flamego.Context, req *http.Request) string {
+	if c != nil {
+		if route := c.Param("route"); route != "" {
+			return route
+		}
+	}
 	if req == nil || req.URL == nil {
 		return "unknown"
 	}

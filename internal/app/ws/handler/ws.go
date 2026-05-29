@@ -8,6 +8,7 @@ import (
 	"github.com/flamego/flamego"
 	"github.com/gorilla/websocket"
 	wshub "github.com/zet-plane/live-auction-backend/internal/app/ws/hub"
+	"github.com/zet-plane/live-auction-backend/internal/middleware/web"
 	"github.com/zet-plane/live-auction-backend/pkg/snowflake"
 )
 
@@ -16,12 +17,18 @@ var (
 	upgrader = websocket.Upgrader{
 		ReadBufferSize:  1024,
 		WriteBufferSize: 1024,
-		CheckOrigin:     func(r *http.Request) bool { return true },
+		CheckOrigin:     func(r *http.Request) bool { return web.NewOriginPolicy("debug", nil).Allows(r.Header.Get("Origin")) },
 	}
 )
 
 func Init(h *wshub.Hub) {
 	hub = h
+}
+
+func ConfigureOriginChecker(policy web.OriginPolicy) {
+	upgrader.CheckOrigin = func(r *http.Request) bool {
+		return policy.Allows(r.Header.Get("Origin"))
+	}
 }
 
 // ServeWS upgrades an authenticated live room WebSocket connection.

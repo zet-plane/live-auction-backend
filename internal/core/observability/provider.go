@@ -73,9 +73,9 @@ func Setup(ctx context.Context, cfg config.Observability) (Shutdown, error) {
 		sdktrace.WithSampler(sdktrace.TraceIDRatioBased(cfg.TraceSampleRatio)),
 		sdktrace.WithBatcher(traceExporter),
 	)
-	mp := metric.NewMeterProvider(
-		metric.WithResource(res),
-		metric.WithReader(metric.NewPeriodicReader(metricExporter, metric.WithInterval(metricsInterval(cfg)))),
+	mp := newMeterProvider(
+		res,
+		metric.NewPeriodicReader(metricExporter, metric.WithInterval(metricsInterval(cfg))),
 	)
 	otel.SetTracerProvider(tp)
 	otel.SetMeterProvider(mp)
@@ -92,6 +92,57 @@ func newResource(cfg config.Observability) (*resource.Resource, error) {
 		semconv.ServiceVersion(cfg.ServiceVersion),
 		attribute.String("deployment.environment", cfg.Environment),
 	))
+}
+
+func newMeterProvider(res *resource.Resource, reader metric.Reader) *metric.MeterProvider {
+	opts := []metric.Option{
+		metric.WithReader(reader),
+		metric.WithView(durationHistogramViews()...),
+	}
+	if res != nil {
+		opts = append(opts, metric.WithResource(res))
+	}
+	return metric.NewMeterProvider(opts...)
+}
+
+func durationHistogramViews() []metric.View {
+	aggregation := metric.AggregationExplicitBucketHistogram{
+		Boundaries: durationHistogramBoundaries(),
+		NoMinMax:   true,
+	}
+	names := []string{
+		"http.server.request.duration",
+		"db.client.operation.duration",
+		"auction.place_bid.lua.duration",
+		"cron.job.duration",
+		"auction.bid.duration",
+	}
+	views := make([]metric.View, 0, len(names))
+	for _, name := range names {
+		views = append(views, metric.NewView(
+			metric.Instrument{Name: name},
+			metric.Stream{Aggregation: aggregation},
+		))
+	}
+	return views
+}
+
+func durationHistogramBoundaries() []float64 {
+	return []float64{
+		0.001,
+		0.002,
+		0.005,
+		0.01,
+		0.025,
+		0.05,
+		0.1,
+		0.25,
+		0.5,
+		1,
+		2.5,
+		5,
+		10,
+	}
 }
 
 func metricsInterval(cfg config.Observability) time.Duration {

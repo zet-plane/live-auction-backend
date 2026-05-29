@@ -7,6 +7,7 @@ type GlobalConfig struct {
 	Database      Database      `yaml:"database"      mapstructure:"database"`
 	Redis         Redis         `yaml:"redis"         mapstructure:"redis"`
 	Auth          Auth          `yaml:"auth"          mapstructure:"auth"`
+	Security      Security      `yaml:"security"      mapstructure:"security"`
 	Auction       Auction       `yaml:"auction"       mapstructure:"auction"`
 	Observability Observability `yaml:"observability" mapstructure:"observability"`
 }
@@ -38,6 +39,10 @@ type Redis struct {
 type Auth struct {
 	TokenSecret string `yaml:"token_secret" mapstructure:"token_secret"`
 	TokenTTL    string `yaml:"token_ttl"    mapstructure:"token_ttl"`
+}
+
+type Security struct {
+	AllowedOrigins []string `yaml:"allowed_origins" mapstructure:"allowed_origins"`
 }
 
 type Auction struct {

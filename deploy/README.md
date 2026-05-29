@@ -29,6 +29,9 @@ database:
   dsn: live_auction:CHANGE_ME@tcp(mysql:3306)/live_auction?charset=utf8mb4&parseTime=True&loc=Local
 redis:
   addr: redis:6379
+security:
+  allowed_origins:
+    - "*"
 observability:
   enabled: true
   otlp_endpoint: otel-collector:4317
@@ -37,6 +40,8 @@ observability:
     format: json
     output: stdout
 ```
+
+`security.allowed_origins: ["*"]` is convenient for deployment smoke tests and frontend integration. Before a public production launch, replace it with the exact frontend origin, such as `https://your-frontend.example.com`.
 
 Create `/opt/live-auction-backend/.env`:
 
