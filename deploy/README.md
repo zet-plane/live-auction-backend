@@ -1,66 +1,118 @@
-# Production Deploy
+# k3s Deploy
 
-GitHub Actions only builds and pushes the image. The server pulls the image and restarts containers by webhook or cron.
+The active production deployment path is k3s. The backend, MySQL, Redis, observability stack, Grafana, and the deployment webhook all run as Kubernetes workloads or services inside the cluster.
 
-Prepare the server once:
-
-```bash
-mkdir -p /opt/live-auction-backend
-cd /opt/live-auction-backend
-docker login ghcr.io
-```
-
-Copy these files to the server deploy directory:
+## Layout
 
 ```text
-docker-compose.prod.yml
-pull-and-restart.sh
-config.prod.example.yaml
-observability/
+deploy/
+  README.md
+  legacy-compose/
+    README.md
+    config.prod.example.yaml
+    docker-compose.prod.yml
+    pull-and-restart.sh
+  observability/
+    grafana/
+      dashboards/
+        dashboard-provider.yaml
+        live-auction-dashboard.json
+      datasources/
+        loki.yaml
+        prometheus.yaml
+        tempo.yaml
+    loki.yaml
+    otel-collector.yaml
+    prometheus.yaml
+    promtail-local.yaml
+    promtail.yaml
+    tempo.yaml
+  k8s/
+    kustomization.yaml
+    00-namespace.yaml
+    01-secrets.example.yaml
+    01-secrets.yaml              # local/server only, gitignored
+    02-configmaps.yaml
+    02b-dashboard-configmap.yaml
+    03-redis.yaml
+    04-mysql.yaml
+    05-otel-collector.yaml
+    06-prometheus.yaml
+    07-tempo.yaml
+    08-loki.yaml
+    09-promtail.yaml
+    10-grafana.yaml
+    11-app.yaml
+    12-ingress.yaml
 ```
 
-Create `/opt/live-auction-backend/config.yaml` from `config.prod.example.yaml`, then replace every `CHANGE_ME` value. The important production hostnames are:
+`deploy/k8s` is the k3s manifest entrypoint. Use `kubectl apply -k deploy/k8s` so the example secret file is not applied.
 
-```yaml
-http:
-  host: 0.0.0.0
-  port: "8080"
-database:
-  dsn: live_auction:CHANGE_ME@tcp(mysql:3306)/live_auction?charset=utf8mb4&parseTime=True&loc=Local
-redis:
-  addr: redis:6379
-security:
-  allowed_origins:
-    - "*"
-observability:
-  enabled: true
-  otlp_endpoint: otel-collector:4317
-  trace_sample_ratio: 0.1
-  logs:
-    format: json
-    output: stdout
+The root `docker-compose.yml` is still the local development and local observability path. It mounts `deploy/observability` into the containers, including Grafana datasources and dashboards.
+
+The production Docker Compose files are grouped under `deploy/legacy-compose/` for historical reference. They are not the active production path.
+
+## One-Time Setup
+
+Create the real secrets file from the example:
+
+```bash
+cp deploy/k8s/01-secrets.example.yaml deploy/k8s/01-secrets.yaml
 ```
 
-`security.allowed_origins: ["*"]` is convenient for deployment smoke tests and frontend integration. Before a public production launch, replace it with the exact frontend origin, such as `https://your-frontend.example.com`.
+Edit `deploy/k8s/01-secrets.yaml` and replace every `CHANGE_ME` value:
 
-Create `/opt/live-auction-backend/.env`:
-
-```dotenv
-MYSQL_DATABASE=live_auction
-MYSQL_USER=live_auction
-MYSQL_PASSWORD=CHANGE_ME
-MYSQL_ROOT_PASSWORD=CHANGE_ME
-IMAGE_TAG=latest
-GRAFANA_ADMIN_USER=admin
-GRAFANA_ADMIN_PASSWORD=CHANGE_ME
-GRAFANA_BIND_ADDR=127.0.0.1
-GRAFANA_PORT=3000
-PROMETHEUS_RETENTION=15d
+```text
+CHANGE_ME_MYSQL_PASSWORD
+CHANGE_ME_MYSQL_ROOT_PASSWORD
+CHANGE_ME_AUTH_TOKEN_SECRET
+CHANGE_ME_GRAFANA_ADMIN_PASSWORD
 ```
 
-## Production Observability
+Create the GHCR pull secret in the same namespace:
 
-The production compose file starts the app plus:
+```bash
+kubectl apply -f deploy/k8s/00-namespace.yaml
+kubectl -n live-auction create secret docker-registry ghcr-secret \
+  --docker-server=ghcr.io \
+  --docker-username=CHANGE_ME_GITHUB_USERNAME \
+  --docker-password=CHANGE_ME_GITHUB_TOKEN \
+  --docker-email=CHANGE_ME_EMAIL
+```
+
+## Deploy
+
+Apply the full stack:
+
+```bash
+kubectl apply -k deploy/k8s
+```
+
+Check rollout status:
+
+```bash
+kubectl -n live-auction get pods
+kubectl -n live-auction get svc
+kubectl -n live-auction rollout status deployment/live-auction-backend
+```
+
+The app talks to in-cluster services through Kubernetes DNS:
+
+```text
+mysql:3306
+redis:6379
+otel-collector:4317
+prometheus:9090
+loki:3100
+tempo:3200
+grafana:3000
+```
+
+Do not add `hostAliases` or hard-coded ClusterIP values; Service DNS is the stable contract.
+
+## Observability
+
+The k3s stack includes:
 
 ```text
 otel-collector
@@ -71,55 +123,84 @@ promtail
 grafana
 ```
 
-Only the app and Grafana publish host ports by default:
+The backend exports OTLP metrics and traces to `otel-collector:4317`. Prometheus scrapes the collector at `otel-collector:8889`. Promtail runs as a DaemonSet and reads pod logs from `/var/log/pods`, then ships them to Loki.
 
-```text
-app:     127.0.0.1:8080 -> container 8080
-grafana: 127.0.0.1:3000 -> container 3000
-```
+Grafana provisions the `Live Auction 应用数据大屏` dashboard from `02b-dashboard-configmap.yaml`.
 
-Prometheus, Loki, Tempo, and the OpenTelemetry collector stay on the internal Compose network. Put Grafana behind a reverse proxy, VPN, or SSH tunnel before exposing it outside the server.
+## Local Docker
 
-The app sends metrics and traces to `otel-collector:4317`. Logs are JSON on stdout; promtail reads the Docker logs for the `live-auction-backend` container and sends them to Loki with:
-
-```text
-service_name=live-auction-backend
-environment=production
-```
-
-Grafana provisions the `Live Auction 应用数据大屏` dashboard from:
-
-```text
-observability/grafana/dashboards/live-auction-dashboard.json
-```
-
-Bring up or refresh the full production stack:
+Use Docker Compose locally when you want MySQL, Redis, Prometheus, Tempo, Loki, Promtail, and Grafana without k3s:
 
 ```bash
-docker compose -f docker-compose.prod.yml up -d --remove-orphans
+docker compose up -d
 ```
 
-## Webhook Pull
-
-Configure GitHub Secrets:
-
-```text
-DEPLOY_WEBHOOK_URL
-DEPLOY_WEBHOOK_TOKEN
-```
-
-The webhook service should verify `DEPLOY_WEBHOOK_TOKEN`, read the JSON `tag`, then run:
+Then run the backend on the host with the local config:
 
 ```bash
-DEPLOY_DIR=/opt/live-auction-backend /opt/live-auction-backend/pull-and-restart.sh "$tag"
+go run main.go server -c config.yaml
 ```
 
-## Cron Pull
+Local service URLs:
 
-If you do not want a webhook, leave `DEPLOY_WEBHOOK_URL` empty and run the puller from cron:
-
-```cron
-*/2 * * * * DEPLOY_DIR=/opt/live-auction-backend /opt/live-auction-backend/pull-and-restart.sh latest
+```text
+backend:        http://127.0.0.1:8080
+grafana:        http://127.0.0.1:3000
+prometheus:     http://127.0.0.1:9090
+otel grpc:      127.0.0.1:4317
+otel http:      127.0.0.1:4318
+loki:           http://127.0.0.1:3100
+tempo:          http://127.0.0.1:3200
+mysql:          127.0.0.1:3306
+redis:          127.0.0.1:6379
 ```
 
-Cron tracks `latest`; webhook can deploy the exact short SHA tag from the CI run.
+Local Docker Compose keeps Grafana provisioning files in git:
+
+```text
+deploy/observability/grafana/datasources/
+deploy/observability/grafana/dashboards/dashboard-provider.yaml
+deploy/observability/grafana/dashboards/live-auction-dashboard.json
+```
+
+Do not remove these files. The local Grafana container mounts them directly, and the k3s dashboard configmap mirrors the same dashboard content in `deploy/k8s/02b-dashboard-configmap.yaml`.
+
+To stop local Docker services:
+
+```bash
+docker compose down
+```
+
+## Webhook Deploys
+
+GitHub Actions should continue to build and push the image. The webhook service runs inside k3s and should update the backend Deployment in the `live-auction` namespace.
+
+For a tag such as `abc1234`, the webhook should perform the Kubernetes equivalent of:
+
+```bash
+kubectl -n live-auction set image deployment/live-auction-backend \
+  app=ghcr.io/zet-plane/live-auction-backend:abc1234
+kubectl -n live-auction rollout status deployment/live-auction-backend
+```
+
+The webhook service account only needs permission to get and patch the `live-auction-backend` Deployment and watch its rollout status.
+
+## Useful Commands
+
+Restart the backend without changing the image:
+
+```bash
+kubectl -n live-auction rollout restart deployment/live-auction-backend
+```
+
+Inspect backend logs:
+
+```bash
+kubectl -n live-auction logs deployment/live-auction-backend -f
+```
+
+Port-forward Grafana:
+
+```bash
+kubectl -n live-auction port-forward svc/grafana 3000:3000
+```

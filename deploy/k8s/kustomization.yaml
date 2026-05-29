@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - 00-namespace.yaml
+  - 01-secrets.yaml
+  - 02-configmaps.yaml
+  - 02b-dashboard-configmap.yaml
+  - 03-redis.yaml
+  - 04-mysql.yaml
+  - 05-otel-collector.yaml
+  - 06-prometheus.yaml
+  - 07-tempo.yaml
+  - 08-loki.yaml
+  - 09-promtail.yaml
+  - 10-grafana.yaml
+  - 11-app.yaml
+  - 12-ingress.yaml

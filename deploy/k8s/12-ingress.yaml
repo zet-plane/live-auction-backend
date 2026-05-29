@@ -1,0 +1,32 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: live-auction-backend
+  namespace: live-auction
+spec:
+  ingressClassName: traefik
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: live-auction-backend
+                port:
+                  number: 8080
+---
+# Grafana via NodePort. Prefer port-forward or protect this port before exposing it publicly.
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana-nodeport
+  namespace: live-auction
+spec:
+  type: NodePort
+  selector:
+    app: grafana
+  ports:
+    - port: 3000
+      targetPort: 3000
+      nodePort: 30300

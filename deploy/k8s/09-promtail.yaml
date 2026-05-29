@@ -1,0 +1,73 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: promtail
+  namespace: live-auction
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: promtail-live-auction
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: promtail-live-auction
+subjects:
+  - kind: ServiceAccount
+    name: promtail
+    namespace: live-auction
+roleRef:
+  kind: ClusterRole
+  name: promtail-live-auction
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: promtail
+  namespace: live-auction
+spec:
+  selector:
+    matchLabels:
+      app: promtail
+  template:
+    metadata:
+      labels:
+        app: promtail
+    spec:
+      serviceAccountName: promtail
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: promtail
+          image: grafana/promtail:3.1.0
+          args: ["-config.file=/etc/promtail.yaml"]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/promtail.yaml
+              subPath: promtail.yaml
+            - name: pods-logs
+              mountPath: /var/log/pods
+              readOnly: true
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+      volumes:
+        - name: config
+          configMap:
+            name: promtail-config
+        - name: pods-logs
+          hostPath:
+            path: /var/log/pods
