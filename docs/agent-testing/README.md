@@ -9,6 +9,9 @@
 | 任务 | 下一步读取 |
 | --- | --- |
 | 执行模块、流程、接口、并发或状态一致性测试 | `guides/runner.md`，再读目标 `modules/<module>.md` 或 `flows/<flow>.md` |
+| 使用 subagent 编排单目标测试或多目标并行测试 | `guides/runner.md` -> `guides/subagent.md`，再按目标读取契约 |
+| 并行生成多个测试计划 | `guides/runner.md` -> `guides/subagent.md`，每个目标只读自己的模块或流程契约和主 agent 明确列出的项目上下文 |
+| 并行执行多个已授权测试计划 | `guides/runner.md` -> `guides/subagent.md`，再按测试类型读取 `guides/go-runner.md`、`guides/environment.md`、`guides/concurrency-consistency.md` 或 `guides/performance-load.md` |
 | 设计或执行并发测试 | `guides/runner.md` -> `guides/concurrency.md` -> `guides/go-runner.md`，再读目标契约 |
 | 准备环境、连接 DB/Redis、启动服务、创建测试数据 | `guides/environment.md` |
 | 使用 Go runner 采集结构化证据 | `guides/runner.md` -> `guides/go-runner.md` |
@@ -22,6 +25,7 @@ docs/agent-testing/
 ├── README.md
 ├── guides/
 │   ├── runner.md
+│   ├── subagent.md
 │   ├── environment.md
 │   ├── concurrency.md
 │   ├── go-runner.md
@@ -49,6 +53,8 @@ docs/agent-testing/
 
 - 不要一次性读取整个目录。
 - 先读 `README.md`，再读任务指南，再读目标契约。
+- 使用 subagent 时，先读 `guides/runner.md`，再读 `guides/subagent.md`，然后每个 subagent 只读取自己目标需要的契约和计划列出的项目上下文。
+- 并行执行测试时，如果多个 subagent 连接同一真实数据库或 Redis，计划必须先定义唯一子批次、前缀或实体隔离策略。
 - 设计或执行并发测试时，先读 `guides/runner.md`，再读 `guides/concurrency.md` 和目标契约。
 - 流程文档要求关联模块时，只读取流程明确点名的模块文档。
 - 只有生成文档时才读 `templates/module.md`。
@@ -78,6 +84,8 @@ docs/agent-testing/
 - 文档中标记为“禁止”的动作不得执行。
 - 如果目标文档缺少关键业务规则，agent 必须先询问用户，不允许自行猜测。
 - 发现文档外风险时，只能作为“建议新增测试”记录，不能直接扩大本次测试范围。
+- Subagent 的输出只是中间产物，最终通过、失败和风险结论必须由主 agent 复核后写入报告。
+- 多个 subagent 连接同一真实依赖时，必须使用互不重叠的批次 ID、名称前缀、幂等 key、Redis key 或实体 ID 集合，禁止相互污染测试数据。
 - 执行测试后，应按 `reports/README.md` 沉淀报告。
 
 ## 文档类型
