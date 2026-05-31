@@ -75,6 +75,12 @@ func TestPlaceBidSucceeds(t *testing.T) {
 	if result.CurrentPrice != 100 {
 		t.Fatalf("expected current_price 100, got %d", result.CurrentPrice)
 	}
+	if result.DealPrice != 100 {
+		t.Fatalf("expected deal_price 100, got %d", result.DealPrice)
+	}
+	if result.EndTimeUnixMS == 0 {
+		t.Fatal("expected end_time_unix_ms")
+	}
 	if result.LeaderUserID != "user_1" {
 		t.Fatalf("expected leader user_1, got %q", result.LeaderUserID)
 	}

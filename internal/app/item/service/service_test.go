@@ -716,6 +716,12 @@ func TestGetItemEnrichesFromCacheWhenOngoing(t *testing.T) {
 	if detail.CurrentPrice != 5000 {
 		t.Fatalf("expected current_price 5000 from Redis, got %d", detail.CurrentPrice)
 	}
+	if detail.DealPrice != 5000 {
+		t.Fatalf("expected deal_price 5000 from Redis, got %d", detail.DealPrice)
+	}
+	if detail.EndTimeUnixMS == 0 {
+		t.Fatal("expected end_time_unix_ms from Redis")
+	}
 	if detail.LeaderUserID != "user_99" {
 		t.Fatalf("expected leader_user_id user_99, got %q", detail.LeaderUserID)
 	}

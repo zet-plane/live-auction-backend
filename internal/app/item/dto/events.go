@@ -6,6 +6,8 @@ const (
 	EventAuctionStarted   = "auction_started"
 	EventBidSuccess       = "bid_success"
 	EventAuctionExtended  = "auction_extended"
+	EventTimeSync         = "time_sync"
+	EventAuctionSnapshot  = "auction_snapshot"
 	EventUserOutbid       = "user_outbid"
 	EventAuctionEnded     = "auction_ended"
 	EventAuctionCancelled = "auction_cancelled"
@@ -35,6 +37,26 @@ type AuctionExtendedPayload struct {
 	ExtendSeconds int       `json:"extend_seconds"`
 }
 
+type TimeSyncPayload struct {
+	ItemID           string `json:"item_id"`
+	ServerTimeUnixMS int64  `json:"server_time_unix_ms"`
+	EndTimeUnixMS    int64  `json:"end_time_unix_ms"`
+	Status           string `json:"status"`
+}
+
+type AuctionSnapshotPayload struct {
+	ItemID           string `json:"item_id"`
+	Status           string `json:"status"`
+	ServerTimeUnixMS int64  `json:"server_time_unix_ms"`
+	EndTimeUnixMS    int64  `json:"end_time_unix_ms"`
+	EndedAtUnixMS    int64  `json:"ended_at_unix_ms,omitempty"`
+	LeaderUserID     string `json:"leader_user_id"`
+	DealPrice        int64  `json:"deal_price"`
+	BidCount         int    `json:"bid_count"`
+	ParticipantCount int    `json:"participant_count"`
+	EndReason        string `json:"end_reason,omitempty"`
+}
+
 type UserOutbidPayload struct {
 	ItemID       string `json:"item_id"`
 	NewLeaderID  string `json:"new_leader_user_id"`
@@ -42,9 +64,12 @@ type UserOutbidPayload struct {
 }
 
 type AuctionEndedPayload struct {
-	ItemID       string `json:"item_id"`
-	WinnerUserID string `json:"winner_user_id"`
-	DealPrice    int64  `json:"deal_price"`
+	ItemID        string `json:"item_id"`
+	WinnerUserID  string `json:"winner_user_id"`
+	LeaderUserID  string `json:"leader_user_id"`
+	DealPrice     int64  `json:"deal_price"`
+	EndedAtUnixMS int64  `json:"ended_at_unix_ms,omitempty"`
+	EndReason     string `json:"end_reason,omitempty"`
 }
 
 type AuctionCancelledPayload struct {

@@ -97,11 +97,13 @@ func (s *Service) PlaceBid(ctx context.Context, current *usermodel.User, itemID 
 		bidResult = "idempotent"
 		bidReason = "idempotency_key"
 		return &dto.PlaceBidResult{
-			BidID:        luaResult.BidID,
-			CurrentPrice: luaResult.CurrentPrice,
-			LeaderUserID: luaResult.LeaderUserID,
-			EndTime:      time.Unix(luaResult.EndTimeUnix, 0),
-			Status:       "ongoing",
+			BidID:         luaResult.BidID,
+			CurrentPrice:  luaResult.CurrentPrice,
+			DealPrice:     luaResult.CurrentPrice,
+			LeaderUserID:  luaResult.LeaderUserID,
+			EndTime:       time.Unix(luaResult.EndTimeUnix, 0),
+			EndTimeUnixMS: bidEndTimeUnixMS(luaResult),
+			Status:        "ongoing",
 		}, nil
 	case 2:
 		bidResult = "rejected"
@@ -203,9 +205,12 @@ func (s *Service) PlaceBid(ctx context.Context, current *usermodel.User, itemID 
 			_ = s.broadcaster.Fanout(wsevent.RoomTopic(item.RoomID), wsevent.Event{
 				Type: dto.EventAuctionEnded,
 				Payload: dto.AuctionEndedPayload{
-					ItemID:       item.ID,
-					WinnerUserID: current.ID,
-					DealPrice:    input.Price,
+					ItemID:        item.ID,
+					WinnerUserID:  current.ID,
+					LeaderUserID:  current.ID,
+					DealPrice:     input.Price,
+					EndedAtUnixMS: s.now().UnixMilli(),
+					EndReason:     "price_cap",
 				},
 			})
 			if orderID != "" {
@@ -225,12 +230,24 @@ func (s *Service) PlaceBid(ctx context.Context, current *usermodel.User, itemID 
 	}
 
 	return &dto.PlaceBidResult{
-		BidID:        luaResult.BidID,
-		CurrentPrice: luaResult.CurrentPrice,
-		LeaderUserID: luaResult.LeaderUserID,
-		EndTime:      time.Unix(luaResult.EndTimeUnix, 0),
-		Status:       status,
+		BidID:         luaResult.BidID,
+		CurrentPrice:  luaResult.CurrentPrice,
+		DealPrice:     luaResult.CurrentPrice,
+		LeaderUserID:  luaResult.LeaderUserID,
+		EndTime:       time.Unix(luaResult.EndTimeUnix, 0),
+		EndTimeUnixMS: bidEndTimeUnixMS(luaResult),
+		Status:        status,
 	}, nil
+}
+
+func bidEndTimeUnixMS(result *itemcache.BidLuaResult) int64 {
+	if result.EndTimeUnixMS > 0 {
+		return result.EndTimeUnixMS
+	}
+	if result.EndTimeUnix > 0 {
+		return result.EndTimeUnix * 1000
+	}
+	return 0
 }
 
 func (s *Service) GetRanking(ctx context.Context, itemID string, page, pageSize int) (result *dto.RankingResult, err error) {

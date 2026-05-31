@@ -29,11 +29,13 @@ func (r PlaceBidRequest) Input(userName string) PlaceBidInput {
 }
 
 type PlaceBidResult struct {
-	BidID        string    `json:"bid_id"`
-	CurrentPrice int64     `json:"current_price"`
-	LeaderUserID string    `json:"leader_user_id"`
-	EndTime      time.Time `json:"end_time"`
-	Status       string    `json:"status"` // "ongoing" | "ended"
+	BidID         string    `json:"bid_id"`
+	CurrentPrice  int64     `json:"current_price"`
+	DealPrice     int64     `json:"deal_price"`
+	LeaderUserID  string    `json:"leader_user_id"`
+	EndTime       time.Time `json:"end_time"`
+	EndTimeUnixMS int64     `json:"end_time_unix_ms"`
+	Status        string    `json:"status"` // "ongoing" | "ended"
 }
 
 type RankingEntry struct {

@@ -145,15 +145,15 @@ func (s *Service) ListMerchantItems(ctx context.Context, current *usermodel.User
 		if iwr.Item.Status == model.ItemOngoing && s.cache != nil {
 			if state, ok, _ := s.cache.GetAuctionState(ctx, iwr.Item.ID); ok {
 				d.Progress.CurrentPrice = state.CurrentPrice
+				d.Progress.DealPrice = stateDealPrice(state)
 				d.Progress.LeaderUserID = state.LeaderUserID
 				d.Progress.BidCount = state.BidCount
 				d.Progress.ParticipantCount = state.ParticipantCount
+				d.Progress.EndTimeUnixMS = stateEndTimeUnixMS(state)
+				d.Progress.EndedAtUnixMS = state.EndedAtUnixMS
+				d.Progress.EndReason = state.EndReason
 				d.Progress.IsExtended = state.IsExtended
-				remaining := state.EndTime.Sub(now).Milliseconds()
-				if remaining < 0 {
-					remaining = 0
-				}
-				d.Progress.RemainingMS = remaining
+				d.Progress.RemainingMS = stateRemainingMS(state, now)
 			}
 		}
 		list = append(list, d)
@@ -419,7 +419,7 @@ func (s *Service) EndExpiredAuctions(ctx context.Context) {
 		if s.cache != nil {
 			if state, ok, _ := s.cache.GetAuctionState(ctx, item.ID); ok {
 				winnerID = state.LeaderUserID
-				dealPrice = state.CurrentPrice
+				dealPrice = stateDealPrice(state)
 			}
 		}
 		item.Status = model.ItemEnded
@@ -445,6 +445,7 @@ func (s *Service) EndExpiredAuctions(ctx context.Context) {
 				Payload: dto.AuctionEndedPayload{
 					ItemID:       item.ID,
 					WinnerUserID: winnerID,
+					LeaderUserID: winnerID,
 					DealPrice:    dealPrice,
 				},
 			})
@@ -476,24 +477,53 @@ func (s *Service) EndExpiredAuctions(ctx context.Context) {
 
 func applyStateToDetail(d *dto.ItemDetailDTO, state *itemcache.AuctionState, now time.Time) {
 	d.CurrentPrice = state.CurrentPrice
+	d.DealPrice = stateDealPrice(state)
 	d.LeaderUserID = state.LeaderUserID
 	d.BidCount = state.BidCount
 	d.ParticipantCount = state.ParticipantCount
+	d.EndTimeUnixMS = stateEndTimeUnixMS(state)
+	d.EndedAtUnixMS = state.EndedAtUnixMS
+	d.EndReason = state.EndReason
 	d.IsExtended = state.IsExtended
-	remaining := state.EndTime.Sub(now).Milliseconds()
-	if remaining < 0 {
-		remaining = 0
-	}
-	d.RemainingMS = remaining
+	d.RemainingMS = stateRemainingMS(state, now)
 }
 
 func applyStateToList(d *dto.ItemListDTO, state *itemcache.AuctionState, now time.Time) {
 	d.CurrentPrice = state.CurrentPrice
+	d.DealPrice = stateDealPrice(state)
 	d.BidCount = state.BidCount
 	d.ParticipantCount = state.ParticipantCount
-	remaining := state.EndTime.Sub(now).Milliseconds()
+	d.EndTimeUnixMS = stateEndTimeUnixMS(state)
+	d.EndedAtUnixMS = state.EndedAtUnixMS
+	d.EndReason = state.EndReason
+	d.RemainingMS = stateRemainingMS(state, now)
+}
+
+func stateDealPrice(state *itemcache.AuctionState) int64 {
+	if state.DealPrice > 0 {
+		return state.DealPrice
+	}
+	return state.CurrentPrice
+}
+
+func stateEndTimeUnixMS(state *itemcache.AuctionState) int64 {
+	if state.EndTimeUnixMS > 0 {
+		return state.EndTimeUnixMS
+	}
+	if !state.EndTime.IsZero() {
+		return state.EndTime.UnixMilli()
+	}
+	return 0
+}
+
+func stateRemainingMS(state *itemcache.AuctionState, now time.Time) int64 {
+	endUnixMS := stateEndTimeUnixMS(state)
+	if endUnixMS == 0 {
+		return 0
+	}
+	remaining := endUnixMS - now.UnixMilli()
 	if remaining < 0 {
 		remaining = 0
 	}
-	d.RemainingMS = remaining
+	return remaining
 }

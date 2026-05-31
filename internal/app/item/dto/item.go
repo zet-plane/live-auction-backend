@@ -106,6 +106,7 @@ type ItemListDTO struct {
 	Tags             []string                    `json:"tags"`
 	Status           itemmodel.AuctionItemStatus `json:"status"`
 	CurrentPrice     int64                       `json:"current_price"`
+	DealPrice        int64                       `json:"deal_price"`
 	StartPrice       int64                       `json:"start_price"`
 	BidIncrement     int64                       `json:"bid_increment"`
 	PriceCap         int64                       `json:"price_cap"`
@@ -115,6 +116,9 @@ type ItemListDTO struct {
 	BidCount         int                         `json:"bid_count"`
 	StartTime        time.Time                   `json:"start_time"`
 	EndTime          time.Time                   `json:"end_time"`
+	EndTimeUnixMS    int64                       `json:"end_time_unix_ms"`
+	EndedAtUnixMS    int64                       `json:"ended_at_unix_ms"`
+	EndReason        string                      `json:"end_reason"`
 	RemainingMS      int64                       `json:"remaining_ms"`
 }
 
@@ -129,9 +133,13 @@ type ItemDetailDTO struct {
 	Rule             RuleDTO                     `json:"rule"`
 	AuctionPolicy    AuctionPolicy               `json:"auction_policy"`
 	CurrentPrice     int64                       `json:"current_price"`
+	DealPrice        int64                       `json:"deal_price"`
 	LeaderUserID     string                      `json:"leader_user_id"`
 	ParticipantCount int                         `json:"participant_count"`
 	BidCount         int                         `json:"bid_count"`
+	EndTimeUnixMS    int64                       `json:"end_time_unix_ms"`
+	EndedAtUnixMS    int64                       `json:"ended_at_unix_ms"`
+	EndReason        string                      `json:"end_reason"`
 	RemainingMS      int64                       `json:"remaining_ms"`
 	IsExtended       bool                        `json:"is_extended"`
 	CreatedAt        time.Time                   `json:"created_at"`
@@ -161,10 +169,14 @@ type MerchantItemDTO struct {
 
 type ProgressDTO struct {
 	CurrentPrice     int64  `json:"current_price"`
+	DealPrice        int64  `json:"deal_price"`
 	LeaderUserID     string `json:"leader_user_id"`
 	BidCount         int    `json:"bid_count"`
 	ParticipantCount int    `json:"participant_count"`
 	OnlineCount      int    `json:"online_count"`
+	EndTimeUnixMS    int64  `json:"end_time_unix_ms"`
+	EndedAtUnixMS    int64  `json:"ended_at_unix_ms"`
+	EndReason        string `json:"end_reason"`
 	RemainingMS      int64  `json:"remaining_ms"`
 	IsExtended       bool   `json:"is_extended"`
 }
@@ -210,6 +222,8 @@ func NewRuleDTO(rule *itemmodel.AuctionRule) RuleDTO {
 }
 
 func NewItemListDTO(item *itemmodel.AuctionItem, rule *itemmodel.AuctionRule, policy AuctionPolicy, now time.Time) ItemListDTO {
+	price := currentPrice(item, rule)
+	finalDealPrice := dealPrice(item, rule)
 	return ItemListDTO{
 		ID:               item.ID,
 		RoomID:           item.RoomID,
@@ -218,7 +232,8 @@ func NewItemListDTO(item *itemmodel.AuctionItem, rule *itemmodel.AuctionRule, po
 		ImageURL:         item.ImageURL,
 		Tags:             item.Tags,
 		Status:           item.Status,
-		CurrentPrice:     currentPrice(item, rule),
+		CurrentPrice:     price,
+		DealPrice:        finalDealPrice,
 		StartPrice:       rule.StartPrice,
 		BidIncrement:     rule.BidIncrement,
 		PriceCap:         rule.PriceCap,
@@ -226,11 +241,14 @@ func NewItemListDTO(item *itemmodel.AuctionItem, rule *itemmodel.AuctionRule, po
 		AutoExtendSec:    policy.AutoExtendSec,
 		StartTime:        rule.StartTime,
 		EndTime:          rule.EndTime,
+		EndTimeUnixMS:    rule.EndTime.UnixMilli(),
 		RemainingMS:      remainingMS(item.Status, rule.EndTime, now),
 	}
 }
 
 func NewItemDetailDTO(item *itemmodel.AuctionItem, rule *itemmodel.AuctionRule, policy AuctionPolicy, now time.Time) ItemDetailDTO {
+	price := currentPrice(item, rule)
+	finalDealPrice := dealPrice(item, rule)
 	return ItemDetailDTO{
 		ID:            item.ID,
 		MerchantID:    item.MerchantID,
@@ -241,8 +259,10 @@ func NewItemDetailDTO(item *itemmodel.AuctionItem, rule *itemmodel.AuctionRule, 
 		Status:        item.Status,
 		Rule:          NewRuleDTO(rule),
 		AuctionPolicy: policy,
-		CurrentPrice:  currentPrice(item, rule),
+		CurrentPrice:  price,
+		DealPrice:     finalDealPrice,
 		LeaderUserID:  item.WinnerID,
+		EndTimeUnixMS: rule.EndTime.UnixMilli(),
 		RemainingMS:   remainingMS(item.Status, rule.EndTime, now),
 		CreatedAt:     item.CreatedAt,
 		UpdatedAt:     item.UpdatedAt,
@@ -250,6 +270,8 @@ func NewItemDetailDTO(item *itemmodel.AuctionItem, rule *itemmodel.AuctionRule, 
 }
 
 func NewMerchantItemDTO(item *itemmodel.AuctionItem, rule *itemmodel.AuctionRule, policy AuctionPolicy, now time.Time) MerchantItemDTO {
+	price := currentPrice(item, rule)
+	finalDealPrice := dealPrice(item, rule)
 	return MerchantItemDTO{
 		ID:                item.ID,
 		MerchantID:        item.MerchantID,
@@ -264,9 +286,11 @@ func NewMerchantItemDTO(item *itemmodel.AuctionItem, rule *itemmodel.AuctionRule
 		RuleSummary:       NewRuleDTO(rule),
 		AuctionPolicy:     policy,
 		Progress: ProgressDTO{
-			CurrentPrice: currentPrice(item, rule),
-			LeaderUserID: item.WinnerID,
-			RemainingMS:  remainingMS(item.Status, rule.EndTime, now),
+			CurrentPrice:  price,
+			DealPrice:     finalDealPrice,
+			LeaderUserID:  item.WinnerID,
+			EndTimeUnixMS: rule.EndTime.UnixMilli(),
+			RemainingMS:   remainingMS(item.Status, rule.EndTime, now),
 		},
 		Result: ResultDTO{
 			DealPrice:    item.DealPrice,
@@ -283,6 +307,13 @@ func currentPrice(item *itemmodel.AuctionItem, rule *itemmodel.AuctionRule) int6
 		return item.DealPrice
 	}
 	return rule.StartPrice
+}
+
+func dealPrice(item *itemmodel.AuctionItem, rule *itemmodel.AuctionRule) int64 {
+	if item.Status == itemmodel.ItemPublished || item.Status == itemmodel.ItemOngoing {
+		return currentPrice(item, rule)
+	}
+	return item.DealPrice
 }
 
 func remainingMS(status itemmodel.AuctionItemStatus, end time.Time, now time.Time) int64 {
