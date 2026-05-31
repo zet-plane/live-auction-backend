@@ -9,11 +9,16 @@ import (
 	"github.com/zet-plane/live-auction-backend/pkg/wsevent"
 )
 
+type SnapshotProvider interface {
+	SnapshotForRoom(ctx context.Context, roomID string) (*wsevent.Event, bool, error)
+}
+
 type Hub struct {
-	mu    sync.RWMutex
-	rooms map[string]map[string]*Conn // roomID → connID → Conn
-	users map[string][]*Conn          // userID → []*Conn
-	redis *redis.Client
+	mu               sync.RWMutex
+	rooms            map[string]map[string]*Conn // roomID → connID → Conn
+	users            map[string][]*Conn          // userID → []*Conn
+	redis            *redis.Client
+	snapshotProvider SnapshotProvider
 }
 
 func NewHub(redisClient *redis.Client) *Hub {
@@ -22,6 +27,12 @@ func NewHub(redisClient *redis.Client) *Hub {
 		users: make(map[string][]*Conn),
 		redis: redisClient,
 	}
+}
+
+func (h *Hub) SetSnapshotProvider(provider SnapshotProvider) {
+	h.mu.Lock()
+	h.snapshotProvider = provider
+	h.mu.Unlock()
 }
 
 func (h *Hub) Register(c *Conn) {
@@ -36,6 +47,18 @@ func (h *Hub) Register(c *Conn) {
 	if h.redis != nil {
 		go h.syncRedisOnJoin(c.roomID, c.userID)
 	}
+
+	h.mu.RLock()
+	provider := h.snapshotProvider
+	h.mu.RUnlock()
+	if provider == nil {
+		return
+	}
+	event, ok, err := provider.SnapshotForRoom(context.Background(), c.roomID)
+	if err != nil || !ok || event == nil {
+		return
+	}
+	h.deliver(c, *event)
 }
 
 func (h *Hub) Remove(c *Conn) {
@@ -67,14 +90,22 @@ func (h *Hub) Remove(c *Conn) {
 
 func (h *Hub) Fanout(topic string, event wsevent.Event) error {
 	roomID := strings.TrimPrefix(topic, "room:")
+	h.SendToRoom(roomID, event)
+	return nil
+}
+
+func (h *Hub) SendToRoom(roomID string, event wsevent.Event) {
 	h.mu.RLock()
 	room := h.rooms[roomID]
+	conns := make([]*Conn, 0, len(room))
+	for _, c := range room {
+		conns = append(conns, c)
+	}
 	h.mu.RUnlock()
 
-	for _, c := range room {
+	for _, c := range conns {
 		h.deliver(c, event)
 	}
-	return nil
 }
 
 func (h *Hub) Unicast(addr string, event wsevent.Event) error {

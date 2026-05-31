@@ -71,10 +71,12 @@ type Cache interface {
 	ScheduleAuctionEnd(ctx context.Context, itemID string, endUnixMS int64) error
 	UnscheduleAuctionEnd(ctx context.Context, itemID string) error
 	ListDueAuctionEnds(ctx context.Context, nowUnixMS int64, limit int) ([]string, error)
+	ListActiveAuctionEnds(ctx context.Context, limit int) ([]string, error)
 	SettleAuctionLua(ctx context.Context, itemID string, nowUnixMS int64) (*SettlementResult, bool, error)
 	PushToRoomQueue(ctx context.Context, roomID, itemID string, score float64) error
 	RemoveFromRoomQueue(ctx context.Context, roomID, itemID string) error
 	SetRoomCurrentItem(ctx context.Context, roomID, itemID string) error
+	GetRoomCurrentItem(ctx context.Context, roomID string) (string, bool, error)
 	ClearRoomCurrentItem(ctx context.Context, roomID, itemID string) error
 	PlaceBidLua(ctx context.Context, itemID string, args BidLuaArgs) (*BidLuaResult, error)
 	GetRanking(ctx context.Context, itemID string, offset, limit int) ([]dto.BidderPrice, error)
@@ -225,6 +227,13 @@ func (c *RedisCache) ListDueAuctionEnds(ctx context.Context, nowUnixMS int64, li
 	}).Result()
 }
 
+func (c *RedisCache) ListActiveAuctionEnds(ctx context.Context, limit int) ([]string, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	return c.client.ZRange(ctx, endingKey(), 0, int64(limit-1)).Result()
+}
+
 func (c *RedisCache) SettleAuctionLua(ctx context.Context, itemID string, nowUnixMS int64) (*SettlementResult, bool, error) {
 	res, err := settleAuctionScript.Run(ctx, c.client, []string{itemStateKey(itemID), endingKey()},
 		strconv.FormatInt(nowUnixMS, 10),
@@ -261,6 +270,20 @@ func (c *RedisCache) RemoveFromRoomQueue(ctx context.Context, roomID, itemID str
 
 func (c *RedisCache) SetRoomCurrentItem(ctx context.Context, roomID, itemID string) error {
 	return c.client.HSet(ctx, roomStateKey(roomID), "current_item_id", itemID).Err()
+}
+
+func (c *RedisCache) GetRoomCurrentItem(ctx context.Context, roomID string) (string, bool, error) {
+	itemID, err := c.client.HGet(ctx, roomStateKey(roomID), "current_item_id").Result()
+	if errors.Is(err, redis.Nil) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	if itemID == "" {
+		return "", false, nil
+	}
+	return itemID, true, nil
 }
 
 func (c *RedisCache) ClearRoomCurrentItem(ctx context.Context, roomID, itemID string) error {

@@ -484,6 +484,100 @@ func (s *Service) SettleDueAuctions(ctx context.Context) {
 	}
 }
 
+func (s *Service) AuctionSnapshot(ctx context.Context, itemID string) (*dto.AuctionSnapshotPayload, bool, error) {
+	itemID = strings.TrimSpace(itemID)
+	if itemID == "" {
+		return nil, false, nil
+	}
+	now := s.now()
+	if s.cache != nil {
+		state, ok, err := s.cache.GetAuctionState(ctx, itemID)
+		if err != nil {
+			logx.Warnw("item.AuctionSnapshot get redis state failed", "item_id", itemID, "err", err)
+		} else if ok {
+			return auctionSnapshotFromState(itemID, state, now), true, nil
+		}
+	}
+
+	item, rule, err := s.store.FindItemWithRule(itemID)
+	if err != nil {
+		return nil, false, err
+	}
+	return auctionSnapshotFromStore(item, rule, now), true, nil
+}
+
+func (s *Service) SnapshotForRoom(ctx context.Context, roomID string) (*wsevent.Event, bool, error) {
+	roomID = strings.TrimSpace(roomID)
+	if roomID == "" {
+		return nil, false, nil
+	}
+	var itemID string
+	if s.cache != nil {
+		cachedItemID, ok, err := s.cache.GetRoomCurrentItem(ctx, roomID)
+		if err != nil {
+			logx.Warnw("item.SnapshotForRoom get room current item from cache failed", "room_id", roomID, "err", err)
+		} else if ok {
+			itemID = cachedItemID
+		}
+	}
+	if itemID == "" {
+		storedItemID, ok, err := s.store.GetRoomCurrentItem(roomID)
+		if err != nil {
+			return nil, false, err
+		}
+		if !ok {
+			return nil, false, nil
+		}
+		itemID = storedItemID
+	}
+	snapshot, ok, err := s.AuctionSnapshot(ctx, itemID)
+	if err != nil || !ok {
+		return nil, ok, err
+	}
+	return &wsevent.Event{Type: dto.EventAuctionSnapshot, Payload: *snapshot}, true, nil
+}
+
+func (s *Service) BroadcastTimeSync(ctx context.Context) {
+	if s.cache == nil || s.broadcaster == nil {
+		return
+	}
+	itemIDs, err := s.cache.ListActiveAuctionEnds(ctx, 200)
+	if err != nil {
+		logx.Warnw("item.BroadcastTimeSync list active auction ends failed", "err", err)
+		return
+	}
+	now := s.now()
+	serverUnixMS := now.UnixMilli()
+	for _, itemID := range itemIDs {
+		state, ok, stateErr := s.cache.GetAuctionState(ctx, itemID)
+		if stateErr != nil {
+			logx.Warnw("item.BroadcastTimeSync get auction state failed", "item_id", itemID, "err", stateErr)
+			continue
+		}
+		if !ok || state.Status != string(model.ItemOngoing) {
+			continue
+		}
+		endUnixMS := stateEndTimeUnixMS(state)
+		if endUnixMS == 0 {
+			continue
+		}
+		item, _, findErr := s.store.FindItemWithRule(itemID)
+		if findErr != nil {
+			logx.Warnw("item.BroadcastTimeSync find item failed", "item_id", itemID, "err", findErr)
+			continue
+		}
+		_ = s.broadcaster.Fanout(wsevent.RoomTopic(item.RoomID), wsevent.Event{
+			Type: dto.EventTimeSync,
+			Payload: dto.TimeSyncPayload{
+				ItemID:           itemID,
+				ServerTimeUnixMS: serverUnixMS,
+				EndTimeUnixMS:    endUnixMS,
+				Status:           state.Status,
+			},
+		})
+	}
+}
+
 func (s *Service) persistSettledAuction(ctx context.Context, result itemcache.SettlementResult) bool {
 	item, rule, err := s.store.FindItemWithRule(result.ItemID)
 	if err != nil {
@@ -541,6 +635,36 @@ func (s *Service) persistSettledAuction(ctx context.Context, result itemcache.Se
 		}
 	}
 	return true
+}
+
+func auctionSnapshotFromState(itemID string, state *itemcache.AuctionState, now time.Time) *dto.AuctionSnapshotPayload {
+	return &dto.AuctionSnapshotPayload{
+		ItemID:           itemID,
+		Status:           state.Status,
+		ServerTimeUnixMS: now.UnixMilli(),
+		EndTimeUnixMS:    stateEndTimeUnixMS(state),
+		EndedAtUnixMS:    state.EndedAtUnixMS,
+		LeaderUserID:     state.LeaderUserID,
+		DealPrice:        stateDealPrice(state),
+		BidCount:         state.BidCount,
+		ParticipantCount: state.ParticipantCount,
+		EndReason:        state.EndReason,
+	}
+}
+
+func auctionSnapshotFromStore(item *model.AuctionItem, rule *model.AuctionRule, now time.Time) *dto.AuctionSnapshotPayload {
+	dealPrice := item.DealPrice
+	if dealPrice == 0 {
+		dealPrice = rule.StartPrice
+	}
+	return &dto.AuctionSnapshotPayload{
+		ItemID:           item.ID,
+		Status:           string(item.Status),
+		ServerTimeUnixMS: now.UnixMilli(),
+		EndTimeUnixMS:    rule.EndTime.UnixMilli(),
+		LeaderUserID:     item.WinnerID,
+		DealPrice:        dealPrice,
+	}
 }
 
 func applyStateToDetail(d *dto.ItemDetailDTO, state *itemcache.AuctionState, now time.Time) {

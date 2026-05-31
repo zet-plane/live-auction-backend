@@ -19,6 +19,7 @@ type Store interface {
 	FindItemWithRule(itemID string) (*model.AuctionItem, *model.AuctionRule, error)
 	UpdateItemWithRule(item *model.AuctionItem, rule *model.AuctionRule) error
 	SetRoomCurrentItem(roomID, itemID string) error
+	GetRoomCurrentItem(roomID string) (string, bool, error)
 	ClearRoomCurrentItem(roomID, itemID string) error
 	DeleteItem(itemID string) error
 	ListItems(query dto.ListItemsInput) ([]model.ItemWithRule, int64, error)
@@ -80,6 +81,20 @@ func (s *GormStore) SetRoomCurrentItem(roomID, itemID string) error {
 	return s.db.Model(&roommodel.LiveRoom{}).
 		Where("id = ?", roomID).
 		Update("current_item_id", itemID).Error
+}
+
+func (s *GormStore) GetRoomCurrentItem(roomID string) (string, bool, error) {
+	var room roommodel.LiveRoom
+	if err := s.db.Select("current_item_id").First(&room, "id = ?", roomID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	if room.CurrentItemID == "" {
+		return "", false, nil
+	}
+	return room.CurrentItemID, true, nil
 }
 
 func (s *GormStore) ClearRoomCurrentItem(roomID, itemID string) error {

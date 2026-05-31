@@ -79,6 +79,14 @@ func (s *fakeStore) SetRoomCurrentItem(roomID, itemID string) error {
 	return nil
 }
 
+func (s *fakeStore) GetRoomCurrentItem(roomID string) (string, bool, error) {
+	itemID := s.roomCurrentItems[roomID]
+	if itemID == "" {
+		return "", false, nil
+	}
+	return itemID, true, nil
+}
+
 func (s *fakeStore) ClearRoomCurrentItem(roomID, itemID string) error {
 	if s.clearRoomCurrentErr != nil {
 		return s.clearRoomCurrentErr
@@ -387,6 +395,23 @@ func (c *fakeCache) ListDueAuctionEnds(_ context.Context, nowUnixMS int64, limit
 	return ids, nil
 }
 
+func (c *fakeCache) ListActiveAuctionEnds(_ context.Context, limit int) ([]string, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	ids := make([]string, 0, len(c.ending))
+	for itemID := range c.ending {
+		ids = append(ids, itemID)
+	}
+	sort.Slice(ids, func(i, j int) bool {
+		return c.ending[ids[i]] < c.ending[ids[j]]
+	})
+	if len(ids) > limit {
+		ids = ids[:limit]
+	}
+	return ids, nil
+}
+
 func (c *fakeCache) SettleAuctionLua(_ context.Context, itemID string, nowUnixMS int64) (*itemcache.SettlementResult, bool, error) {
 	state, ok := c.states[itemID]
 	if !ok {
@@ -439,6 +464,14 @@ func (c *fakeCache) RemoveFromRoomQueue(_ context.Context, roomID, itemID string
 func (c *fakeCache) SetRoomCurrentItem(_ context.Context, roomID, itemID string) error {
 	c.roomCurrent[roomID] = itemID
 	return nil
+}
+
+func (c *fakeCache) GetRoomCurrentItem(_ context.Context, roomID string) (string, bool, error) {
+	itemID := c.roomCurrent[roomID]
+	if itemID == "" {
+		return "", false, nil
+	}
+	return itemID, true, nil
 }
 
 func (c *fakeCache) ClearRoomCurrentItem(_ context.Context, roomID, itemID string) error {
@@ -799,6 +832,114 @@ func TestGetItemEnrichesFromCacheWhenOngoing(t *testing.T) {
 	}
 	if detail.LeaderUserID != "user_99" {
 		t.Fatalf("expected leader_user_id user_99, got %q", detail.LeaderUserID)
+	}
+}
+
+func TestAuctionSnapshotReturnsRedisOngoingState(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	now := time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC)
+	svc := NewService(store, itemdto.AuctionPolicy{}, fc, nil, nil, nil)
+	svc.now = func() time.Time { return now }
+	merchant := &usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}
+	itemID := seedPublishedItem(t, svc, "merchant_1", "room_abc")
+	_ = svc.StartItem(context.Background(), merchant, itemID)
+
+	endTime := now.Add(90 * time.Second)
+	fc.states[itemID] = &itemcache.AuctionState{
+		Status:           "ongoing",
+		CurrentPrice:     3400,
+		DealPrice:        3400,
+		LeaderUserID:     "user_7",
+		EndTime:          endTime,
+		EndTimeUnixMS:    endTime.UnixMilli(),
+		BidCount:         5,
+		ParticipantCount: 3,
+	}
+
+	snapshot, ok, err := svc.AuctionSnapshot(context.Background(), itemID)
+	if err != nil {
+		t.Fatalf("AuctionSnapshot returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected auction snapshot")
+	}
+	if snapshot.ItemID != itemID {
+		t.Fatalf("expected item_id %q, got %q", itemID, snapshot.ItemID)
+	}
+	if snapshot.Status != "ongoing" {
+		t.Fatalf("expected status ongoing, got %q", snapshot.Status)
+	}
+	if snapshot.ServerTimeUnixMS != now.UnixMilli() {
+		t.Fatalf("expected server_time_unix_ms %d, got %d", now.UnixMilli(), snapshot.ServerTimeUnixMS)
+	}
+	if snapshot.EndTimeUnixMS != endTime.UnixMilli() {
+		t.Fatalf("expected end_time_unix_ms %d, got %d", endTime.UnixMilli(), snapshot.EndTimeUnixMS)
+	}
+	if snapshot.LeaderUserID != "user_7" || snapshot.DealPrice != 3400 {
+		t.Fatalf("expected leader/deal user_7/3400, got %q/%d", snapshot.LeaderUserID, snapshot.DealPrice)
+	}
+	if snapshot.BidCount != 5 || snapshot.ParticipantCount != 3 {
+		t.Fatalf("expected bid/participant counts 5/3, got %d/%d", snapshot.BidCount, snapshot.ParticipantCount)
+	}
+}
+
+func TestBroadcastTimeSyncFansOutOngoingActiveAuctions(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	fb := &fakeBroadcaster{}
+	now := time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC)
+	svc := NewService(store, itemdto.AuctionPolicy{}, fc, nil, nil, fb)
+	svc.now = func() time.Time { return now }
+	merchant := &usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}
+	itemID := seedPublishedItem(t, svc, "merchant_1", "room_abc")
+	_ = svc.StartItem(context.Background(), merchant, itemID)
+
+	endTime := now.Add(45 * time.Second)
+	fc.states[itemID] = &itemcache.AuctionState{
+		Status:        "ongoing",
+		CurrentPrice:  1200,
+		DealPrice:     1200,
+		EndTime:       endTime,
+		EndTimeUnixMS: endTime.UnixMilli(),
+	}
+	fc.ending[itemID] = endTime.UnixMilli()
+
+	svc.BroadcastTimeSync(context.Background())
+
+	var fanout fakeFanout
+	found := false
+	for _, f := range fb.fanouts {
+		if f.event.Type == itemdto.EventTimeSync {
+			fanout = f
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected time_sync fanout, got %+v", fb.fanouts)
+	}
+	if fanout.topic != wsevent.RoomTopic("room_abc") {
+		t.Fatalf("expected room topic %q, got %q", wsevent.RoomTopic("room_abc"), fanout.topic)
+	}
+	if fanout.event.Type != itemdto.EventTimeSync {
+		t.Fatalf("expected time_sync event, got %q", fanout.event.Type)
+	}
+	payload, ok := fanout.event.Payload.(itemdto.TimeSyncPayload)
+	if !ok {
+		t.Fatalf("expected TimeSyncPayload, got %T", fanout.event.Payload)
+	}
+	if payload.ItemID != itemID {
+		t.Fatalf("expected item_id %q, got %q", itemID, payload.ItemID)
+	}
+	if payload.ServerTimeUnixMS != now.UnixMilli() {
+		t.Fatalf("expected server_time_unix_ms %d, got %d", now.UnixMilli(), payload.ServerTimeUnixMS)
+	}
+	if payload.EndTimeUnixMS != endTime.UnixMilli() {
+		t.Fatalf("expected end_time_unix_ms %d, got %d", endTime.UnixMilli(), payload.EndTimeUnixMS)
+	}
+	if payload.Status != "ongoing" {
+		t.Fatalf("expected status ongoing, got %q", payload.Status)
 	}
 }
 

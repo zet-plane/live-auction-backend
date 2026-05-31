@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"context"
 	"testing"
 
 	"github.com/zet-plane/live-auction-backend/pkg/wsevent"
@@ -76,6 +77,64 @@ func TestFanoutDeliversToRoom(t *testing.T) {
 	}
 	if len(c3.send) != 0 {
 		t.Errorf("c3 (different room) should receive 0 events, got %d", len(c3.send))
+	}
+}
+
+func TestSendToRoomDeliversEvent(t *testing.T) {
+	h := NewHub(nil)
+	c1 := newTestConn("user_1", "room_1")
+	c2 := newTestConn("user_2", "room_2")
+	h.Register(c1)
+	h.Register(c2)
+
+	evt := wsevent.Event{Type: "direct_room_event"}
+	h.SendToRoom("room_1", evt)
+
+	if len(c1.send) != 1 {
+		t.Fatalf("c1 should receive 1 event, got %d", len(c1.send))
+	}
+	if got := <-c1.send; got.Type != "direct_room_event" {
+		t.Fatalf("expected direct_room_event, got %q", got.Type)
+	}
+	if len(c2.send) != 0 {
+		t.Fatalf("c2 (different room) should receive 0 events, got %d", len(c2.send))
+	}
+}
+
+type fakeSnapshotProvider struct {
+	event wsevent.Event
+	ok    bool
+	err   error
+	calls []string
+}
+
+func (p *fakeSnapshotProvider) SnapshotForRoom(_ context.Context, roomID string) (*wsevent.Event, bool, error) {
+	p.calls = append(p.calls, roomID)
+	if p.err != nil || !p.ok {
+		return nil, p.ok, p.err
+	}
+	return &p.event, true, nil
+}
+
+func TestRegisterDeliversSnapshotWhenProviderHasOne(t *testing.T) {
+	h := NewHub(nil)
+	provider := &fakeSnapshotProvider{
+		event: wsevent.Event{Type: "auction_snapshot"},
+		ok:    true,
+	}
+	h.SetSnapshotProvider(provider)
+
+	c := newTestConn("user_1", "room_1")
+	h.Register(c)
+
+	if len(provider.calls) != 1 || provider.calls[0] != "room_1" {
+		t.Fatalf("expected snapshot provider called for room_1, got %v", provider.calls)
+	}
+	if len(c.send) != 1 {
+		t.Fatalf("expected snapshot delivered to new conn, got %d events", len(c.send))
+	}
+	if got := <-c.send; got.Type != "auction_snapshot" {
+		t.Fatalf("expected auction_snapshot, got %q", got.Type)
 	}
 }
 
