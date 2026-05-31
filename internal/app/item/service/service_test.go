@@ -917,6 +917,58 @@ func TestAuctionSnapshotReturnsRedisOngoingState(t *testing.T) {
 	}
 }
 
+func TestAuctionSnapshotReturnsRedisEndedState(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	now := time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC)
+	svc := NewService(store, itemdto.AuctionPolicy{}, fc, nil, nil, nil)
+	svc.now = func() time.Time { return now }
+	merchant := &usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}
+	itemID := seedPublishedItem(t, svc, "merchant_1", "room_abc")
+	_ = svc.StartItem(context.Background(), merchant, itemID)
+
+	endTime := now.Add(-time.Second)
+	endedAt := now.UnixMilli()
+	fc.states[itemID] = &itemcache.AuctionState{
+		Status:           "ended",
+		CurrentPrice:     1600,
+		DealPrice:        1600,
+		LeaderUserID:     "user_winner",
+		EndTime:          endTime,
+		EndTimeUnixMS:    endTime.UnixMilli(),
+		EndedAtUnixMS:    endedAt,
+		BidCount:         8,
+		ParticipantCount: 2,
+		EndReason:        "time_expired",
+	}
+
+	snapshot, ok, err := svc.AuctionSnapshot(context.Background(), itemID)
+	if err != nil {
+		t.Fatalf("AuctionSnapshot returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected auction snapshot")
+	}
+	if snapshot.Status != "ended" {
+		t.Fatalf("expected status ended, got %q", snapshot.Status)
+	}
+	if snapshot.EndTimeUnixMS != endTime.UnixMilli() {
+		t.Fatalf("expected end_time_unix_ms %d, got %d", endTime.UnixMilli(), snapshot.EndTimeUnixMS)
+	}
+	if snapshot.EndedAtUnixMS != endedAt {
+		t.Fatalf("expected ended_at_unix_ms %d, got %d", endedAt, snapshot.EndedAtUnixMS)
+	}
+	if snapshot.LeaderUserID != "user_winner" || snapshot.DealPrice != 1600 {
+		t.Fatalf("expected final leader/deal user_winner/1600, got %q/%d", snapshot.LeaderUserID, snapshot.DealPrice)
+	}
+	if snapshot.BidCount != 8 || snapshot.ParticipantCount != 2 {
+		t.Fatalf("expected bid/participant counts 8/2, got %d/%d", snapshot.BidCount, snapshot.ParticipantCount)
+	}
+	if snapshot.EndReason != "time_expired" {
+		t.Fatalf("expected end_reason time_expired, got %q", snapshot.EndReason)
+	}
+}
+
 func TestBroadcastTimeSyncFansOutOngoingActiveAuctions(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()
@@ -1454,6 +1506,94 @@ func TestSettleDueAuctionsBroadcastsWhenRoomCurrentClearFails(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected auction_ended fanout despite room cleanup error, got %+v", fb.fanouts)
+	}
+}
+
+func TestSettleDueAuctionsBroadcastsFinalAuctionEndedPayload(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	fb := &fakeBroadcaster{}
+	svc := NewService(store, testPolicy, fc, nil, nil, fb)
+	now := time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_abc", 0, 100, 0, now.Add(time.Minute))
+	dueEnd := now.Add(-time.Second)
+	fc.states[itemID].EndTime = dueEnd
+	fc.states[itemID].EndTimeUnixMS = dueEnd.UnixMilli()
+	fc.states[itemID].LeaderUserID = "user_winner"
+	fc.states[itemID].DealPrice = 1600
+	fc.states[itemID].CurrentPrice = 1600
+	fc.ending[itemID] = dueEnd.UnixMilli()
+	svc.now = func() time.Time { return now }
+
+	svc.SettleDueAuctions(context.Background())
+
+	var payload itemdto.AuctionEndedPayload
+	found := false
+	for _, f := range fb.fanouts {
+		if f.event.Type != itemdto.EventAuctionEnded || f.topic != wsevent.RoomTopic("room_abc") {
+			continue
+		}
+		got, ok := f.event.Payload.(itemdto.AuctionEndedPayload)
+		if !ok {
+			t.Fatalf("expected AuctionEndedPayload, got %T", f.event.Payload)
+		}
+		payload = got
+		found = true
+	}
+	if !found {
+		t.Fatalf("expected auction_ended fanout, got %+v", fb.fanouts)
+	}
+	if payload.ItemID != itemID {
+		t.Fatalf("expected item_id %q, got %q", itemID, payload.ItemID)
+	}
+	if payload.WinnerUserID != "user_winner" || payload.LeaderUserID != "user_winner" {
+		t.Fatalf("expected winner/leader user_winner, got %q/%q", payload.WinnerUserID, payload.LeaderUserID)
+	}
+	if payload.DealPrice != 1600 {
+		t.Fatalf("expected deal_price 1600, got %d", payload.DealPrice)
+	}
+	if payload.EndedAtUnixMS != now.UnixMilli() {
+		t.Fatalf("expected ended_at_unix_ms %d, got %d", now.UnixMilli(), payload.EndedAtUnixMS)
+	}
+	if payload.EndReason != "time_expired" {
+		t.Fatalf("expected end_reason time_expired, got %q", payload.EndReason)
+	}
+}
+
+func TestSettleDueAuctionsDoesNotFinalizeTwice(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	fb := &fakeBroadcaster{}
+	svc := NewService(store, testPolicy, fc, nil, nil, fb)
+	now := time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_abc", 0, 100, 0, now.Add(time.Minute))
+	dueEnd := now.Add(-time.Second)
+	fc.states[itemID].EndTime = dueEnd
+	fc.states[itemID].EndTimeUnixMS = dueEnd.UnixMilli()
+	fc.states[itemID].LeaderUserID = "user_winner"
+	fc.states[itemID].DealPrice = 1600
+	fc.states[itemID].CurrentPrice = 1600
+	fc.ending[itemID] = dueEnd.UnixMilli()
+	svc.now = func() time.Time { return now }
+
+	svc.SettleDueAuctions(context.Background())
+	svc.SettleDueAuctions(context.Background())
+
+	endedEvents := 0
+	for _, f := range fb.fanouts {
+		if f.event.Type == itemdto.EventAuctionEnded {
+			endedEvents++
+		}
+	}
+	if endedEvents != 1 {
+		t.Fatalf("expected one auction_ended fanout after duplicate settlement runs, got %d: %+v", endedEvents, fb.fanouts)
+	}
+	item := store.items[itemID]
+	if item.WinnerID != "user_winner" || item.DealPrice != 1600 {
+		t.Fatalf("expected final result user_winner/1600, got %q/%d", item.WinnerID, item.DealPrice)
+	}
+	if fc.states[itemID].Status != "ended" {
+		t.Fatalf("expected redis snapshot to remain ended, got %q", fc.states[itemID].Status)
 	}
 }
 

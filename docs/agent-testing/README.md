@@ -10,7 +10,7 @@
 | --- | --- |
 | 所有测试执行任务 | `templates/protocol.md` -> `guides/runner.md` -> 目标 `modules/<module>.md` 或 `flows/<flow>.md` |
 | 并发一致性测试 | `templates/protocol.md` -> `guides/runner.md` -> `guides/concurrency.md` -> `guides/go-runner.md` -> 目标契约 |
-| 性能压测 | `templates/protocol.md` -> `guides/runner.md` -> `guides/performance.md` -> `guides/environment.md` -> 目标契约 |
+| 性能压测 | `templates/protocol.md` -> `guides/runner.md` -> `guides/performance/README.md` -> `guides/performance/types.md` -> `guides/performance/online.md` -> `guides/performance/runner.md` -> `guides/environment.md` -> `guides/performance/scenarios.md` -> 目标契约 |
 | 已批准计划的 subagent 执行编排 | `templates/protocol.md` -> `guides/runner.md` -> `guides/subagent.md` -> 已批准计划 -> 目标契约 |
 | 环境准备、连接 DB/Redis、启动服务、创建测试数据 | `templates/protocol.md` -> `guides/environment.md` |
 | 使用 Go runner 采集结构化证据 | `templates/protocol.md` -> `guides/go-runner.md` |
@@ -27,7 +27,14 @@ docs/agent-testing/
 │   ├── subagent.md
 │   ├── environment.md
 │   ├── concurrency.md
-│   ├── performance.md
+│   ├── performance/
+│   │   ├── README.md
+│   │   ├── types.md
+│   │   ├── online.md
+│   │   ├── runner.md
+│   │   ├── subagent.md
+│   │   ├── scenarios.md
+│   │   └── performance-runner.go
 │   ├── go-runner.md
 │   └── module-generator.md
 ├── templates/
@@ -47,6 +54,8 @@ docs/agent-testing/
 │   └── auction-lifecycle.md
 ├── concurrency/
 │   └── *-plan.md
+├── performance-runs/
+│   └── <batch_id>/
 └── reports/
     ├── README.md
     └── *.md
@@ -55,7 +64,7 @@ docs/agent-testing/
 ## 渐进式读取规则
 
 - 不要一次性读取整个目录；先读 `README.md`，再按入口表读取 `templates/protocol.md`、任务指南、runner 和目标契约。
-- 专项指南只在任务需要时读取，例如并发、性能、环境、Go runner 或 subagent 编排。
+- 专项指南只在任务需要时读取，例如并发、性能类型、线上压测闭环、Performance runner、性能 subagent、环境、Go runner 或通用 subagent 编排。
 - 流程文档要求关联模块时，只读取流程明确点名的模块文档。
 - 除 `templates/protocol.md` 作为通用协议默认读取外，其他模板只在生成模块文档、编写 Go runner 或写报告时读取。
 
@@ -77,11 +86,12 @@ docs/agent-testing/
 
 ## 文档类型
 
-- `guides/`：测试执行、环境准备、Go runner、模块文档生成指南。
+- `guides/`：测试执行、环境准备、Go runner、Performance runner、模块文档生成指南。
 - `templates/`：通用协议模板、模块测试契约模板和 Go runner 模板。
 - `modules/`：单模块测试契约。
 - `flows/`：跨模块流程测试契约。
 - `concurrency/`：并发一致性测试计划草案、审核记录和执行许可记录。
+- `performance-runs/`：性能压测 runner 代码、脱敏复跑说明和脱敏证据摘要。
 - `reports/`：测试报告和报告写作规则。
 
 ## Agent 输出要求

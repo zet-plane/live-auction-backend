@@ -42,8 +42,12 @@ Agent 接到测试任务后，必须遵守 `README.md` 和 `templates/protocol.m
 读取 docs/agent-testing/README.md
 读取 docs/agent-testing/templates/protocol.md
 读取 docs/agent-testing/guides/runner.md
-读取 docs/agent-testing/guides/performance.md
+读取 docs/agent-testing/guides/performance/README.md
+读取 docs/agent-testing/guides/performance/types.md
+读取 docs/agent-testing/guides/performance/online.md
+读取 docs/agent-testing/guides/performance/runner.md
 读取 docs/agent-testing/guides/environment.md
+读取 docs/agent-testing/guides/performance/scenarios.md
 读取 docs/agent-testing/modules/<module>.md 或 docs/agent-testing/flows/<flow>.md
 
 已批准计划进入执行阶段后使用 subagent 编排单目标测试：
@@ -134,7 +138,7 @@ Apifox 对齐至少检查：
 | 模块集成 | 目标模块文档、`guides/environment.md`、必要时 `guides/go-runner.md` | 验证模块内真实 DAO/Service/缓存协作，只 mock 不可控第三方 |
 | 全流程 | 目标流程文档、流程要求的模块文档、`guides/environment.md` | 验证跨模块业务闭环、最终状态和核心不变量 |
 | 并发一致性 | `guides/concurrency.md`、目标模块或流程文档、必要时 `guides/go-runner.md` | 先输出完整并发设计并等批准；验证竞态、锁、事务和最终状态唯一性 |
-| 性能压测 | `guides/performance.md`、`guides/environment.md`、目标模块或流程文档 | 明确压测模型、阈值、压测源、停止条件、监控指标和业务抽样对账 |
+| 性能压测 | `guides/performance/README.md`、`guides/performance/types.md`、`guides/performance/online.md`、`guides/performance/runner.md`、`guides/environment.md`、`guides/performance/scenarios.md`、目标模块或流程文档 | 明确压测模型、阈值、压测源、停止条件、监控指标、runner 代码资产和业务抽样对账 |
 | WebSocket | 目标模块或流程文档、`guides/environment.md` | 使用真实连接和真实业务触发消息，以查询接口或存储状态校验推送结果 |
 | subagent 执行编排 | 已批准计划、`guides/subagent.md`、每个目标自己的模块或流程契约 | 按用户选择的串行或并行方式派发执行器，限定读取上下文、授权、子批次和数据隔离 |
 
@@ -184,7 +188,7 @@ HTTP 响应不符合约定 -> 接口契约测试
 - 是否明确了测试目标、测试边界、禁止事项和通过标准？
 - 是否按测试类型读取了必要专项 guide？
 - 如果是并发一致性测试，是否已按 `guides/concurrency.md` 输出完整设计并等待批准？
-- 如果是性能压测，是否已读取 `guides/performance.md` 和 `guides/environment.md`？
+- 如果是性能压测，是否已读取 `guides/performance/README.md`、`guides/performance/types.md`、`guides/performance/online.md`、`guides/performance/runner.md`、`guides/environment.md` 和 `guides/performance/scenarios.md`？
 - 如果是接口契约测试，是否执行或计划执行 Apifox 对齐？
 - 正式计划中是否没有“待确认语义”或未决问题？
 - 是否存在必须先问用户的问题？

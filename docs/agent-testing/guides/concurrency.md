@@ -4,7 +4,7 @@
 
 通用计划字段、依赖授权、数据隔离、证据、报告、清理、敏感信息和失败输出规则见 `docs/agent-testing/templates/protocol.md`。本文只记录并发一致性测试的附加规则。
 
-性能压测、容量评估、阶梯加压、稳定性压测和资源观测见 `docs/agent-testing/guides/performance.md`。
+性能压测、容量评估、阶梯加压、稳定性压测和资源观测见 `docs/agent-testing/guides/performance/README.md`。
 
 本指南只规定并发一致性测试方法，不定义业务规则；具体业务规则、允许状态、错误码和通过标准必须来自目标 `modules/<module>.md` 或 `flows/<flow>.md`。
 

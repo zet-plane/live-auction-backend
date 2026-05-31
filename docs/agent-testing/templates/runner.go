@@ -226,7 +226,7 @@ func runConcurrent(n int, fn func() Result) []Result {
 	out := make([]Result, n)
 	var wg sync.WaitGroup
 	wg.Add(n)
-	for i := range n {
+	for i := 0; i < n; i++ {
 		go func(idx int) {
 			defer wg.Done()
 			out[idx] = fn()
