@@ -403,67 +403,140 @@ func (s *Service) EndExpiredAuctions(ctx context.Context) {
 	if len(items) == 0 {
 		return
 	}
+	now := s.now()
+	nowUnixMS := now.UnixMilli()
 	for _, iwr := range items {
-		item, rule := iwr.Item, iwr.Rule
-		var winnerID string
-		var dealPrice int64
+		item := iwr.Item
+		result := itemcache.SettlementResult{
+			ItemID:        item.ID,
+			EndedAtUnixMS: nowUnixMS,
+			EndReason:     "time_expired",
+		}
 		if s.cache != nil {
 			if state, ok, _ := s.cache.GetAuctionState(ctx, item.ID); ok {
-				winnerID = state.LeaderUserID
-				dealPrice = stateDealPrice(state)
-			}
-		}
-		item.Status = model.ItemEnded
-		item.WinnerID = winnerID
-		item.DealPrice = dealPrice
-		if err := s.store.UpdateItemWithRule(item, rule); err != nil {
-			logx.Warnw("item.EndExpiredAuctions update failed", "item_id", item.ID, "err", err)
-			continue
-		}
-		if err := s.store.ClearRoomCurrentItem(item.RoomID, item.ID); err != nil {
-			logx.Warnw("item.EndExpiredAuctions clear room current item failed", "room_id", item.RoomID, "item_id", item.ID, "err", err)
-			continue
-		}
-		endedCount++
-		if s.cache != nil {
-			_ = s.cache.UnscheduleAuctionEnd(ctx, item.ID)
-			_ = s.cache.DeleteAuctionState(ctx, item.ID)
-			_ = s.cache.ClearRoomCurrentItem(ctx, item.RoomID, item.ID)
-		}
-		if s.broadcaster != nil {
-			_ = s.broadcaster.Fanout(wsevent.RoomTopic(item.RoomID), wsevent.Event{
-				Type: dto.EventAuctionEnded,
-				Payload: dto.AuctionEndedPayload{
-					ItemID:       item.ID,
-					WinnerUserID: winnerID,
-					LeaderUserID: winnerID,
-					DealPrice:    dealPrice,
-				},
-			})
-		}
-		if winnerID != "" && s.orderSvc != nil {
-			var orderID string
-			if order, err := s.orderSvc.CreateOrder(ctx, item.ID, winnerID, dealPrice); err != nil {
-				// non-fatal: compensation cron will retry
-				logx.Warnw("item.EndExpiredAuctions create order failed", "item_id", item.ID, "winner_id", winnerID, "err", err)
-			} else if order != nil {
-				orderID = order.ID
-			}
-			if s.broadcaster != nil && orderID != "" {
-				orderEvt := wsevent.Event{
-					Type: dto.EventOrderCreated,
-					Payload: dto.OrderCreatedPayload{
-						ItemID:    item.ID,
-						OrderID:   orderID,
-						WinnerID:  winnerID,
-						DealPrice: dealPrice,
-					},
+				if state.Status == "ongoing" && stateEndTimeUnixMS(state) > nowUnixMS {
+					continue
 				}
-				_ = s.broadcaster.Fanout(wsevent.RoomTopic(item.RoomID), orderEvt)
-				_ = s.broadcaster.Unicast(wsevent.UserAddr(winnerID), orderEvt)
+				if state.Status == "ongoing" {
+					settled, claimed, settleErr := s.cache.SettleAuctionLua(ctx, item.ID, nowUnixMS)
+					if settleErr != nil {
+						logx.Warnw("item.EndExpiredAuctions redis settlement failed", "item_id", item.ID, "err", settleErr)
+						continue
+					}
+					if !claimed {
+						continue
+					}
+					result = *settled
+				} else {
+					result.LeaderUserID = state.LeaderUserID
+					result.DealPrice = stateDealPrice(state)
+					if state.EndedAtUnixMS > 0 {
+						result.EndedAtUnixMS = state.EndedAtUnixMS
+					}
+					if state.EndReason != "" {
+						result.EndReason = state.EndReason
+					}
+				}
 			}
+		}
+		if s.persistSettledAuction(ctx, result) {
+			endedCount++
 		}
 	}
+}
+
+func (s *Service) SettleDueAuctions(ctx context.Context) {
+	if s.cache == nil {
+		s.EndExpiredAuctions(ctx)
+		return
+	}
+
+	var err error
+	endedCount := 0
+	finish := observability.Track(ctx, "auction.settle_due")
+	defer func() {
+		finish(&err, "ended_count", endedCount)
+	}()
+
+	nowUnixMS := s.now().UnixMilli()
+	itemIDs, listErr := s.cache.ListDueAuctionEnds(ctx, nowUnixMS, 50)
+	if listErr != nil {
+		err = listErr
+		return
+	}
+	for _, itemID := range itemIDs {
+		result, claimed, settleErr := s.cache.SettleAuctionLua(ctx, itemID, nowUnixMS)
+		if settleErr != nil {
+			logx.Warnw("item.SettleDueAuctions redis settlement failed", "item_id", itemID, "err", settleErr)
+			continue
+		}
+		if !claimed || result == nil {
+			continue
+		}
+		if s.persistSettledAuction(ctx, *result) {
+			endedCount++
+		}
+	}
+}
+
+func (s *Service) persistSettledAuction(ctx context.Context, result itemcache.SettlementResult) bool {
+	item, rule, err := s.store.FindItemWithRule(result.ItemID)
+	if err != nil {
+		logx.Warnw("item.persistSettledAuction find failed", "item_id", result.ItemID, "err", err)
+		return false
+	}
+	item.Status = model.ItemEnded
+	item.WinnerID = result.LeaderUserID
+	item.DealPrice = result.DealPrice
+	if err := s.store.UpdateItemWithRule(item, rule); err != nil {
+		logx.Warnw("item.persistSettledAuction update failed", "item_id", item.ID, "err", err)
+		return false
+	}
+	if err := s.store.ClearRoomCurrentItem(item.RoomID, item.ID); err != nil {
+		logx.Warnw("item.persistSettledAuction clear room current item failed", "room_id", item.RoomID, "item_id", item.ID, "err", err)
+		return false
+	}
+	if s.cache != nil {
+		_ = s.cache.UnscheduleAuctionEnd(ctx, item.ID)
+		_ = s.cache.RemoveFromRoomQueue(ctx, item.RoomID, item.ID)
+		_ = s.cache.ClearRoomCurrentItem(ctx, item.RoomID, item.ID)
+	}
+	if s.broadcaster != nil {
+		_ = s.broadcaster.Fanout(wsevent.RoomTopic(item.RoomID), wsevent.Event{
+			Type: dto.EventAuctionEnded,
+			Payload: dto.AuctionEndedPayload{
+				ItemID:        item.ID,
+				WinnerUserID:  result.LeaderUserID,
+				LeaderUserID:  result.LeaderUserID,
+				DealPrice:     result.DealPrice,
+				EndedAtUnixMS: result.EndedAtUnixMS,
+				EndReason:     result.EndReason,
+			},
+		})
+	}
+	if result.LeaderUserID != "" && s.orderSvc != nil {
+		var orderID string
+		if order, err := s.orderSvc.CreateOrder(ctx, item.ID, result.LeaderUserID, result.DealPrice); err != nil {
+			// non-fatal: compensation cron will retry
+			logx.Warnw("item.persistSettledAuction create order failed", "item_id", item.ID, "winner_id", result.LeaderUserID, "err", err)
+		} else if order != nil {
+			orderID = order.ID
+		}
+		if s.broadcaster != nil && orderID != "" {
+			orderEvt := wsevent.Event{
+				Type: dto.EventOrderCreated,
+				Payload: dto.OrderCreatedPayload{
+					ItemID:    item.ID,
+					OrderID:   orderID,
+					WinnerID:  result.LeaderUserID,
+					DealPrice: result.DealPrice,
+				},
+			}
+			_ = s.broadcaster.Fanout(wsevent.RoomTopic(item.RoomID), orderEvt)
+			_ = s.broadcaster.Unicast(wsevent.UserAddr(result.LeaderUserID), orderEvt)
+		}
+	}
+	return true
 }
 
 func applyStateToDetail(d *dto.ItemDetailDTO, state *itemcache.AuctionState, now time.Time) {

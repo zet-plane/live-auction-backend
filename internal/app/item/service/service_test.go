@@ -360,6 +360,62 @@ func (c *fakeCache) UnscheduleAuctionEnd(_ context.Context, itemID string) error
 	return nil
 }
 
+func (c *fakeCache) ListDueAuctionEnds(_ context.Context, nowUnixMS int64, limit int) ([]string, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	var ids []string
+	for itemID, endUnixMS := range c.ending {
+		if endUnixMS <= nowUnixMS {
+			ids = append(ids, itemID)
+		}
+	}
+	sort.Slice(ids, func(i, j int) bool {
+		return c.ending[ids[i]] < c.ending[ids[j]]
+	})
+	if len(ids) > limit {
+		ids = ids[:limit]
+	}
+	return ids, nil
+}
+
+func (c *fakeCache) SettleAuctionLua(_ context.Context, itemID string, nowUnixMS int64) (*itemcache.SettlementResult, bool, error) {
+	state, ok := c.states[itemID]
+	if !ok {
+		return nil, false, nil
+	}
+	if state.Status != "ongoing" {
+		return nil, false, nil
+	}
+	endUnixMS := state.EndTimeUnixMS
+	if endUnixMS == 0 {
+		endUnixMS = state.EndTime.UnixMilli()
+	}
+	due := endUnixMS > 0 && endUnixMS <= nowUnixMS
+	if endingUnixMS, ok := c.ending[itemID]; ok && endingUnixMS <= nowUnixMS {
+		due = true
+	}
+	if !due {
+		return nil, false, nil
+	}
+	dealPrice := state.DealPrice
+	if dealPrice == 0 {
+		dealPrice = state.CurrentPrice
+	}
+	state.Status = "ended"
+	state.EndedAtUnixMS = nowUnixMS
+	state.EndReason = "time_expired"
+	state.DealPrice = dealPrice
+	delete(c.ending, itemID)
+	return &itemcache.SettlementResult{
+		ItemID:        itemID,
+		LeaderUserID:  state.LeaderUserID,
+		DealPrice:     dealPrice,
+		EndedAtUnixMS: nowUnixMS,
+		EndReason:     "time_expired",
+	}, true, nil
+}
+
 func (c *fakeCache) PushToRoomQueue(_ context.Context, roomID, itemID string, _ float64) error {
 	c.queues[roomID] = append(c.queues[roomID], itemID)
 	return nil
@@ -1033,6 +1089,34 @@ func TestEndExpiredAuctionsBroadcastsAuctionEnded(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected auction_ended fanout to room topic, got: %v", fb.fanouts)
+	}
+}
+
+func TestSettleDueAuctionsMarksEndedAndKeepsSnapshot(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	fb := &fakeBroadcaster{}
+	svc := NewService(store, testPolicy, fc, nil, nil, fb)
+	endTime := time.Now().Add(time.Minute)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_abc", 0, 100, 0, endTime)
+	fc.states[itemID].LeaderUserID = "user_winner"
+	fc.states[itemID].DealPrice = 500
+	fc.states[itemID].CurrentPrice = 500
+	fc.ending[itemID] = time.Now().Add(-time.Second).UnixMilli()
+	svc.now = func() time.Time { return time.Now() }
+
+	svc.SettleDueAuctions(context.Background())
+
+	item := store.items[itemID]
+	if item.Status != itemmodel.ItemEnded {
+		t.Fatalf("expected ended item, got %q", item.Status)
+	}
+	if item.WinnerID != "user_winner" || item.DealPrice != 500 {
+		t.Fatalf("expected winner/deal user_winner/500, got %q/%d", item.WinnerID, item.DealPrice)
+	}
+	state := fc.states[itemID]
+	if state == nil || state.Status != "ended" {
+		t.Fatalf("expected ended redis snapshot, got %+v", state)
 	}
 }
 

@@ -62,7 +62,8 @@ func (i *Item) Load(engine *kernel.Engine) error {
 	svc := service.NewService(store, policy, c, orderapp.Svc, depositapp.Svc, wsapp.Hub)
 	handler.Init(svc)
 	router.RegisterRoutes(engine.Flame)
-	engine.Cron.AddFunc("@every 1m", observability.WrapCron("item.end_expired_auctions", svc.EndExpiredAuctions))
+	engine.Cron.AddFunc("@every 1s", observability.WrapCron("item.settle_due_auctions", svc.SettleDueAuctions))
+	engine.Cron.AddFunc("@every 1m", observability.WrapCron("item.end_expired_auctions_fallback", svc.EndExpiredAuctions))
 	return nil
 }
 
