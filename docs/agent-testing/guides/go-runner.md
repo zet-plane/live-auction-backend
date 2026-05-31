@@ -2,6 +2,8 @@
 
 本指南说明 agent 何时选择 Go runner 采集测试证据、如何从模板生成可运行的 runner、以及输出格式的强制要求。
 
+通用计划字段、依赖授权、数据隔离、证据、报告、清理、敏感信息和失败输出规则见 `docs/agent-testing/templates/protocol.md`。本文只记录 Go runner 输出格式和 helper 使用的附加规则。
+
 ## 何时使用 Go runner
 
 使用 Go runner：
@@ -9,7 +11,7 @@
 - 接口契约测试：需要验证 HTTP 请求/响应结构、状态码和字段内容。
 - 模块集成测试：需要同时核查 HTTP 响应、MySQL 记录和 Redis 状态。
 - 状态一致性测试：需要对比多个数据源（接口返回、数据库状态、缓存状态）。
-- 并发测试：需要结构化记录多 goroutine 并发请求的每个结果。
+- 并发一致性测试：需要结构化记录多 goroutine 并发请求的每个结果。
 
 不使用 Go runner：
 
@@ -21,7 +23,7 @@
 ### 第一步：创建工作目录并复制模板
 
 ```bash
-mkdir -p /tmp/agent-runner-<batch>
+rtk mkdir -p /tmp/agent-runner-<batch>
 ```
 
 读取 `docs/agent-testing/templates/runner.go`，将内容完整复制到 `/tmp/agent-runner-<batch>/main.go`。
@@ -41,16 +43,16 @@ require (
 )
 ```
 
-然后拉取依赖：
+然后在 `/tmp/agent-runner-<batch>` 中拉取依赖：
 
 ```bash
-cd /tmp/agent-runner-<batch> && go mod tidy
+rtk go mod tidy
 ```
 
 如果本机默认 Go build cache 目录受沙箱限制，应显式指定临时 cache：
 
 ```bash
-cd /tmp/agent-runner-<batch> && rtk env GOCACHE=/tmp/live-auction-go-cache go mod tidy
+rtk env GOCACHE=/tmp/live-auction-go-cache go mod tidy
 ```
 
 ### 第三步：填写 CONFIG
@@ -61,10 +63,10 @@ cd /tmp/agent-runner-<batch> && rtk env GOCACHE=/tmp/live-auction-go-cache go mo
 - `baseURL`：本地服务地址，通常 `http://127.0.0.1:8080`
 - `redisAddr`：Redis 地址，通常 `127.0.0.1:6379`
 
-DSN 通过环境变量传入，不写入文件：
+DSN 通过运行时环境变量传入，不写入文件：
 
 ```bash
-export TEST_DSN="<user>:<pass>@tcp(127.0.0.1:3306)/<dbname>?parseTime=true"
+rtk env 'TEST_DSN=<redacted>' go run main.go
 ```
 
 命令行直接传入 `TEST_DSN` 时，必须避免 shell 展开 `?` 和 `&`。推荐使用引号包住整个环境变量值，并且不要把完整 DSN 写入报告：
@@ -79,7 +81,7 @@ rtk env GOCACHE=/tmp/live-auction-go-cache 'TEST_DSN=<redacted>' go run main.go
 在 `cleanup()` 函数中添加清理操作（只清理带 batchID 前缀的数据）。
 
 ```bash
-cd /tmp/agent-runner-<batch> && go run main.go
+rtk go run main.go
 ```
 
 ## 场景编写规范
@@ -218,6 +220,8 @@ Runner 输出格式是强制契约，agent 不得修改 `printResult` 和 `main`
 每个并发结果独立计入 SUMMARY 的 PASS/FAIL 统计。
 
 ## 清理要求
+
+通用清理和敏感信息边界见 `templates/protocol.md`。Runner 还必须满足：
 
 - `cleanup()` 通过 `defer` 在 `main` 开头注册，场景 panic 时也会执行。
 - 只清理带 batchID 前缀的数据或本次 runner 创建的可识别 ID（item_id、room_id 等）。

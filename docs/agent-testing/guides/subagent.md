@@ -2,6 +2,8 @@
 
 本指南定义 agent-testing 任务中如何使用 subagent。它不定义新的业务规则，不替代模块或流程契约，只规定主 agent 与 subagent 的职责边界、授权规则、数据隔离、输出格式和汇总方式。
 
+通用计划字段、依赖授权、数据隔离、证据、报告、清理、敏感信息和失败输出规则见 `docs/agent-testing/templates/protocol.md`。本文只记录 subagent 编排的附加规则。
+
 ## 读取入口
 
 使用 subagent 时仍然先按 `docs/agent-testing/README.md` 的渐进式读取规则进入目标任务。
@@ -11,21 +13,24 @@
 ```text
 单目标多 agent 编排：
 docs/agent-testing/README.md
+docs/agent-testing/templates/protocol.md
 docs/agent-testing/guides/runner.md
 docs/agent-testing/guides/subagent.md
 docs/agent-testing/modules/<module>.md 或 docs/agent-testing/flows/<flow>.md
 
 多目标并行测试：
 docs/agent-testing/README.md
+docs/agent-testing/templates/protocol.md
 docs/agent-testing/guides/runner.md
 docs/agent-testing/guides/subagent.md
 每个 subagent 只读取自己目标需要的 modules/<module>.md 或 flows/<flow>.md
 
 并发一致性测试涉及 subagent：
 docs/agent-testing/README.md
+docs/agent-testing/templates/protocol.md
 docs/agent-testing/guides/runner.md
 docs/agent-testing/guides/subagent.md
-docs/agent-testing/guides/concurrency-consistency.md
+docs/agent-testing/guides/concurrency.md
 docs/agent-testing/guides/go-runner.md
 目标模块或流程契约
 ```
@@ -115,7 +120,7 @@ subagent 可以执行：
 - 并行执行时，每个 subagent 必须使用唯一 `batch_id`、名称前缀、幂等 key 前缀、Redis key 前缀或明确实体 ID 集合。
 - 所有写入、状态验证和清理查询必须限定在该 subagent 的数据边界内，不能按模块、状态或时间范围批量影响其他 subagent 数据。
 - 必须记录 batch id、请求响应、数据库或 Redis 证据、清理结果。
-- 不得写入敏感地址、密码或可复用 token。
+- 不得违反 `templates/protocol.md` 的敏感信息和失败输出规则。
 - 不得扩大到未分配的模块、流程或数据范围。
 
 ### 第三层：必须升级确认
@@ -136,7 +141,7 @@ subagent 可以执行：
 
 并发一致性测试不因为使用 subagent 而降低门槛。
 
-- 先读取 `guides/concurrency-consistency.md`。
+- 先读取 `guides/concurrency.md`。
 - 先把并发计划写入 `docs/agent-testing/concurrency/`。
 - 计划必须包含审核状态和执行许可。
 - 用户未批准前，subagent 不得连接真实数据库或 Redis、不得创建测试数据、不得启动 runner、不得发起并发请求。
