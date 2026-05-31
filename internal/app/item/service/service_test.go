@@ -727,6 +727,118 @@ func TestGetItemEnrichesFromCacheWhenOngoing(t *testing.T) {
 	}
 }
 
+func TestGetItemMapsEndedRedisSnapshotWhenMySQLOngoing(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	now := time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC)
+	svc := NewService(store, itemdto.AuctionPolicy{}, fc, nil, nil, nil)
+	svc.now = func() time.Time { return now }
+	merchant := &usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}
+	itemID := seedPublishedItem(t, svc, "merchant_1", "room_abc")
+	_ = svc.StartItem(context.Background(), merchant, itemID)
+
+	endTime := now.Add(time.Minute)
+	endedAt := now.Add(-time.Second).UnixMilli()
+	fc.states[itemID] = &itemcache.AuctionState{
+		Status:        "ended",
+		CurrentPrice:  5000,
+		DealPrice:     5000,
+		LeaderUserID:  "user_99",
+		EndTime:       endTime,
+		EndTimeUnixMS: endTime.UnixMilli(),
+		EndedAtUnixMS: endedAt,
+		EndReason:     "time_expired",
+	}
+
+	detail, err := svc.GetItem(context.Background(), itemID)
+	if err != nil {
+		t.Fatalf("GetItem failed: %v", err)
+	}
+	if detail.Status != itemmodel.ItemEnded {
+		t.Fatalf("expected status ended from Redis, got %q", detail.Status)
+	}
+	if detail.RemainingMS != 0 {
+		t.Fatalf("expected remaining_ms 0 for ended Redis state, got %d", detail.RemainingMS)
+	}
+	if detail.DealPrice != 5000 {
+		t.Fatalf("expected deal_price 5000 from Redis, got %d", detail.DealPrice)
+	}
+	if detail.EndTimeUnixMS != endTime.UnixMilli() {
+		t.Fatalf("expected end_time_unix_ms %d, got %d", endTime.UnixMilli(), detail.EndTimeUnixMS)
+	}
+	if detail.EndedAtUnixMS != endedAt {
+		t.Fatalf("expected ended_at_unix_ms %d, got %d", endedAt, detail.EndedAtUnixMS)
+	}
+	if detail.EndReason != "time_expired" {
+		t.Fatalf("expected end_reason time_expired, got %q", detail.EndReason)
+	}
+}
+
+func TestListMerchantItemsMapsRedisSnapshotFields(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	now := time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC)
+	svc := NewService(store, itemdto.AuctionPolicy{}, fc, nil, nil, nil)
+	svc.now = func() time.Time { return now }
+	merchant := &usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}
+	itemID := seedPublishedItem(t, svc, "merchant_1", "room_abc")
+	_ = svc.StartItem(context.Background(), merchant, itemID)
+
+	endTime := now.Add(time.Minute)
+	endedAt := now.Add(-time.Second).UnixMilli()
+	fc.states[itemID] = &itemcache.AuctionState{
+		Status:           "ended",
+		CurrentPrice:     6000,
+		DealPrice:        6000,
+		LeaderUserID:     "user_42",
+		EndTime:          endTime,
+		EndTimeUnixMS:    endTime.UnixMilli(),
+		EndedAtUnixMS:    endedAt,
+		EndReason:        "time_expired",
+		BidCount:         7,
+		ParticipantCount: 3,
+	}
+
+	result, err := svc.ListMerchantItems(context.Background(), merchant, itemdto.ListItemsInput{})
+	if err != nil {
+		t.Fatalf("ListMerchantItems failed: %v", err)
+	}
+	if len(result.List) != 1 {
+		t.Fatalf("expected 1 merchant item, got %d", len(result.List))
+	}
+	item := result.List[0]
+	if item.Status != itemmodel.ItemEnded {
+		t.Fatalf("expected status ended from Redis, got %q", item.Status)
+	}
+	if item.DealPrice != 6000 {
+		t.Fatalf("expected top-level deal_price 6000, got %d", item.DealPrice)
+	}
+	if item.EndTimeUnixMS != endTime.UnixMilli() {
+		t.Fatalf("expected top-level end_time_unix_ms %d, got %d", endTime.UnixMilli(), item.EndTimeUnixMS)
+	}
+	if item.EndedAtUnixMS != endedAt {
+		t.Fatalf("expected top-level ended_at_unix_ms %d, got %d", endedAt, item.EndedAtUnixMS)
+	}
+	if item.EndReason != "time_expired" {
+		t.Fatalf("expected top-level end_reason time_expired, got %q", item.EndReason)
+	}
+	if item.Progress.DealPrice != 6000 {
+		t.Fatalf("expected progress deal_price 6000, got %d", item.Progress.DealPrice)
+	}
+	if item.Progress.EndTimeUnixMS != endTime.UnixMilli() {
+		t.Fatalf("expected progress end_time_unix_ms %d, got %d", endTime.UnixMilli(), item.Progress.EndTimeUnixMS)
+	}
+	if item.Progress.EndedAtUnixMS != endedAt {
+		t.Fatalf("expected progress ended_at_unix_ms %d, got %d", endedAt, item.Progress.EndedAtUnixMS)
+	}
+	if item.Progress.EndReason != "time_expired" {
+		t.Fatalf("expected progress end_reason time_expired, got %q", item.Progress.EndReason)
+	}
+	if item.Progress.RemainingMS != 0 {
+		t.Fatalf("expected progress remaining_ms 0 for ended Redis state, got %d", item.Progress.RemainingMS)
+	}
+}
+
 func TestGetItemFallsBackToMySQLWhenCacheMiss(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()

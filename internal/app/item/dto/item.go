@@ -155,6 +155,10 @@ type MerchantItemDTO struct {
 	ImageURL          string                      `json:"image_url"`
 	Tags              []string                    `json:"tags"`
 	Status            itemmodel.AuctionItemStatus `json:"status"`
+	DealPrice         int64                       `json:"deal_price"`
+	EndTimeUnixMS     int64                       `json:"end_time_unix_ms"`
+	EndedAtUnixMS     int64                       `json:"ended_at_unix_ms"`
+	EndReason         string                      `json:"end_reason"`
 	StatusText        string                      `json:"status_text"`
 	ExplainStatus     string                      `json:"explain_status"`
 	ExplainStatusText string                      `json:"explain_status_text"`
@@ -280,6 +284,8 @@ func NewMerchantItemDTO(item *itemmodel.AuctionItem, rule *itemmodel.AuctionRule
 		ImageURL:          item.ImageURL,
 		Tags:              item.Tags,
 		Status:            item.Status,
+		DealPrice:         finalDealPrice,
+		EndTimeUnixMS:     rule.EndTime.UnixMilli(),
 		StatusText:        statusText(item.Status),
 		ExplainStatus:     explainStatus(item.Status),
 		ExplainStatusText: statusText(item.Status),
