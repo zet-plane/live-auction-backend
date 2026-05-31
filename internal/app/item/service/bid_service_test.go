@@ -259,8 +259,18 @@ func TestPlaceBidPriceCapEndsAuction(t *testing.T) {
 	if got := fc.roomCurrent["room_1"]; got != "" {
 		t.Fatalf("expected Redis room current item cleared, got %q", got)
 	}
-	if _, ok := fc.states[itemID]; ok {
-		t.Fatal("expected auction state deleted from cache")
+	state := fc.states[itemID]
+	if state == nil {
+		t.Fatal("expected final auction state snapshot to remain in cache")
+	}
+	if state.Status != "ended" {
+		t.Fatalf("expected redis state status ended, got %q", state.Status)
+	}
+	if state.LeaderUserID != "user_1" || state.DealPrice != 500 {
+		t.Fatalf("expected final leader/deal user_1/500, got %q/%d", state.LeaderUserID, state.DealPrice)
+	}
+	if state.EndReason != "price_cap" {
+		t.Fatalf("expected end_reason price_cap, got %q", state.EndReason)
 	}
 	if _, ok := fc.ending[itemID]; ok {
 		t.Fatal("expected auction end unscheduled from cache")
