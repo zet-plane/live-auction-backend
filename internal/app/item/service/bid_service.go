@@ -182,6 +182,16 @@ func (s *Service) PlaceBid(ctx context.Context, current *usermodel.User, itemID 
 			bidReason = "db_error"
 			return nil, err
 		}
+		if err := s.store.ClearRoomCurrentItem(item.RoomID, item.ID); err != nil {
+			bidResult = "error"
+			bidReason = "db_error"
+			return nil, err
+		}
+		if s.cache != nil {
+			_ = s.cache.RemoveFromRoomQueue(ctx, item.RoomID, item.ID)
+			_ = s.cache.DeleteAuctionState(ctx, item.ID)
+			_ = s.cache.ClearRoomCurrentItem(ctx, item.RoomID, item.ID)
+		}
 		status = "ended"
 		var orderID string
 		if s.orderSvc != nil {

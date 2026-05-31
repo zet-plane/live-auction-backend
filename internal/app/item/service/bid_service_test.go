@@ -210,6 +210,20 @@ func TestPlaceBidPriceCapEndsAuction(t *testing.T) {
 	if item.DealPrice != 500 {
 		t.Fatalf("expected deal_price 500, got %d", item.DealPrice)
 	}
+	if got := store.roomCurrentItems["room_1"]; got != "" {
+		t.Fatalf("expected MySQL room current item cleared, got %q", got)
+	}
+	if got := fc.roomCurrent["room_1"]; got != "" {
+		t.Fatalf("expected Redis room current item cleared, got %q", got)
+	}
+	if _, ok := fc.states[itemID]; ok {
+		t.Fatal("expected auction state deleted from cache")
+	}
+	for _, id := range fc.queues["room_1"] {
+		if id == itemID {
+			t.Fatal("expected item removed from room queue")
+		}
+	}
 }
 
 type fakeDepositChecker struct {
