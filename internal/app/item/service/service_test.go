@@ -16,12 +16,13 @@ import (
 )
 
 type fakeStore struct {
-	items             map[string]*itemmodel.AuctionItem
-	rules             map[string]*itemmodel.AuctionRule
-	roomCurrentItems  map[string]string
-	updateErr         error
-	setRoomCurrentErr error
-	bidLogs           []*itemmodel.BidLog
+	items               map[string]*itemmodel.AuctionItem
+	rules               map[string]*itemmodel.AuctionRule
+	roomCurrentItems    map[string]string
+	updateErr           error
+	setRoomCurrentErr   error
+	clearRoomCurrentErr error
+	bidLogs             []*itemmodel.BidLog
 }
 
 func newFakeStore() *fakeStore {
@@ -79,6 +80,9 @@ func (s *fakeStore) SetRoomCurrentItem(roomID, itemID string) error {
 }
 
 func (s *fakeStore) ClearRoomCurrentItem(roomID, itemID string) error {
+	if s.clearRoomCurrentErr != nil {
+		return s.clearRoomCurrentErr
+	}
 	if s.roomCurrentItems[roomID] == itemID {
 		delete(s.roomCurrentItems, roomID)
 	}
@@ -301,6 +305,7 @@ type fakeCache struct {
 	bidLuaCode  int
 	bidLuaErr   error
 	initErr     error
+	getStateErr error
 	deleteErr   error
 }
 
@@ -334,6 +339,9 @@ func (c *fakeCache) InitAuctionState(_ context.Context, itemID string, state ite
 }
 
 func (c *fakeCache) GetAuctionState(_ context.Context, itemID string) (*itemcache.AuctionState, bool, error) {
+	if c.getStateErr != nil {
+		return nil, false, c.getStateErr
+	}
 	s, ok := c.states[itemID]
 	if !ok {
 		return nil, false, nil
@@ -1088,6 +1096,29 @@ func TestEndExpiredAuctionsBroadcastsAuctionEnded(t *testing.T) {
 	}
 }
 
+func TestEndExpiredAuctionsSkipsWhenRedisStateReadFails(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	fb := &fakeBroadcaster{}
+	svc := NewService(store, testPolicy, fc, nil, nil, fb)
+	now := time.Now()
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_abc", 0, 100, 0, now.Add(-time.Minute))
+	fc.getStateErr = errors.New("redis read failed")
+	svc.now = func() time.Time { return now }
+
+	svc.EndExpiredAuctions(context.Background())
+
+	item := store.items[itemID]
+	if item.Status != itemmodel.ItemOngoing {
+		t.Fatalf("expected ongoing item, got %q", item.Status)
+	}
+	for _, f := range fb.fanouts {
+		if f.event.Type == itemdto.EventAuctionEnded {
+			t.Fatalf("expected no auction_ended fanout, got %+v", f)
+		}
+	}
+}
+
 func TestSettleDueAuctionsMarksEndedAndKeepsSnapshot(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()
@@ -1117,6 +1148,40 @@ func TestSettleDueAuctionsMarksEndedAndKeepsSnapshot(t *testing.T) {
 	state := fc.states[itemID]
 	if state == nil || state.Status != "ended" {
 		t.Fatalf("expected ended redis snapshot, got %+v", state)
+	}
+}
+
+func TestSettleDueAuctionsBroadcastsWhenRoomCurrentClearFails(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	fb := &fakeBroadcaster{}
+	svc := NewService(store, testPolicy, fc, nil, nil, fb)
+	now := time.Now()
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_abc", 0, 100, 0, now.Add(time.Minute))
+	dueEnd := now.Add(-time.Second)
+	fc.states[itemID].EndTime = dueEnd
+	fc.states[itemID].EndTimeUnixMS = dueEnd.UnixMilli()
+	fc.states[itemID].LeaderUserID = "user_winner"
+	fc.states[itemID].DealPrice = 500
+	fc.states[itemID].CurrentPrice = 500
+	fc.ending[itemID] = dueEnd.UnixMilli()
+	store.clearRoomCurrentErr = errors.New("clear room current failed")
+	svc.now = func() time.Time { return now }
+
+	svc.SettleDueAuctions(context.Background())
+
+	item := store.items[itemID]
+	if item.Status != itemmodel.ItemEnded {
+		t.Fatalf("expected ended item, got %q", item.Status)
+	}
+	found := false
+	for _, f := range fb.fanouts {
+		if f.event.Type == itemdto.EventAuctionEnded && f.topic == wsevent.RoomTopic("room_abc") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected auction_ended fanout despite room cleanup error, got %+v", fb.fanouts)
 	}
 }
 

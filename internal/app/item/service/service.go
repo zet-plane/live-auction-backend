@@ -413,7 +413,12 @@ func (s *Service) EndExpiredAuctions(ctx context.Context) {
 			EndReason:     "time_expired",
 		}
 		if s.cache != nil {
-			if state, ok, _ := s.cache.GetAuctionState(ctx, item.ID); ok {
+			state, ok, stateErr := s.cache.GetAuctionState(ctx, item.ID)
+			if stateErr != nil {
+				logx.Warnw("item.EndExpiredAuctions get redis state failed", "item_id", item.ID, "err", stateErr)
+				continue
+			}
+			if ok {
 				if state.Status == "ongoing" && stateEndTimeUnixMS(state) > nowUnixMS {
 					continue
 				}
@@ -494,7 +499,6 @@ func (s *Service) persistSettledAuction(ctx context.Context, result itemcache.Se
 	}
 	if err := s.store.ClearRoomCurrentItem(item.RoomID, item.ID); err != nil {
 		logx.Warnw("item.persistSettledAuction clear room current item failed", "room_id", item.RoomID, "item_id", item.ID, "err", err)
-		return false
 	}
 	if s.cache != nil {
 		_ = s.cache.UnscheduleAuctionEnd(ctx, item.ID)
