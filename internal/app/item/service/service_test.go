@@ -388,14 +388,10 @@ func (c *fakeCache) SettleAuctionLua(_ context.Context, itemID string, nowUnixMS
 		return nil, false, nil
 	}
 	endUnixMS := state.EndTimeUnixMS
-	if endUnixMS == 0 {
+	if endUnixMS == 0 && !state.EndTime.IsZero() {
 		endUnixMS = state.EndTime.UnixMilli()
 	}
-	due := endUnixMS > 0 && endUnixMS <= nowUnixMS
-	if endingUnixMS, ok := c.ending[itemID]; ok && endingUnixMS <= nowUnixMS {
-		due = true
-	}
-	if !due {
+	if endUnixMS == 0 || nowUnixMS < endUnixMS {
 		return nil, false, nil
 	}
 	dealPrice := state.DealPrice
@@ -1097,13 +1093,17 @@ func TestSettleDueAuctionsMarksEndedAndKeepsSnapshot(t *testing.T) {
 	fc := newFakeCache()
 	fb := &fakeBroadcaster{}
 	svc := NewService(store, testPolicy, fc, nil, nil, fb)
-	endTime := time.Now().Add(time.Minute)
+	now := time.Now()
+	endTime := now.Add(time.Minute)
 	itemID := seedOngoingItem(t, svc, "merchant_1", "room_abc", 0, 100, 0, endTime)
+	dueEnd := now.Add(-time.Second)
+	fc.states[itemID].EndTime = dueEnd
+	fc.states[itemID].EndTimeUnixMS = dueEnd.UnixMilli()
 	fc.states[itemID].LeaderUserID = "user_winner"
 	fc.states[itemID].DealPrice = 500
 	fc.states[itemID].CurrentPrice = 500
-	fc.ending[itemID] = time.Now().Add(-time.Second).UnixMilli()
-	svc.now = func() time.Time { return time.Now() }
+	fc.ending[itemID] = dueEnd.UnixMilli()
+	svc.now = func() time.Time { return now }
 
 	svc.SettleDueAuctions(context.Background())
 
@@ -1117,6 +1117,33 @@ func TestSettleDueAuctionsMarksEndedAndKeepsSnapshot(t *testing.T) {
 	state := fc.states[itemID]
 	if state == nil || state.Status != "ended" {
 		t.Fatalf("expected ended redis snapshot, got %+v", state)
+	}
+}
+
+func TestSettleDueAuctionsSkipsStaleEndingWhenStateEndTimeFuture(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	fb := &fakeBroadcaster{}
+	svc := NewService(store, testPolicy, fc, nil, nil, fb)
+	now := time.Now()
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_abc", 0, 100, 0, now.Add(time.Minute))
+	fc.ending[itemID] = now.Add(-time.Second).UnixMilli()
+	svc.now = func() time.Time { return now }
+
+	svc.SettleDueAuctions(context.Background())
+
+	item := store.items[itemID]
+	if item.Status != itemmodel.ItemOngoing {
+		t.Fatalf("expected ongoing item, got %q", item.Status)
+	}
+	state := fc.states[itemID]
+	if state == nil || state.Status != "ongoing" {
+		t.Fatalf("expected ongoing redis snapshot, got %+v", state)
+	}
+	for _, f := range fb.fanouts {
+		if f.event.Type == itemdto.EventAuctionEnded {
+			t.Fatalf("expected no auction_ended fanout, got %+v", f)
+		}
 	}
 }
 
