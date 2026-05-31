@@ -16,11 +16,12 @@ import (
 )
 
 type fakeStore struct {
-	items            map[string]*itemmodel.AuctionItem
-	rules            map[string]*itemmodel.AuctionRule
-	roomCurrentItems map[string]string
-	updateErr        error
-	bidLogs          []*itemmodel.BidLog
+	items             map[string]*itemmodel.AuctionItem
+	rules             map[string]*itemmodel.AuctionRule
+	roomCurrentItems  map[string]string
+	updateErr         error
+	setRoomCurrentErr error
+	bidLogs           []*itemmodel.BidLog
 }
 
 func newFakeStore() *fakeStore {
@@ -70,6 +71,9 @@ func (s *fakeStore) UpdateItemWithRule(item *itemmodel.AuctionItem, rule *itemmo
 }
 
 func (s *fakeStore) SetRoomCurrentItem(roomID, itemID string) error {
+	if s.setRoomCurrentErr != nil {
+		return s.setRoomCurrentErr
+	}
 	s.roomCurrentItems[roomID] = itemID
 	return nil
 }
@@ -666,6 +670,28 @@ func TestStartItemRollsBackRedisOnMySQLFailure(t *testing.T) {
 	if _, ok := fc.states[itemID]; ok {
 		t.Fatal("expected Redis state to be rolled back after MySQL failure")
 	}
+	if _, ok := fc.ending[itemID]; ok {
+		t.Fatal("expected auction end schedule to be rolled back after MySQL failure")
+	}
+}
+
+func TestStartItemRollsBackRedisOnRoomCurrentFailure(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	svc := NewService(store, itemdto.AuctionPolicy{}, fc, nil, nil, nil)
+	itemID := seedPublishedItem(t, svc, "merchant_1", "room_abc")
+
+	store.setRoomCurrentErr = errors.New("room current failed")
+
+	if err := svc.StartItem(context.Background(), &usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}, itemID); err == nil {
+		t.Fatal("expected error when setting room current item fails")
+	}
+	if _, ok := fc.states[itemID]; ok {
+		t.Fatal("expected Redis state to be rolled back after room current failure")
+	}
+	if _, ok := fc.ending[itemID]; ok {
+		t.Fatal("expected auction end schedule to be rolled back after room current failure")
+	}
 }
 
 func TestGetItemEnrichesFromCacheWhenOngoing(t *testing.T) {
@@ -727,6 +753,9 @@ func TestCancelItemRemovesFromRoomQueueAndState(t *testing.T) {
 	}
 	if _, ok := fc.states[itemID]; ok {
 		t.Fatal("expected auction state deleted from cache")
+	}
+	if _, ok := fc.ending[itemID]; ok {
+		t.Fatal("expected auction end schedule removed from cache")
 	}
 	for _, id := range fc.queues["room_abc"] {
 		if id == itemID {
@@ -793,6 +822,10 @@ func TestEndExpiredAuctionsBroadcastsAuctionEnded(t *testing.T) {
 	svc.now = func() time.Time { return time.Now().Add(10 * time.Minute) }
 
 	svc.EndExpiredAuctions(context.Background())
+
+	if _, ok := fc.ending[itemID]; ok {
+		t.Fatal("expected auction end schedule removed after expired auction settlement")
+	}
 
 	found := false
 	for _, f := range fb.fanouts {

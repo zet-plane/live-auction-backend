@@ -277,6 +277,10 @@ func (s *Service) StartItem(ctx context.Context, current *usermodel.User, itemID
 		return err
 	}
 	if err := s.store.SetRoomCurrentItem(item.RoomID, item.ID); err != nil {
+		if s.cache != nil {
+			_ = s.cache.UnscheduleAuctionEnd(ctx, item.ID)
+			_ = s.cache.DeleteAuctionState(ctx, item.ID)
+		}
 		return err
 	}
 	if s.cache != nil {
@@ -315,6 +319,7 @@ func (s *Service) CancelItem(ctx context.Context, current *usermodel.User, itemI
 	}
 	if s.cache != nil {
 		_ = s.cache.RemoveFromRoomQueue(ctx, item.RoomID, item.ID)
+		_ = s.cache.UnscheduleAuctionEnd(ctx, item.ID)
 		_ = s.cache.DeleteAuctionState(ctx, item.ID)
 		_ = s.cache.ClearRoomCurrentItem(ctx, item.RoomID, item.ID)
 	}
@@ -430,6 +435,7 @@ func (s *Service) EndExpiredAuctions(ctx context.Context) {
 		}
 		endedCount++
 		if s.cache != nil {
+			_ = s.cache.UnscheduleAuctionEnd(ctx, item.ID)
 			_ = s.cache.DeleteAuctionState(ctx, item.ID)
 			_ = s.cache.ClearRoomCurrentItem(ctx, item.RoomID, item.ID)
 		}
