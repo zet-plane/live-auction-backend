@@ -33,10 +33,10 @@
 ### WebSocket 稳定性
 
 - [x] **客户端心跳响应** — `StartReadLoop` 已支持客户端 `ping -> pong`
-- [ ] **服务端主动心跳** — 服务端定时发 `ping` 或控制帧检测僵尸连接，避免 NAT 或弱网静默断连
-- [ ] **倒计时毫秒级同步** — 服务端每秒广播 `time_sync { item_id, ends_at_unix_ms }`，客户端以服务端时间为准，解决本地时钟漂移和反狙击延时后的倒计时偏差
-- [ ] **断线重连恢复说明** — 明确前端重连后通过 HTTP 商品详情、排行榜和房间详情恢复现场，不依赖 WebSocket 历史消息
-- [ ] **WebSocket 在线数可信度** — 校验连接断开、leave_room、异常关闭后 Redis 在线状态能及时收敛
+- [x] **服务端主动心跳** — `StartWriteLoop` 已定时发送 WebSocket control `ping`，`StartReadLoop` 通过 control `pong` 刷新 read deadline
+- [x] **倒计时毫秒级同步** — 服务端每秒广播 `time_sync { item_id, server_time_unix_ms, end_time_unix_ms, status }`，客户端以服务端时间为准，解决本地时钟漂移和反狙击延时后的倒计时偏差
+- [x] **断线重连恢复说明** — 已明确前端重连后通过 HTTP 房间详情、商品详情、排行榜和个人状态接口恢复现场，不依赖 WebSocket 历史消息
+- [x] **WebSocket 在线数可信度** — Hub 关闭路径已幂等；同用户同房间新连接替换旧连接；Redis `online_count` 由 `SCARD online_users` 回写收敛
 
 ### 出价限流与公平性
 

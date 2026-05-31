@@ -1,0 +1,150 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-alert-rules
+  namespace: live-auction
+data:
+  load-test.yaml: |
+    groups:
+      - name: load-test
+        interval: 15s
+        rules:
+
+          # HTTP 5xx 错误率 > 1%
+          - alert: HighErrorRate
+            expr: |
+              sum(rate(http_server_request_count_total{http_status_code=~"5.."}[1m]))
+              /
+              sum(rate(http_server_request_count_total[1m])) > 0.01
+            for: 30s
+            labels:
+              severity: critical
+            annotations:
+              summary: "HTTP 错误率过高"
+              description: "5xx 错误率 {{ $value | humanizePercentage }}，超过 1%，请立即检查"
+
+          # P99 响应时间 > 1s
+          - alert: HighP99Latency
+            expr: |
+              histogram_quantile(0.99,
+                sum(rate(http_server_request_duration_bucket[1m])) by (le)
+              ) > 1
+            for: 30s
+            labels:
+              severity: critical
+            annotations:
+              summary: "P99 延迟过高"
+              description: "P99 响应时间 {{ $value | humanizeDuration }}，超过 1s"
+
+          # P95 响应时间 > 500ms
+          - alert: HighP95Latency
+            expr: |
+              histogram_quantile(0.95,
+                sum(rate(http_server_request_duration_bucket[1m])) by (le)
+              ) > 0.5
+            for: 1m
+            labels:
+              severity: warning
+            annotations:
+              summary: "P95 延迟偏高"
+              description: "P95 响应时间 {{ $value | humanizeDuration }}，超过 500ms"
+
+          # 竞价失败率 > 5%
+          - alert: HighBidFailureRate
+            expr: |
+              sum(rate(auction_bid_count_total{result="error"}[1m]))
+              /
+              sum(rate(auction_bid_count_total[1m])) > 0.05
+            for: 30s
+            labels:
+              severity: critical
+            annotations:
+              summary: "竞价失败率过高"
+              description: "竞价失败率 {{ $value | humanizePercentage }}，超过 5%"
+
+          # 下单失败率 > 5%
+          - alert: HighOrderFailureRate
+            expr: |
+              sum(rate(order_auction_create_count_total{result="error"}[1m]))
+              /
+              sum(rate(order_auction_create_count_total[1m])) > 0.05
+            for: 30s
+            labels:
+              severity: critical
+            annotations:
+              summary: "下单失败率过高"
+              description: "下单失败率 {{ $value | humanizePercentage }}，超过 5%"
+
+          # 节点 CPU > 80%
+          - alert: HighNodeCPU
+            expr: |
+              100 - avg(rate(node_cpu_seconds_total{mode="idle"}[2m])) * 100 > 80
+            for: 2m
+            labels:
+              severity: warning
+            annotations:
+              summary: "节点 CPU 使用率过高"
+              description: "CPU 使用率 {{ $value | humanize }}%，超过 80%"
+
+          # 节点内存 > 85%
+          - alert: HighNodeMemory
+            expr: |
+              (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes)
+              / node_memory_MemTotal_bytes * 100 > 85
+            for: 2m
+            labels:
+              severity: warning
+            annotations:
+              summary: "节点内存使用率过高"
+              description: "内存使用率 {{ $value | humanize }}%，超过 85%"
+
+          # 容器频繁重启（CrashLoopBackOff）
+          - alert: PodCrashLooping
+            expr: |
+              increase(kube_pod_container_status_restarts_total{
+                namespace="live-auction"
+              }[5m]) > 3
+            for: 1m
+            labels:
+              severity: critical
+            annotations:
+              summary: "容器频繁重启"
+              description: "{{ $labels.pod }} / {{ $labels.container }} 5 分钟内重启 {{ $value | humanize }} 次，疑似 CrashLoopBackOff"
+
+          # Pod 不健康（Not Ready）
+          - alert: PodNotReady
+            expr: |
+              kube_pod_status_ready{
+                namespace="live-auction",
+                condition="true"
+              } == 0
+            for: 2m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Pod 不健康"
+              description: "{{ $labels.pod }} 已超过 2 分钟处于 Not Ready 状态"
+
+          # Deployment 无可用副本
+          - alert: DeploymentUnavailable
+            expr: |
+              kube_deployment_status_replicas_available{
+                namespace="live-auction",
+                deployment="live-auction-backend"
+              } == 0
+            for: 1m
+            labels:
+              severity: critical
+            annotations:
+              summary: "服务完全不可用"
+              description: "live-auction-backend 没有任何可用副本，服务已宕机"
+
+          # 应用指标中断（服务宕机）
+          - alert: AppMetricsMissing
+            expr: absent(http_server_request_count_total)
+            for: 1m
+            labels:
+              severity: critical
+            annotations:
+              summary: "应用指标中断"
+              description: "超过 1 分钟未收到 live-auction-backend 指标，服务可能已宕机"

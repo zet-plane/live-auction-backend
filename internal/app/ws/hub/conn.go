@@ -15,11 +15,13 @@ const (
 	sendBufSize   = 64
 )
 
+var pingInterval = 25 * time.Second
+
 type Conn struct {
 	id        string
 	userID    string
 	roomID    string
-	ws        *websocket.Conn
+	ws        socket
 	send      chan wsevent.Event
 	hub       *Hub
 	closeMu   sync.RWMutex
@@ -27,12 +29,22 @@ type Conn struct {
 	closed    bool
 }
 
+type socket interface {
+	SetReadDeadline(t time.Time) error
+	SetPongHandler(h func(appData string) error)
+	ReadMessage() (messageType int, p []byte, err error)
+	SetWriteDeadline(t time.Time) error
+	WriteJSON(v any) error
+	WriteControl(messageType int, data []byte, deadline time.Time) error
+	Close() error
+}
+
 type clientMessage struct {
 	Type    string          `json:"type"`
 	Payload json.RawMessage `json:"payload,omitempty"`
 }
 
-func NewConn(id, userID, roomID string, ws *websocket.Conn, hub *Hub) *Conn {
+func NewConn(id, userID, roomID string, ws socket, hub *Hub) *Conn {
 	return &Conn{
 		id:     id,
 		userID: userID,
@@ -49,6 +61,9 @@ func (c *Conn) StartReadLoop() {
 	}()
 
 	c.ws.SetReadDeadline(time.Now().Add(readDeadline))
+	c.ws.SetPongHandler(func(string) error {
+		return c.ws.SetReadDeadline(time.Now().Add(readDeadline))
+	})
 
 	for {
 		_, msg, err := c.ws.ReadMessage()
@@ -74,10 +89,24 @@ func (c *Conn) StartReadLoop() {
 func (c *Conn) StartWriteLoop() {
 	defer c.hub.closeConn(c)
 
-	for event := range c.send {
-		c.ws.SetWriteDeadline(time.Now().Add(writeDeadline))
-		if err := c.ws.WriteJSON(event); err != nil {
-			return
+	ticker := time.NewTicker(pingInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case event, ok := <-c.send:
+			if !ok {
+				return
+			}
+			c.ws.SetWriteDeadline(time.Now().Add(writeDeadline))
+			if err := c.ws.WriteJSON(event); err != nil {
+				return
+			}
+		case <-ticker.C:
+			deadline := time.Now().Add(writeDeadline)
+			if err := c.ws.WriteControl(websocket.PingMessage, nil, deadline); err != nil {
+				return
+			}
 		}
 	}
 }
@@ -97,7 +126,14 @@ func (c *Conn) enqueue(event wsevent.Event) bool {
 }
 
 func (c *Conn) close() {
+	c.closeWith(nil)
+}
+
+func (c *Conn) closeWith(beforeClose func()) {
 	c.closeOnce.Do(func() {
+		if beforeClose != nil {
+			beforeClose()
+		}
 		c.closeMu.Lock()
 		c.closed = true
 		close(c.send)
@@ -106,4 +142,10 @@ func (c *Conn) close() {
 			_ = c.ws.Close()
 		}
 	})
+}
+
+func (c *Conn) isClosed() bool {
+	c.closeMu.RLock()
+	defer c.closeMu.RUnlock()
+	return c.closed
 }

@@ -82,8 +82,10 @@ spec:
           configMap:
             name: grafana-dashboard-provider
         - name: dashboards
-          configMap:
-            name: grafana-dashboard-live-auction
+          projected:
+            sources:
+              - configMap:
+                  name: grafana-dashboard-combined
 ---
 apiVersion: v1
 kind: Service

@@ -1,0 +1,153 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: feishu-webhook-secret
+  namespace: live-auction
+stringData:
+  FEISHU_WEBHOOK: "https://open.feishu.cn/open-apis/bot/v2/hook/35ac5c5f-e9a0-4ca4-8adc-04ce909ae02d"
+  FEISHU_SECRET: "xyogWb9XWdGdB2wJ5OH60e"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: feishu-webhook-script
+  namespace: live-auction
+data:
+  server.py: |
+    #!/usr/bin/env python3
+    import json, hmac, hashlib, base64, time, os
+    import urllib.request
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+
+    WEBHOOK = os.environ["FEISHU_WEBHOOK"]
+    SECRET  = os.environ["FEISHU_SECRET"]
+
+    COLOR_MAP = {"critical": "red", "warning": "yellow"}
+
+    def gen_sign():
+        ts = str(int(time.time()))
+        sig = base64.b64encode(
+            hmac.new(f"{ts}\n{SECRET}".encode(), digestmod=hashlib.sha256).digest()
+        ).decode()
+        return ts, sig
+
+    def fmt_time(t):
+        try:
+            from datetime import datetime, timezone
+            dt = datetime.fromisoformat(t.replace("Z", "+00:00"))
+            local = dt.astimezone()
+            return local.strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            return t
+
+    def build_card(alert):
+        status   = alert.get("status", "firing")
+        labels   = alert.get("labels", {})
+        ann      = alert.get("annotations", {})
+        severity = labels.get("severity", "warning")
+        name     = labels.get("alertname", "Unknown")
+        summary  = ann.get("summary", name)
+        desc     = ann.get("description", "")
+        starts   = fmt_time(alert.get("startsAt", ""))
+        ends     = fmt_time(alert.get("endsAt", ""))
+
+        if status == "resolved":
+            color, icon = "green", "✅"
+            title = f"告警恢复 · {name}"
+            time_fields = [
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**告警级别**\n{severity}"}},
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**触发时间**\n{starts}"}},
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**恢复时间**\n{ends}"}},
+            ]
+        else:
+            color = COLOR_MAP.get(severity, "yellow")
+            icon  = "🔴" if severity == "critical" else "🟡"
+            title = f"告警触发 · {name}"
+            time_fields = [
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**告警级别**\n{severity}"}},
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**触发时间**\n{starts}"}},
+            ]
+
+        return {
+            "header": {
+                "title": {"tag": "plain_text", "content": f"{icon} {title}"},
+                "template": color,
+            },
+            "elements": [
+                {"tag": "div", "fields": time_fields},
+                {"tag": "hr"},
+                {"tag": "div", "text": {"tag": "lark_md", "content": f"**{summary}**\n{desc}"}},
+            ],
+        }
+
+    def send(card):
+        ts, sig = gen_sign()
+        payload = json.dumps({"timestamp": ts, "sign": sig, "msg_type": "interactive", "card": card}).encode()
+        req = urllib.request.Request(WEBHOOK, data=payload, headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return r.read().decode()
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, fmt, *args):
+            print(f"{self.address_string()} {fmt % args}")
+
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+            for alert in body.get("alerts", []):
+                result = send(build_card(alert))
+                print(f"[{alert.get('labels', {}).get('alertname')}] {result}")
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+    HTTPServer(("", 8080), Handler).serve_forever()
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: feishu-webhook
+  namespace: live-auction
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: feishu-webhook
+  template:
+    metadata:
+      labels:
+        app: feishu-webhook
+    spec:
+      containers:
+        - name: feishu-webhook
+          image: python:3.12-alpine
+          command: ["python", "/app/server.py"]
+          envFrom:
+            - secretRef:
+                name: feishu-webhook-secret
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - name: script
+              mountPath: /app
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+      volumes:
+        - name: script
+          configMap:
+            name: feishu-webhook-script
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: feishu-webhook
+  namespace: live-auction
+spec:
+  selector:
+    app: feishu-webhook
+  ports:
+    - port: 8080
+      targetPort: 8080

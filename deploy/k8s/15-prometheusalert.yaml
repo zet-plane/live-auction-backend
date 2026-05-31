@@ -1,0 +1,65 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: prometheusalert-config
+  namespace: live-auction
+stringData:
+  app.conf: |
+    appname = PrometheusAlert
+    httpaddr =
+    httpport = 8080
+    runmode = prod
+    autorender = false
+    copyrequestbody = true
+    open-feishu = 1
+    fsurl = https://open.feishu.cn/open-apis/bot/v2/hook/35ac5c5f-e9a0-4ca4-8adc-04ce909ae02d
+    fssecret = xyogWb9XWdGdB2wJ5OH60e
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheusalert
+  namespace: live-auction
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheusalert
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: prometheusalert
+    spec:
+      containers:
+        - name: prometheusalert
+          image: feiyu563/prometheus-alert:v4.9
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - name: config
+              mountPath: /app/conf/app.conf
+              subPath: app.conf
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+      volumes:
+        - name: config
+          secret:
+            secretName: prometheusalert-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheusalert
+  namespace: live-auction
+spec:
+  selector:
+    app: prometheusalert
+  ports:
+    - port: 8080
+      targetPort: 8080

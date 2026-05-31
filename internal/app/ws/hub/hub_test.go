@@ -2,9 +2,12 @@ package hub
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/zet-plane/live-auction-backend/pkg/wsevent"
 )
 
@@ -39,6 +42,37 @@ func TestRegisterAddsToIndexes(t *testing.T) {
 	}
 }
 
+func TestRegisterSameUserRoomReplacesOldConnection(t *testing.T) {
+	h := NewHub(nil)
+	oldConn := newTestConn("user_1", "room_1")
+	oldConn.id = "old_conn"
+	newConn := newTestConn("user_1", "room_1")
+	newConn.id = "new_conn"
+
+	h.Register(oldConn)
+	h.Register(newConn)
+
+	h.mu.RLock()
+	room := h.rooms["room_1"]
+	_, oldStillIndexed := room["old_conn"]
+	_, newIndexed := room["new_conn"]
+	h.mu.RUnlock()
+	if oldStillIndexed {
+		t.Fatal("expected old same-user room connection to be replaced")
+	}
+	if !newIndexed {
+		t.Fatal("expected new connection to be indexed")
+	}
+	if !oldConn.isClosed() {
+		t.Fatal("expected old connection to be closed after replacement")
+	}
+
+	h.SendToRoom("room_1", wsevent.Event{Type: "room_event"})
+	if len(newConn.send) != 1 {
+		t.Fatalf("expected new connection to receive room event, got %d", len(newConn.send))
+	}
+}
+
 func TestRemoveCleansIndexes(t *testing.T) {
 	h := NewHub(nil)
 	c := newTestConn("user_1", "room_1")
@@ -54,6 +88,136 @@ func TestRemoveCleansIndexes(t *testing.T) {
 	if len(h.users["user_1"]) != 0 {
 		t.Error("expected users index cleared")
 	}
+}
+
+type fakePresenceStore struct {
+	mu     sync.Mutex
+	joins  []string
+	leaves []string
+}
+
+func (s *fakePresenceStore) JoinRoom(_ context.Context, roomID, userID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.joins = append(s.joins, roomID+"/"+userID)
+	return nil
+}
+
+func (s *fakePresenceStore) LeaveRoom(_ context.Context, roomID, userID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.leaves = append(s.leaves, roomID+"/"+userID)
+	return nil
+}
+
+func (s *fakePresenceStore) joinCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.joins)
+}
+
+func (s *fakePresenceStore) leaveCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.leaves)
+}
+
+type fakeSocket struct {
+	mu                sync.Mutex
+	pingCh            chan struct{}
+	pongHandler       func(string) error
+	readDeadlineCalls int
+	closeOnce         sync.Once
+}
+
+func newFakeSocket() *fakeSocket {
+	return &fakeSocket{pingCh: make(chan struct{})}
+}
+
+func (s *fakeSocket) SetReadDeadline(time.Time) error {
+	s.mu.Lock()
+	s.readDeadlineCalls++
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *fakeSocket) SetPongHandler(handler func(string) error) {
+	s.mu.Lock()
+	s.pongHandler = handler
+	s.mu.Unlock()
+}
+
+func (s *fakeSocket) ReadMessage() (int, []byte, error) {
+	return 0, nil, errors.New("fake socket closed")
+}
+
+func (s *fakeSocket) SetWriteDeadline(time.Time) error { return nil }
+
+func (s *fakeSocket) WriteJSON(any) error { return nil }
+
+func (s *fakeSocket) WriteControl(messageType int, _ []byte, _ time.Time) error {
+	if messageType == websocket.PingMessage {
+		s.closeOnce.Do(func() {
+			close(s.pingCh)
+		})
+	}
+	return nil
+}
+
+func (s *fakeSocket) Close() error { return nil }
+
+func (s *fakeSocket) currentPongHandler() func(string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pongHandler
+}
+
+func (s *fakeSocket) readDeadlineCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.readDeadlineCalls
+}
+
+func TestCloseConnRemovesPresenceOnce(t *testing.T) {
+	h := NewHub(nil)
+	presence := &fakePresenceStore{}
+	h.presence = presence
+	c := newTestConn("user_1", "room_1")
+	h.Register(c)
+	waitFor(t, func() bool { return presence.joinCount() == 1 })
+
+	h.closeConn(c)
+	h.closeConn(c)
+
+	waitFor(t, func() bool { return presence.leaveCount() == 1 })
+	time.Sleep(20 * time.Millisecond)
+	if got := presence.leaveCount(); got != 1 {
+		t.Fatalf("expected one presence leave after duplicate close, got %d", got)
+	}
+}
+
+func TestClosingReplacedConnectionDoesNotRemoveNewPresence(t *testing.T) {
+	h := NewHub(nil)
+	presence := &fakePresenceStore{}
+	h.presence = presence
+	oldConn := newTestConn("user_1", "room_1")
+	oldConn.id = "old_conn"
+	newConn := newTestConn("user_1", "room_1")
+	newConn.id = "new_conn"
+
+	h.Register(oldConn)
+	waitFor(t, func() bool { return presence.joinCount() == 1 })
+	h.Register(newConn)
+	waitFor(t, func() bool { return presence.joinCount() == 2 })
+
+	h.closeConn(oldConn)
+	time.Sleep(20 * time.Millisecond)
+	if got := presence.leaveCount(); got != 0 {
+		t.Fatalf("expected replaced old connection not to remove online presence, got %d leaves", got)
+	}
+
+	h.closeConn(newConn)
+	waitFor(t, func() bool { return presence.leaveCount() == 1 })
 }
 
 func TestFanoutDeliversToRoom(t *testing.T) {
@@ -136,6 +300,46 @@ func TestRegisterDeliversSnapshotWhenProviderHasOne(t *testing.T) {
 	}
 	if got := <-c.send; got.Type != "auction_snapshot" {
 		t.Fatalf("expected auction_snapshot, got %q", got.Type)
+	}
+}
+
+func TestStartWriteLoopSendsServerControlPing(t *testing.T) {
+	oldPingInterval := pingInterval
+	pingInterval = 10 * time.Millisecond
+	t.Cleanup(func() { pingInterval = oldPingInterval })
+
+	h := NewHub(nil)
+	ws := newFakeSocket()
+	conn := NewConn("conn_1", "user_1", "room_1", ws, h)
+	h.Register(conn)
+	go conn.StartWriteLoop()
+	defer conn.close()
+
+	select {
+	case <-ws.pingCh:
+	case <-time.After(time.Second):
+		t.Fatal("expected server to send websocket control ping")
+	}
+}
+
+func TestStartReadLoopConfiguresPongDeadlineRefresh(t *testing.T) {
+	h := NewHub(nil)
+	ws := newFakeSocket()
+	conn := NewConn("conn_1", "user_1", "room_1", ws, h)
+	h.Register(conn)
+
+	conn.StartReadLoop()
+
+	handler := ws.currentPongHandler()
+	if handler == nil {
+		t.Fatal("expected pong handler to be configured")
+	}
+	before := ws.readDeadlineCount()
+	if err := handler(""); err != nil {
+		t.Fatalf("pong handler returned error: %v", err)
+	}
+	if got := ws.readDeadlineCount(); got != before+1 {
+		t.Fatalf("expected pong handler to refresh read deadline, before=%d after=%d", before, got)
 	}
 }
 
@@ -260,4 +464,16 @@ func assertNotPanics(t *testing.T, fn func()) {
 		}
 	}()
 	fn()
+}
+
+func waitFor(t *testing.T, ok func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if ok() {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("condition was not met before timeout")
 }
