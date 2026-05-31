@@ -19,6 +19,7 @@ local state_key   = KEYS[1]
 local ranking_key = KEYS[2]
 local names_key   = KEYS[3]
 local idem_key    = KEYS[4]
+local ending_key  = KEYS[5]
 
 local user_id     = ARGV[1]
 local user_name   = ARGV[2]
@@ -32,31 +33,45 @@ local max_ext_cnt = tonumber(ARGV[9])
 local max_ext_tot = tonumber(ARGV[10])
 local now_unix    = tonumber(ARGV[11])
 local idem_ttl    = tonumber(ARGV[12])
+local item_id     = ARGV[13]
+local now_ms      = now_unix * 1000
 
 local existing = redis.call('GET', idem_key)
 if existing then
   local raw = redis.call('HGETALL', state_key)
   local m = {}
   for i = 1, #raw, 2 do m[raw[i]] = raw[i+1] end
-  return {1, existing, tonumber(m['current_price'] or 0), m['leader_user_id'] or '', tonumber(m['end_time_unix'] or 0), 0, 0, ''}
+  local deal_price = tonumber(m['deal_price'] or m['current_price'] or 0)
+  local end_unix = tonumber(m['end_time_unix'] or 0)
+  local end_ms = tonumber(m['end_time_unix_ms'] or 0)
+  if end_ms == 0 then end_ms = end_unix * 1000 end
+  if end_unix == 0 and end_ms > 0 then end_unix = math.floor(end_ms / 1000) end
+  return {1, existing, deal_price, m['leader_user_id'] or '', end_unix, end_ms, 0, 0, ''}
 end
 
 local raw = redis.call('HGETALL', state_key)
-if #raw == 0 then return {2,'',0,'',0,0,0,''} end
+if #raw == 0 then return {2,'',0,'',0,0,0,0,''} end
 local s = {}
 for i = 1, #raw, 2 do s[raw[i]] = raw[i+1] end
 
-local cur_price = tonumber(s['current_price'] or 0)
+local status = s['status'] or ''
+if status ~= '' and status ~= 'ongoing' then return {2,'',0,'',0,0,0,0,''} end
+
+local cur_price = tonumber(s['deal_price'] or s['current_price'] or 0)
 local end_unix  = tonumber(s['end_time_unix']  or 0)
+local end_ms    = tonumber(s['end_time_unix_ms'] or 0)
 local ext_cnt   = tonumber(s['extend_count']   or 0)
 local ext_tot   = tonumber(s['total_extended_sec'] or 0)
 local bid_cnt   = tonumber(s['bid_count']       or 0)
 local part_cnt  = tonumber(s['participant_count'] or 0)
 local prev_leader = s['leader_user_id'] or ''
 
-if now_unix >= end_unix then return {2,'',0,'',0,0,0,''} end
-if price <= cur_price   then return {3,'',0,'',0,0,0,''} end
-if (price - cur_price) % bid_incr ~= 0 then return {4,'',0,'',0,0,0,''} end
+if end_ms == 0 then end_ms = end_unix * 1000 end
+if end_unix == 0 and end_ms > 0 then end_unix = math.floor(end_ms / 1000) end
+
+if now_ms >= end_ms then return {2,'',0,'',0,0,0,0,''} end
+if price <= cur_price   then return {3,'',0,'',0,0,0,0,''} end
+if (price - cur_price) % bid_incr ~= 0 then return {4,'',0,'',0,0,0,0,''} end
 
 local prev_score = redis.call('ZSCORE', ranking_key, user_id)
 if not prev_score then part_cnt = part_cnt + 1 end
@@ -66,18 +81,23 @@ redis.call('HSET', names_key, user_id, user_name)
 bid_cnt = bid_cnt + 1
 
 local is_extended = 0
-local remaining = end_unix - now_unix
-if remaining <= ext_trig and ext_cnt < max_ext_cnt and (ext_tot + ext_sec) <= max_ext_tot then
-  end_unix  = end_unix  + ext_sec
+local remaining_ms = end_ms - now_ms
+if remaining_ms <= (ext_trig * 1000) and ext_cnt < max_ext_cnt and (ext_tot + ext_sec) <= max_ext_tot then
+  end_ms    = end_ms    + (ext_sec * 1000)
+  end_unix  = math.floor(end_ms / 1000)
   ext_cnt   = ext_cnt   + 1
   ext_tot   = ext_tot   + ext_sec
   is_extended = 1
+  redis.call('ZADD', ending_key, end_ms, item_id)
 end
 
 redis.call('HSET', state_key,
+  'status',             'ongoing',
   'current_price',      price,
+  'deal_price',         price,
   'leader_user_id',     user_id,
   'end_time_unix',      end_unix,
+  'end_time_unix_ms',   end_ms,
   'bid_count',          bid_cnt,
   'participant_count',  part_cnt,
   'is_extended',        is_extended,
@@ -87,9 +107,16 @@ redis.call('HSET', state_key,
 redis.call('SET', idem_key, bid_id, 'EX', idem_ttl)
 
 local is_capped = 0
-if price_cap > 0 and price >= price_cap then is_capped = 1 end
+if price_cap > 0 and price >= price_cap then
+  is_capped = 1
+  redis.call('HSET', state_key,
+    'status',           'ended',
+    'ended_at_unix_ms', now_ms,
+    'end_reason',      'price_cap')
+  redis.call('ZREM', ending_key, item_id)
+end
 
-return {0, bid_id, price, user_id, end_unix, is_extended, is_capped, prev_leader}
+return {0, bid_id, price, user_id, end_unix, end_ms, is_extended, is_capped, prev_leader}
 `
 
 var bidScript = redis.NewScript(bidLuaScript)
@@ -116,6 +143,7 @@ func (c *RedisCache) PlaceBidLua(ctx context.Context, itemID string, args BidLua
 		rankingKey(itemID),
 		bidderNamesKey(itemID),
 		idempotencyKey(itemID, args.IdempotencyKey),
+		endingKey(),
 	}
 	argv := []any{
 		args.UserID,
@@ -130,6 +158,7 @@ func (c *RedisCache) PlaceBidLua(ctx context.Context, itemID string, args BidLua
 		strconv.Itoa(args.MaxTotalExtendSec),
 		strconv.FormatInt(args.NowUnix, 10),
 		strconv.Itoa(args.IdempotencyTTL),
+		itemID,
 	}
 
 	res, err := bidScript.Run(ctx, c.client, keys, argv...).Slice()
@@ -139,7 +168,7 @@ func (c *RedisCache) PlaceBidLua(ctx context.Context, itemID string, args BidLua
 		observability.DefaultRecorder().RedisLua(ctx, observability.RedisLuaMetric{Code: "error", Duration: time.Since(start)})
 		return nil, err
 	}
-	if len(res) < 8 {
+	if len(res) < 9 {
 		err := fmt.Errorf("lua result length unexpected: %d", len(res))
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -156,9 +185,10 @@ func (c *RedisCache) PlaceBidLua(ctx context.Context, itemID string, args BidLua
 		CurrentPrice:     toI64(res[2]),
 		LeaderUserID:     toStr(res[3]),
 		EndTimeUnix:      toI64(res[4]),
-		IsExtended:       toI64(res[5]) == 1,
-		IsCapped:         toI64(res[6]) == 1,
-		PrevLeaderUserID: toStr(res[7]),
+		EndTimeUnixMS:    toI64(res[5]),
+		IsExtended:       toI64(res[6]) == 1,
+		IsCapped:         toI64(res[7]) == 1,
+		PrevLeaderUserID: toStr(res[8]),
 	}
 	span.SetAttributes(attribute.String("auction.item_id", itemID), attribute.Int("auction.lua.code", result.Code))
 	observability.DefaultRecorder().RedisLua(ctx, observability.RedisLuaMetric{Code: strconv.Itoa(result.Code), Duration: time.Since(start)})

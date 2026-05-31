@@ -11,14 +11,19 @@ import (
 )
 
 type AuctionState struct {
+	Status           string
 	CurrentPrice     int64
+	DealPrice        int64
 	LeaderUserID     string
 	EndTime          time.Time
+	EndTimeUnixMS    int64
+	EndedAtUnixMS    int64
 	BidCount         int
 	ParticipantCount int
 	IsExtended       bool
 	ExtendCount      int
 	TotalExtendedSec int
+	EndReason        string
 }
 
 type BidLuaArgs struct {
@@ -43,6 +48,7 @@ type BidLuaResult struct {
 	CurrentPrice     int64
 	LeaderUserID     string
 	EndTimeUnix      int64
+	EndTimeUnixMS    int64
 	IsExtended       bool
 	IsCapped         bool
 	PrevLeaderUserID string // leader before this bid; empty if no previous leader
@@ -52,6 +58,8 @@ type Cache interface {
 	InitAuctionState(ctx context.Context, itemID string, state AuctionState) error
 	GetAuctionState(ctx context.Context, itemID string) (*AuctionState, bool, error)
 	DeleteAuctionState(ctx context.Context, itemID string) error
+	ScheduleAuctionEnd(ctx context.Context, itemID string, endUnixMS int64) error
+	UnscheduleAuctionEnd(ctx context.Context, itemID string) error
 	PushToRoomQueue(ctx context.Context, roomID, itemID string, score float64) error
 	RemoveFromRoomQueue(ctx context.Context, roomID, itemID string) error
 	SetRoomCurrentItem(ctx context.Context, roomID, itemID string) error
@@ -80,16 +88,37 @@ func roomStateKey(roomID string) string {
 	return "auction:room:" + roomID + ":state"
 }
 
+func endingKey() string {
+	return "auction:ending"
+}
+
 func (c *RedisCache) InitAuctionState(ctx context.Context, itemID string, state AuctionState) error {
+	status := state.Status
+	if status == "" {
+		status = "ongoing"
+	}
+	dealPrice := state.DealPrice
+	if dealPrice == 0 {
+		dealPrice = state.CurrentPrice
+	}
+	endUnixMS := state.EndTimeUnixMS
+	if endUnixMS == 0 {
+		endUnixMS = state.EndTime.UnixMilli()
+	}
 	return c.client.HSet(ctx, itemStateKey(itemID),
+		"status", status,
 		"current_price", state.CurrentPrice,
+		"deal_price", dealPrice,
 		"leader_user_id", state.LeaderUserID,
 		"end_time_unix", state.EndTime.Unix(),
+		"end_time_unix_ms", endUnixMS,
+		"ended_at_unix_ms", state.EndedAtUnixMS,
 		"bid_count", state.BidCount,
 		"participant_count", state.ParticipantCount,
 		"is_extended", boolToStr(state.IsExtended),
 		"extend_count", state.ExtendCount,
 		"total_extended_sec", state.TotalExtendedSec,
+		"end_reason", state.EndReason,
 	).Err()
 }
 
@@ -101,20 +130,41 @@ func (c *RedisCache) GetAuctionState(ctx context.Context, itemID string) (*Aucti
 	if len(vals) == 0 {
 		return nil, false, nil
 	}
+	dealPrice := parseInt64(vals["deal_price"])
+	if dealPrice == 0 {
+		dealPrice = parseInt64(vals["current_price"])
+	}
+	endMS := parseInt64(vals["end_time_unix_ms"])
+	if endMS == 0 {
+		endMS = parseInt64(vals["end_time_unix"]) * 1000
+	}
 	return &AuctionState{
+		Status:           vals["status"],
 		CurrentPrice:     parseInt64(vals["current_price"]),
+		DealPrice:        dealPrice,
 		LeaderUserID:     vals["leader_user_id"],
-		EndTime:          time.Unix(parseInt64(vals["end_time_unix"]), 0),
+		EndTime:          time.UnixMilli(endMS),
+		EndTimeUnixMS:    endMS,
+		EndedAtUnixMS:    parseInt64(vals["ended_at_unix_ms"]),
 		BidCount:         parseInt(vals["bid_count"]),
 		ParticipantCount: parseInt(vals["participant_count"]),
 		IsExtended:       vals["is_extended"] == "1",
 		ExtendCount:      parseInt(vals["extend_count"]),
 		TotalExtendedSec: parseInt(vals["total_extended_sec"]),
+		EndReason:        vals["end_reason"],
 	}, true, nil
 }
 
 func (c *RedisCache) DeleteAuctionState(ctx context.Context, itemID string) error {
 	return c.client.Del(ctx, itemStateKey(itemID)).Err()
+}
+
+func (c *RedisCache) ScheduleAuctionEnd(ctx context.Context, itemID string, endUnixMS int64) error {
+	return c.client.ZAdd(ctx, endingKey(), redis.Z{Score: float64(endUnixMS), Member: itemID}).Err()
+}
+
+func (c *RedisCache) UnscheduleAuctionEnd(ctx context.Context, itemID string) error {
+	return c.client.ZRem(ctx, endingKey(), itemID).Err()
 }
 
 func (c *RedisCache) PushToRoomQueue(ctx context.Context, roomID, itemID string, score float64) error {

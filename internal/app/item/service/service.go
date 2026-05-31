@@ -263,10 +263,15 @@ func (s *Service) StartItem(ctx context.Context, current *usermodel.User, itemID
 		if err := s.cache.InitAuctionState(ctx, item.ID, state); err != nil {
 			return err
 		}
+		if err := s.cache.ScheduleAuctionEnd(ctx, item.ID, rule.EndTime.UnixMilli()); err != nil {
+			_ = s.cache.DeleteAuctionState(ctx, item.ID)
+			return err
+		}
 	}
 	item.Status = model.ItemOngoing
 	if err := s.store.UpdateItemWithRule(item, rule); err != nil {
 		if s.cache != nil {
+			_ = s.cache.UnscheduleAuctionEnd(ctx, item.ID)
 			_ = s.cache.DeleteAuctionState(ctx, item.ID)
 		}
 		return err

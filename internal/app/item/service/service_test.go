@@ -289,6 +289,7 @@ func TestPublishStartAndCancelValidateOwnerAndStatus(t *testing.T) {
 
 type fakeCache struct {
 	states      map[string]*itemcache.AuctionState
+	ending      map[string]int64
 	queues      map[string][]string
 	roomCurrent map[string]string
 	ranking     map[string]map[string]int64
@@ -302,6 +303,7 @@ type fakeCache struct {
 func newFakeCache() *fakeCache {
 	return &fakeCache{
 		states:      map[string]*itemcache.AuctionState{},
+		ending:      map[string]int64{},
 		queues:      map[string][]string{},
 		roomCurrent: map[string]string{},
 		ranking:     map[string]map[string]int64{},
@@ -314,6 +316,15 @@ func (c *fakeCache) InitAuctionState(_ context.Context, itemID string, state ite
 		return c.initErr
 	}
 	cp := state
+	if cp.Status == "" {
+		cp.Status = "ongoing"
+	}
+	if cp.DealPrice == 0 {
+		cp.DealPrice = cp.CurrentPrice
+	}
+	if cp.EndTimeUnixMS == 0 {
+		cp.EndTimeUnixMS = cp.EndTime.UnixMilli()
+	}
 	c.states[itemID] = &cp
 	return nil
 }
@@ -332,6 +343,16 @@ func (c *fakeCache) DeleteAuctionState(_ context.Context, itemID string) error {
 		return c.deleteErr
 	}
 	delete(c.states, itemID)
+	return nil
+}
+
+func (c *fakeCache) ScheduleAuctionEnd(_ context.Context, itemID string, endUnixMS int64) error {
+	c.ending[itemID] = endUnixMS
+	return nil
+}
+
+func (c *fakeCache) UnscheduleAuctionEnd(_ context.Context, itemID string) error {
+	delete(c.ending, itemID)
 	return nil
 }
 
@@ -374,7 +395,14 @@ func (c *fakeCache) PlaceBidLua(_ context.Context, itemID string, args itemcache
 	if !ok {
 		return &itemcache.BidLuaResult{Code: 2}, nil
 	}
-	if args.NowUnix >= state.EndTime.Unix() {
+	if state.Status != "" && state.Status != "ongoing" {
+		return &itemcache.BidLuaResult{Code: 2}, nil
+	}
+	endUnixMS := state.EndTimeUnixMS
+	if endUnixMS == 0 {
+		endUnixMS = state.EndTime.UnixMilli()
+	}
+	if args.NowUnix*1000 >= endUnixMS {
 		return &itemcache.BidLuaResult{Code: 2}, nil
 	}
 	if args.Price <= state.CurrentPrice {
@@ -398,15 +426,19 @@ func (c *fakeCache) PlaceBidLua(_ context.Context, itemID string, args itemcache
 	c.bidderNames[itemID][args.UserID] = args.UserName
 	prevLeader := state.LeaderUserID
 	state.CurrentPrice = args.Price
+	state.DealPrice = args.Price
 	state.LeaderUserID = args.UserID
 	state.BidCount++
+	state.EndTimeUnixMS = endUnixMS
 
 	isExtended := false
-	remaining := state.EndTime.Unix() - args.NowUnix
-	if remaining <= int64(args.ExtendTriggerSec) &&
+	remaining := state.EndTimeUnixMS - args.NowUnix*1000
+	if remaining <= int64(args.ExtendTriggerSec)*1000 &&
 		state.ExtendCount < args.MaxExtendCount &&
 		state.TotalExtendedSec+args.AutoExtendSec <= args.MaxTotalExtendSec {
 		state.EndTime = state.EndTime.Add(time.Duration(args.AutoExtendSec) * time.Second)
+		state.EndTimeUnixMS = state.EndTime.UnixMilli()
+		c.ending[itemID] = state.EndTimeUnixMS
 		state.ExtendCount++
 		state.TotalExtendedSec += args.AutoExtendSec
 		isExtended = true
@@ -414,12 +446,19 @@ func (c *fakeCache) PlaceBidLua(_ context.Context, itemID string, args itemcache
 	state.IsExtended = isExtended
 
 	isCapped := args.PriceCap > 0 && args.Price >= args.PriceCap
+	if isCapped {
+		state.Status = "ended"
+		state.EndedAtUnixMS = time.Unix(args.NowUnix, 0).UnixMilli()
+		state.EndReason = "price_cap"
+		delete(c.ending, itemID)
+	}
 	return &itemcache.BidLuaResult{
 		Code:             0,
 		BidID:            args.BidID,
 		CurrentPrice:     args.Price,
 		LeaderUserID:     args.UserID,
 		EndTimeUnix:      state.EndTime.Unix(),
+		EndTimeUnixMS:    state.EndTimeUnixMS,
 		IsExtended:       isExtended,
 		IsCapped:         isCapped,
 		PrevLeaderUserID: prevLeader,
@@ -561,6 +600,19 @@ func TestStartItemInitializesRedisState(t *testing.T) {
 	}
 	if state.CurrentPrice != 1000 {
 		t.Fatalf("expected current_price 1000 (start_price), got %d", state.CurrentPrice)
+	}
+	if state.Status != "ongoing" {
+		t.Fatalf("expected status ongoing, got %q", state.Status)
+	}
+	if state.DealPrice != 1000 {
+		t.Fatalf("expected deal_price 1000 (start_price), got %d", state.DealPrice)
+	}
+	rule := store.rules[store.items[itemID].RuleID]
+	if state.EndTimeUnixMS != rule.EndTime.UnixMilli() {
+		t.Fatalf("expected end_time_unix_ms %d, got %d", rule.EndTime.UnixMilli(), state.EndTimeUnixMS)
+	}
+	if got := fc.ending[itemID]; got != rule.EndTime.UnixMilli() {
+		t.Fatalf("expected ending score %d, got %d", rule.EndTime.UnixMilli(), got)
 	}
 	if state.EndTime.IsZero() {
 		t.Fatal("expected non-zero end_time")

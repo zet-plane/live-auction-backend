@@ -219,6 +219,9 @@ func TestPlaceBidPriceCapEndsAuction(t *testing.T) {
 	if _, ok := fc.states[itemID]; ok {
 		t.Fatal("expected auction state deleted from cache")
 	}
+	if _, ok := fc.ending[itemID]; ok {
+		t.Fatal("expected auction end unscheduled from cache")
+	}
 	for _, id := range fc.queues["room_1"] {
 		if id == itemID {
 			t.Fatal("expected item removed from room queue")
