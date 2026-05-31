@@ -393,7 +393,21 @@ func (c *fakeCache) PlaceBidLua(_ context.Context, itemID string, args itemcache
 		return nil, c.bidLuaErr
 	}
 	if c.bidLuaCode != 0 {
-		return &itemcache.BidLuaResult{Code: c.bidLuaCode}, nil
+		result := &itemcache.BidLuaResult{Code: c.bidLuaCode}
+		if c.bidLuaCode == 1 {
+			if state, ok := c.states[itemID]; ok {
+				result.BidID = args.BidID
+				result.CurrentPrice = state.DealPrice
+				if result.CurrentPrice == 0 {
+					result.CurrentPrice = state.CurrentPrice
+				}
+				result.LeaderUserID = state.LeaderUserID
+				result.EndTimeUnix = state.EndTime.Unix()
+				result.EndTimeUnixMS = state.EndTimeUnixMS
+				result.Status = state.Status
+			}
+		}
+		return result, nil
 	}
 	state, ok := c.states[itemID]
 	if !ok {
@@ -466,6 +480,7 @@ func (c *fakeCache) PlaceBidLua(_ context.Context, itemID string, args itemcache
 		IsExtended:       isExtended,
 		IsCapped:         isCapped,
 		PrevLeaderUserID: prevLeader,
+		Status:           state.Status,
 	}, nil
 }
 
@@ -810,6 +825,18 @@ func TestListMerchantItemsMapsRedisSnapshotFields(t *testing.T) {
 	if item.Status != itemmodel.ItemEnded {
 		t.Fatalf("expected status ended from Redis, got %q", item.Status)
 	}
+	if item.StatusText != "已结束" {
+		t.Fatalf("expected status_text 已结束, got %q", item.StatusText)
+	}
+	if item.ExplainStatus != "ended" {
+		t.Fatalf("expected explain_status ended, got %q", item.ExplainStatus)
+	}
+	if item.Actions.CanCancel {
+		t.Fatal("expected can_cancel false for ended Redis state")
+	}
+	if !item.Actions.CanUnpublish {
+		t.Fatal("expected can_unpublish true for ended Redis state")
+	}
 	if item.DealPrice != 6000 {
 		t.Fatalf("expected top-level deal_price 6000, got %d", item.DealPrice)
 	}
@@ -821,6 +848,12 @@ func TestListMerchantItemsMapsRedisSnapshotFields(t *testing.T) {
 	}
 	if item.EndReason != "time_expired" {
 		t.Fatalf("expected top-level end_reason time_expired, got %q", item.EndReason)
+	}
+	if item.Result.DealPrice != 6000 {
+		t.Fatalf("expected result deal_price 6000, got %d", item.Result.DealPrice)
+	}
+	if item.Result.WinnerUserID != "user_42" {
+		t.Fatalf("expected result winner_user_id user_42, got %q", item.Result.WinnerUserID)
 	}
 	if item.Progress.DealPrice != 6000 {
 		t.Fatalf("expected progress deal_price 6000, got %d", item.Progress.DealPrice)

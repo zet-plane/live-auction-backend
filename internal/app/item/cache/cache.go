@@ -52,6 +52,7 @@ type BidLuaResult struct {
 	IsExtended       bool
 	IsCapped         bool
 	PrevLeaderUserID string // leader before this bid; empty if no previous leader
+	Status           string
 }
 
 type Cache interface {

@@ -192,6 +192,43 @@ func TestPlaceBidIdempotent(t *testing.T) {
 	}
 }
 
+func TestPlaceBidIdempotentReturnsEndedSnapshot(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	now := time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC)
+	svc := NewService(store, testPolicy, fc, nil, nil, nil)
+	svc.now = func() time.Time { return now }
+	endTime := now.Add(5 * time.Minute)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 0, endTime)
+
+	if _, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
+		Price: 100, IdempotencyKey: "idem_ended", UserName: "Alice",
+	}); err != nil {
+		t.Fatalf("first bid failed: %v", err)
+	}
+	endedAt := now.Add(time.Second).UnixMilli()
+	fc.states[itemID].Status = "ended"
+	fc.states[itemID].EndedAtUnixMS = endedAt
+	fc.states[itemID].EndReason = "time_expired"
+
+	fc.bidLuaCode = 1
+	result, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
+		Price: 100, IdempotencyKey: "idem_ended", UserName: "Alice",
+	})
+	if err != nil {
+		t.Fatalf("idempotent bid should not fail: %v", err)
+	}
+	if result.Status != "ended" {
+		t.Fatalf("expected status ended from idempotent Redis snapshot, got %q", result.Status)
+	}
+	if result.DealPrice != 100 {
+		t.Fatalf("expected deal_price 100, got %d", result.DealPrice)
+	}
+	if result.EndTimeUnixMS != endTime.UnixMilli() {
+		t.Fatalf("expected end_time_unix_ms %d, got %d", endTime.UnixMilli(), result.EndTimeUnixMS)
+	}
+}
+
 func TestPlaceBidPriceCapEndsAuction(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()

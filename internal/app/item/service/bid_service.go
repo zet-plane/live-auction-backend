@@ -93,7 +93,7 @@ func (s *Service) PlaceBid(ctx context.Context, current *usermodel.User, itemID 
 	switch luaResult.Code {
 	case 1: // idempotent: already bid, return current state without writing BidLog again
 		bidID = luaResult.BidID
-		status = "ongoing"
+		status = bidStatus(luaResult, "ongoing")
 		bidResult = "idempotent"
 		bidReason = "idempotency_key"
 		return &dto.PlaceBidResult{
@@ -103,7 +103,7 @@ func (s *Service) PlaceBid(ctx context.Context, current *usermodel.User, itemID 
 			LeaderUserID:  luaResult.LeaderUserID,
 			EndTime:       time.Unix(luaResult.EndTimeUnix, 0),
 			EndTimeUnixMS: bidEndTimeUnixMS(luaResult),
-			Status:        "ongoing",
+			Status:        status,
 		}, nil
 	case 2:
 		bidResult = "rejected"
@@ -174,7 +174,7 @@ func (s *Service) PlaceBid(ctx context.Context, current *usermodel.User, itemID 
 		}
 	}
 
-	status = "ongoing"
+	status = bidStatus(luaResult, "ongoing")
 	if luaResult.IsCapped {
 		item.Status = model.ItemEnded
 		item.WinnerID = current.ID
@@ -194,7 +194,7 @@ func (s *Service) PlaceBid(ctx context.Context, current *usermodel.User, itemID 
 			_ = s.cache.DeleteAuctionState(ctx, item.ID)
 			_ = s.cache.ClearRoomCurrentItem(ctx, item.RoomID, item.ID)
 		}
-		status = "ended"
+		status = bidStatus(luaResult, "ended")
 		var orderID string
 		if s.orderSvc != nil {
 			if order, err := s.orderSvc.CreateOrder(ctx, item.ID, current.ID, input.Price); err == nil && order != nil {
@@ -248,6 +248,13 @@ func bidEndTimeUnixMS(result *itemcache.BidLuaResult) int64 {
 		return result.EndTimeUnix * 1000
 	}
 	return 0
+}
+
+func bidStatus(result *itemcache.BidLuaResult, fallback string) string {
+	if result.Status != "" {
+		return result.Status
+	}
+	return fallback
 }
 
 func (s *Service) GetRanking(ctx context.Context, itemID string, page, pageSize int) (result *dto.RankingResult, err error) {

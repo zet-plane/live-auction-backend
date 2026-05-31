@@ -504,6 +504,8 @@ func applyStateToMerchant(d *dto.MerchantItemDTO, state *itemcache.AuctionState,
 	d.EndTimeUnixMS = stateEndTimeUnixMS(state)
 	d.EndedAtUnixMS = state.EndedAtUnixMS
 	d.EndReason = state.EndReason
+	d.Result.DealPrice = stateDealPrice(state)
+	d.Result.WinnerUserID = state.LeaderUserID
 	d.Progress.CurrentPrice = state.CurrentPrice
 	d.Progress.DealPrice = stateDealPrice(state)
 	d.Progress.LeaderUserID = state.LeaderUserID
@@ -514,6 +516,7 @@ func applyStateToMerchant(d *dto.MerchantItemDTO, state *itemcache.AuctionState,
 	d.Progress.EndReason = state.EndReason
 	d.Progress.IsExtended = state.IsExtended
 	d.Progress.RemainingMS = stateRemainingMS(state, now)
+	dto.RefreshMerchantItemDerivedFields(d)
 }
 
 func stateItemStatus(state *itemcache.AuctionState) (model.AuctionItemStatus, bool) {

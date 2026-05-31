@@ -308,6 +308,13 @@ func NewMerchantItemDTO(item *itemmodel.AuctionItem, rule *itemmodel.AuctionRule
 	}
 }
 
+func RefreshMerchantItemDerivedFields(d *MerchantItemDTO) {
+	d.StatusText = statusText(d.Status)
+	d.ExplainStatus = explainStatus(d.Status)
+	d.ExplainStatusText = statusText(d.Status)
+	d.Actions = actions(d.Status)
+}
+
 func currentPrice(item *itemmodel.AuctionItem, rule *itemmodel.AuctionRule) int64 {
 	if item.DealPrice > 0 {
 		return item.DealPrice
