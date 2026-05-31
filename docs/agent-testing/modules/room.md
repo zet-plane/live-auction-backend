@@ -90,9 +90,11 @@ Agent 可以测试：
 - `StartRoom` 只允许 `idle -> live`，非 `idle` 状态返回 `ErrInvalidRequest`。
 - `EndRoom` 只允许 `live -> idle`，非 `live` 状态返回 `ErrInvalidRequest`。
 - `StartRoom` 成功后先更新 MySQL，再软失败写入 Redis room state（HSET: `merchant_id`、`status="live"`、`current_item_id`、`online_count=0`）。
-- `EndRoom` 成功后先更新 MySQL，再软失败更新 Redis room state 的 `status="idle"`。
+- `EndRoom` 成功后先更新 MySQL，清空 MySQL `current_item_id`，再软失败更新 Redis room state 的 `status="idle"` 和 `current_item_id=""`。
 - `GetRoom` 和 `ListRooms` 从 Redis 读取 `online_count` 和 `item_queue`；Redis miss 或读取错误时降级返回 0 和空数组，不报错。
 - `GetMerchantRoom` 从 Redis 读取 `online_count` 和 `queued_count`（队列长度）。
+- `RoomDetailDTO` 和 `MerchantRoomDTO` 必须返回 `current_item_id` 字段；没有当前拍品时值为空字符串，不能省略字段。
+- 当前拍品推进由商品模块维护：商品开始竞拍时写入 MySQL `live_rooms.current_item_id` 和 Redis `auction:room:{room_id}:state.current_item_id`；商品取消、过期结束或房间下播时清空。
 - `ListRooms` 不传 `status` 时默认只返回 `live` 状态的房间。
 - `findMerchantRoom` 验证商家归属时若不属于当前商家，返回 `ErrNotFound`，不暴露他人房间是否存在。
 - `item_queue` 在 `RoomDetailDTO` 中永远不为 nil，最少返回空数组。
@@ -115,6 +117,8 @@ Agent 可以测试：
 - 非商家身份无法创建或管理直播间。
 - 非所属商家无法开播或下播其他商家的直播间。
 - 公开详情的 `item_queue` 必须是数组，不能为 `null`。
+- 公开列表、公开详情和商家视图必须包含 `current_item_id` 字段；没有当前拍品时返回空字符串，不能因空值省略。
+- `current_item_id` 不能在取消拍品、过期结束或下播后保留旧商品 ID。
 
 不变量失败时，agent 除常规失败报告外，必须额外输出：
 
@@ -135,7 +139,7 @@ Agent 可以测试：
 | `id` | db/response/path | 房间 ID 使用 `room_` 前缀；主键长度 64 | 全部房间接口 | `ROOM.FIELD.id.*` |
 | `merchant_id` | auth/db/response | 创建时来自当前商家；唯一索引；状态动作必须匹配当前商家 | 商家房间接口、状态动作 | `ROOM.FIELD.merchant_id.*` |
 | `status` | db/response/Redis | 枚举仅 `idle`、`live`；状态动作只能 `idle <-> live` | 列表、详情、开播、下播 | `ROOM.FIELD.status.*` |
-| `current_item_id` | db/response/Redis | 可空；公开详情和商家视图 `omitempty` | 详情、商家视图、Redis state | `ROOM.FIELD.current_item_id.*` |
+| `current_item_id` | db/response/Redis | 可空；公开列表、公开详情和商家视图必须返回该字段，空值为 `""`；商品开始竞拍时写入，商品取消、过期结束或房间下播时清空 | 列表、详情、商家视图、Redis state、商品开始/取消/过期结束、下播 | `ROOM.FIELD.current_item_id.*` |
 | `created_at` / `updated_at` | db/response | GORM 自动维护；列表按 `created_at DESC` | 列表、详情、商家视图 | `ROOM.FIELD.timestamps.*` |
 | `DeletedAt` | db | 模型支持软删除；当前无删除接口 | DAO 集成 | `ROOM.FIELD.deleted_at.*` |
 
@@ -246,6 +250,7 @@ Agent 可以测试：
 | 字段 | 规则 | 证据 |
 | --- | --- | --- |
 | `id` / `merchant_id` / `title` / `status` | 与 DB 一致 | HTTP 响应 + DB |
+| `current_item_id` | 必须出现；与 DB `live_rooms.current_item_id` 一致；无当前拍品时为空字符串 | HTTP 响应 + DB |
 | `online_count` | Redis 命中时使用 Redis；miss 时为 0 | HTTP 响应 + Redis |
 | `queued_count` | Redis item queue 长度；miss 时为 0 | HTTP 响应 + Redis |
 | `actions` | 与状态一致 | HTTP 响应 |
@@ -389,6 +394,7 @@ Agent 可以测试：
 - 下播接口成功。
 - DB 状态变为 `idle`。
 - Redis room state 的 `status` 更新为 `idle`。
+- DB `current_item_id` 被清空；Redis room state 存在时 `current_item_id=""`。
 - 后续商家视图 `can_start=true`、`can_end=false`。
 
 #### 失败路径
@@ -402,6 +408,7 @@ Agent 可以测试：
 #### 状态和一致性验证
 
 - HTTP 成功、DB 状态、公开详情、商家视图一致。
+- 下播后公开详情、公开列表和商家视图中的 `current_item_id` 均为空字符串。
 - Redis 缺失或滞后时，MySQL 状态仍为接口状态来源。
 
 #### 适用测试方法
@@ -444,6 +451,7 @@ Agent 可以测试：
 | --- | --- | --- |
 | `data` | 数组；元素为 `RoomDetailDTO` | HTTP 响应 |
 | `status` | 不传参数时均为 `live` | HTTP 响应 + DB |
+| `current_item_id` | 每个房间元素必须出现；与 DB `live_rooms.current_item_id` 一致；无当前拍品时为空字符串 | HTTP 响应 + DB |
 | `online_count` | Redis 命中时使用 Redis，否则 0 | HTTP 响应 + Redis |
 | `item_queue` | 数组，不能为 null | HTTP 响应 |
 
@@ -456,6 +464,7 @@ Agent 可以测试：
 
 - 不传 `status` 时只返回 `live` 房间。
 - `status=idle` 时只返回 `idle` 房间。
+- 每个返回元素都包含 `current_item_id`；无当前拍品时为空字符串。
 - Redis 命中时富化在线人数和待拍队列。
 - Redis miss 时返回 0 和空数组。
 
@@ -509,6 +518,7 @@ Agent 可以测试：
 | 字段 | 规则 | 证据 |
 | --- | --- | --- |
 | `id` / `merchant_id` / `title` / `status` | 与 DB 一致 | HTTP 响应 + DB |
+| `current_item_id` | 必须出现；与 DB `live_rooms.current_item_id` 一致；无当前拍品时为空字符串 | HTTP 响应 + DB |
 | `online_count` | Redis 命中时使用 Redis；miss 时为 0 | HTTP 响应 + Redis |
 | `item_queue` | Redis ZSET 升序成员；无数据时为空数组 | HTTP 响应 + Redis |
 
@@ -521,6 +531,7 @@ Agent 可以测试：
 #### 成功路径
 
 - 房间存在时返回详情。
+- 响应始终包含 `current_item_id` 字段；没有当前拍品时为 `""`。
 - Redis `online_count` 富化到响应。
 - `item_queue` 包含 Redis ZSET 成员，顺序为 score 升序。
 - Redis miss 时 `online_count=0`、`item_queue=[]`，接口成功。
@@ -534,6 +545,7 @@ Agent 可以测试：
 #### 状态和一致性验证
 
 - HTTP 基础字段与 DB 一致。
+- `current_item_id` 与 DB 一致，且空值时字段不能被省略。
 - `item_queue` 与 Redis ZSET 一致，且不能为 null。
 
 #### 适用测试方法
@@ -595,6 +607,7 @@ Agent 可以测试：
 - `EndRoom` 将 `live` 房间切换到 `idle`，store 状态为 `idle`。
 - `EndRoom` 对 `idle` 状态房间返回 `ErrInvalidRequest`。
 - `EndRoom` 成功后 Redis state 更新 `status="idle"`。
+- `EndRoom` 成功后 store 中 `current_item_id` 清空，Redis state 存在时 `current_item_id` 清空。
 - 非商家调用 `StartRoom`/`EndRoom` 返回未授权。
 - 非所属商家调用 `StartRoom`/`EndRoom` 返回 `ErrNotFound`。
 - Redis 写失败不影响 Service 返回成功。
@@ -616,6 +629,7 @@ Agent 可以测试：
 - `GetRoom` 从 Redis 读取 `online_count` 富化到响应。
 - `GetRoom` 从 Redis 读取 `item_queue` 富化到响应。
 - `GetRoom` Redis miss 时降级返回 `online_count=0`、`item_queue=[]`，不报错。
+- `GetRoom` / `ListRooms` / `GetMerchantRoom` 序列化时必须包含 `current_item_id` 字段，空值返回 `""`。
 - `ListRooms` 不传 status 时默认返回 `live` 状态房间。
 - `ListRooms` 传入 `status=idle` 只返回 `idle` 状态房间。
 - `GetMerchantRoom` 非商家返回未授权。
@@ -824,6 +838,48 @@ Router、Handler、DTO、Service、DAO、Model、Cache 见第 2 节。
 
 - 商品上架 HTTP 响应、Redis ZSET、房间详情 HTTP 响应。
 
+### 场景 7：房间响应暴露并维护当前拍品 ID
+
+#### 业务价值
+
+验证用户和商家能从房间列表、房间详情和商家视图稳定拿到 `current_item_id`，避免当前拍品为空时字段消失，或拍品结束后残留旧 ID。
+
+#### 关联接口 / 方法
+
+- `GET /api/v1/rooms`
+- `GET /api/v1/rooms/{room_id}`
+- `GET /api/v1/merchant/room`
+- 商品模块 `POST /api/v1/items/{item_id}/start`
+- 商品模块 `POST /api/v1/items/{item_id}/cancel`
+- `EndRoom`
+- Redis `auction:room:{room_id}:state.current_item_id`
+
+#### Given
+
+- 商家直播间已激活并开播。
+- 本批次商品已绑定该 `room_id` 并上架。
+
+#### When
+
+- 在未开始任何商品竞拍时，查询 `GET /api/v1/rooms`、`GET /api/v1/rooms/{room_id}` 和 `GET /api/v1/merchant/room`。
+- 调用商品模块 `POST /api/v1/items/{item_id}/start` 开始竞拍。
+- 再次查询房间列表、房间详情和商家视图。
+- 调用商品模块 `POST /api/v1/items/{item_id}/cancel` 或调用 `POST /api/v1/rooms/{room_id}/end`。
+- 第三次查询房间列表、房间详情和商家视图。
+
+#### Then
+
+- 未开始商品竞拍时，三个房间响应都包含 `current_item_id` 字段，值为 `""`。
+- 商品开始竞拍后，三个房间响应中的 `current_item_id` 均等于该商品 ID。
+- MySQL `live_rooms.current_item_id` 等于该商品 ID。
+- Redis room state 存在时，`current_item_id` 等于该商品 ID。
+- 商品取消或房间下播后，三个房间响应中的 `current_item_id` 均回到 `""`。
+- MySQL `live_rooms.current_item_id` 被清空；Redis room state 存在时 `current_item_id=""`。
+
+#### 证据要求
+
+- 三类 HTTP 响应、MySQL `live_rooms.current_item_id`、Redis `HGET auction:room:{room_id}:state current_item_id`、商品开始/取消或房间下播响应、清理结果。
+
 ## 13. 状态流转和一致性测试
 
 | 当前状态 | 动作 | 目标状态 | 允许 | 涉及接口 / 方法 | 一致性证据 |
@@ -834,6 +890,9 @@ Router、Handler、DTO、Service、DAO、Model、Cache 见第 2 节。
 | `idle` | end | 不变 | 否 | `POST /api/v1/rooms/{room_id}/end` / `EndRoom` | 错误响应 + DB 不变 |
 | `live` | start | 不变 | 否 | `POST /api/v1/rooms/{room_id}/start` / `StartRoom` | 错误响应 + DB 不变 |
 | `live` | end | `idle` | 是 | `POST /api/v1/rooms/{room_id}/end` / `EndRoom` | HTTP + DB + Redis |
+| `live` + 有当前拍品 | end | `idle` + `current_item_id=""` | 是 | `POST /api/v1/rooms/{room_id}/end` / `EndRoom` | HTTP + DB `current_item_id` + Redis `current_item_id` |
+| `live` + 已上架商品 | start item | `live` + `current_item_id=item_id` | 是 | 商品模块 `POST /api/v1/items/{item_id}/start` | 房间 HTTP + DB `current_item_id` + Redis `current_item_id` |
+| `live` + 当前拍品 | cancel/end item | `live` + `current_item_id=""` | 是 | 商品取消 / 过期结束 | 房间 HTTP + DB `current_item_id` + Redis `current_item_id` |
 | 其他商家房间 | start/end | 不变 | 否 | 状态动作接口 / `findMerchantRoom` | not found + DB 不变 |
 | 不存在房间 | start/end/get | 不变 | 否 | 对应接口 | not found |
 
@@ -856,8 +915,10 @@ Router、Handler、DTO、Service、DAO、Model、Cache 见第 2 节。
 
 | 副作用 | 触发动作 | 验证方式 | 清理要求 |
 | --- | --- | --- | --- |
-| Redis `auction:room:{room_id}:state` 初始化 | `StartRoom` / `POST /start` | `HGETALL` 验证 `merchant_id`、`status=live`、`online_count=0` | 删除本批次 room state |
-| Redis `auction:room:{room_id}:state` 状态更新 | `EndRoom` / `POST /end` | `HGETALL` 验证 `status=idle` | 删除本批次 room state |
+| Redis `auction:room:{room_id}:state` 初始化 | `StartRoom` / `POST /start` | `HGETALL` 验证 `merchant_id`、`status=live`、`current_item_id=""`、`online_count=0` | 删除本批次 room state |
+| Redis `auction:room:{room_id}:state` 状态更新 | `EndRoom` / `POST /end` | `HGETALL` 验证 `status=idle`、`current_item_id=""` | 删除本批次 room state |
+| Redis `auction:room:{room_id}:state.current_item_id` 写入 | 商品模块 `StartItem` / `POST /items/{item_id}/start` | `HGET current_item_id` 与 MySQL `live_rooms.current_item_id`、房间 HTTP 响应一致 | 删除本批次 room state |
+| Redis `auction:room:{room_id}:state.current_item_id` 清空 | 商品取消、商品过期结束、`EndRoom` | `HGET current_item_id` 为空字符串；MySQL 和房间 HTTP 响应同步为空 | 删除本批次 room state |
 | Redis `auction:room:{room_id}:item_queue` 读取 | `GetRoom` / `ListRooms` / `GetMerchantRoom` | 通过商品模块上架后 `ZRANGE` 与 HTTP 响应对比 | 清理本批次 item queue 或移除本批次 item member |
 | WebSocket 消息 | 不适用 | 当前房间模块没有开播/下播广播 | 如需验证推送，转到实时广播模块或跨模块流程 |
 | 第三方外部服务 | 不适用 | 房间模块当前不应调用真实第三方 | 不允许引入真实第三方依赖 |
@@ -875,6 +936,9 @@ Router、Handler、DTO、Service、DAO、Model、Cache 见第 2 节。
 | `idle` 房间重复下播成功 | 单元 / 接口 | 状态规则变更 | 错误响应 |
 | Redis miss 时 `GetRoom` 报错 | 单元 / 接口 | 降级逻辑变更 | HTTP 成功响应 |
 | `item_queue` 为 `null` | 单元 / 接口 | DTO 构造变更 | HTTP 响应 |
+| `current_item_id` 空值时被省略 | 单元 / 接口 | DTO json tag 或响应 DTO 变更 | HTTP 响应包含 `current_item_id:""` |
+| 商品开始竞拍后房间响应没有当前拍品 ID | 单元 / 场景 / 状态一致性 | 商品开始逻辑、room current item 写入或查询响应变更 | 房间 HTTP + DB + Redis |
+| 商品取消、过期结束或下播后 `current_item_id` 残留旧 ID | 单元 / 场景 / 状态一致性 | 清理逻辑变更 | 房间 HTTP + DB + Redis |
 | `ListRooms` 不传 status 返回 `idle` 房间 | 单元 / 接口 | 默认过滤变更 | HTTP 响应 + DB |
 | 公开接口要求登录 | 接口 | 路由鉴权变更 | 未登录 HTTP 响应 |
 | 激活已有房间时 title 被覆盖 | 单元 / 接口 | 幂等行为变更 | DB title |
@@ -890,6 +954,7 @@ Router、Handler、DTO、Service、DAO、Model、Cache 见第 2 节。
 | `POST /api/v1/rooms/{room_id}/end` | 是 | 是 | 是 | 是 | 是 | 是 | 是 | 是 |
 | `GET /api/v1/rooms` | 是 | 是 | 是 | 是 | 是 | 是 | 否 | 是 |
 | `GET /api/v1/rooms/{room_id}` | 是 | 是 | 是 | 是 | 是 | 是 | 否 | 是 |
+| `current_item_id` 响应字段 | 是 | 是 | 是 | 是 | 是 | 是 | 否 | 是 |
 | `LiveRoom` 字段和唯一索引 | 是 | 是 | 是 | 是 | 是 | 是 | 是 | 是 |
 | Redis room state / item queue | 是 | 是 | 是 | 是 | 是 | 是 | 是 | 是 |
 | 房间归属隔离 | 是 | 是 | 是 | 是 | 是 | 否 | 是 | 是 |
@@ -904,12 +969,14 @@ Router、Handler、DTO、Service、DAO、Model、Cache 见第 2 节。
 - 商家权限和房间归属隔离成立，非所属商家操作返回 not found，有接口响应或单元测试作为证据。
 - 状态流转只能 `idle ↔ live`，非法状态动作返回错误，有接口响应或单元测试作为证据。
 - MySQL 状态与后续查询接口一致，有 HTTP 响应和数据库记录作为证据。
+- `current_item_id` 在公开列表、公开详情和商家视图中始终出现；无当前拍品时为空字符串，有 HTTP 响应作为证据。
+- 商品开始竞拍后 `current_item_id` 在房间 HTTP 响应、MySQL 和 Redis 中一致；商品取消、过期结束或下播后同步清空，有 HTTP、DB、Redis 证据。
 - Redis miss 时 `GetRoom`、`ListRooms`、`GetMerchantRoom` 降级正常，有单元测试或接口测试作为证据。
 - `item_queue` 在公开响应中为数组，且与 Redis ZSET 一致或按降级规则为空数组。
 
 **辅助验证点（建议验证，可附说明跳过）：**
 
-- Redis state 在 `StartRoom` 后写入正确字段，在 `EndRoom` 后更新 status 字段。
+- Redis state 在 `StartRoom` 后写入正确字段，在 `EndRoom` 后更新 status 字段并清空 `current_item_id`。
 - `status_text`、`queued_count`、`actions` 派生字段与 status 一致。
 - 房间模块自动迁移成功创建或更新 `live_rooms` 表结构。
 - `ListRooms` 过滤、排序和 `GetRoom` roomID trim 行为符合预期。
@@ -920,12 +987,11 @@ Router、Handler、DTO、Service、DAO、Model、Cache 见第 2 节。
 - `ListRooms` 传入未知 status 值时，当前 DAO 直接按字符串过滤返回空列表；是否应返回参数错误？
 - `ActivateRoom` 幂等时是否应更新 title 为新传入值？当前实现不更新。
 - `StartRoom` Redis 初始化软失败时是否需要记录告警日志；当前代码静默丢弃错误。
-- `EndRoom` Redis 状态更新软失败时是否需要记录告警日志；当前代码静默丢弃错误。
+- `EndRoom` Redis 状态和 `current_item_id` 清理软失败时是否需要记录告警日志；当前代码静默丢弃错误。
 - 直播间删除场景（软删除）：当前实现无删除接口，是否需要？
 - `item_queue` 排列顺序依赖 Redis ZSET score（由商品上架时的时间戳写入），是否需要文档明确顺序语义？
 - 公开 `GET /api/v1/rooms` 接口是否需要分页？当前实现返回全量列表。
 - 并发状态动作预期是严格只有一个请求成功，还是允许幂等成功？
-- `CurrentItemID` 当前由房间模型和 Redis state 承载，但房间模块没有推进当前商品的动作；是否由后续竞拍流程负责？
 
 ## 20. 失败报告格式
 

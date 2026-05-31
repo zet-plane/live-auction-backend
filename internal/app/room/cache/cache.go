@@ -24,6 +24,7 @@ type Cache interface {
 	InitRoomState(ctx context.Context, roomID string, state RoomState) error
 	GetRoomState(ctx context.Context, roomID string) (*RoomState, bool, error)
 	UpdateRoomStatus(ctx context.Context, roomID, status string) error
+	ClearRoomCurrentItem(ctx context.Context, roomID string) error
 	GetItemQueue(ctx context.Context, roomID string) ([]string, error)
 }
 
@@ -66,6 +67,11 @@ func (c *RedisCache) GetRoomState(ctx context.Context, roomID string) (*RoomStat
 func (c *RedisCache) UpdateRoomStatus(ctx context.Context, roomID, status string) error {
 	key := fmt.Sprintf(keyRoomState, roomID)
 	return c.client.HSet(ctx, key, "status", status).Err()
+}
+
+func (c *RedisCache) ClearRoomCurrentItem(ctx context.Context, roomID string) error {
+	key := fmt.Sprintf(keyRoomState, roomID)
+	return c.client.HSet(ctx, key, "current_item_id", "").Err()
 }
 
 func (c *RedisCache) GetItemQueue(ctx context.Context, roomID string) ([]string, error) {

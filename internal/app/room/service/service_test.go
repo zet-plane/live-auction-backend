@@ -125,6 +125,13 @@ func (c *fakeCache) UpdateRoomStatus(_ context.Context, roomID, status string) e
 	return nil
 }
 
+func (c *fakeCache) ClearRoomCurrentItem(_ context.Context, roomID string) error {
+	if s, ok := c.states[roomID]; ok {
+		s.CurrentItemID = ""
+	}
+	return nil
+}
+
 func (c *fakeCache) GetItemQueue(_ context.Context, roomID string) ([]string, error) {
 	q := c.queues[roomID]
 	if q == nil {
@@ -215,6 +222,32 @@ func TestEndRoomTransitionsToIdle(t *testing.T) {
 	room, _ := store.FindRoomByID(r.ID)
 	if room.Status != model.RoomIdle {
 		t.Fatalf("expected idle, got %q", room.Status)
+	}
+}
+
+func TestEndRoomClearsCurrentItemID(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	svc := NewService(store, fc)
+	m := merchant()
+
+	r, _ := svc.ActivateRoom(context.Background(), m, dto.CreateRoomInput{Title: "My Room"})
+	_ = svc.StartRoom(context.Background(), m, r.ID)
+	room, _ := store.FindRoomByID(r.ID)
+	room.CurrentItemID = "item_123"
+	_ = store.UpdateRoom(room)
+	fc.states[r.ID].CurrentItemID = "item_123"
+
+	if err := svc.EndRoom(context.Background(), m, r.ID); err != nil {
+		t.Fatalf("EndRoom: %v", err)
+	}
+
+	room, _ = store.FindRoomByID(r.ID)
+	if room.CurrentItemID != "" {
+		t.Fatalf("expected MySQL current_item_id cleared, got %q", room.CurrentItemID)
+	}
+	if fc.states[r.ID].CurrentItemID != "" {
+		t.Fatalf("expected Redis current_item_id cleared, got %q", fc.states[r.ID].CurrentItemID)
 	}
 }
 

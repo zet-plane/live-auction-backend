@@ -23,7 +23,7 @@ type RoomDetailDTO struct {
 	MerchantID    string           `json:"merchant_id"`
 	Title         string           `json:"title"`
 	Status        model.RoomStatus `json:"status"`
-	CurrentItemID string           `json:"current_item_id,omitempty"`
+	CurrentItemID string           `json:"current_item_id"`
 	OnlineCount   int              `json:"online_count"`
 	ItemQueue     []string         `json:"item_queue"`
 	CreatedAt     time.Time        `json:"created_at"`
@@ -36,7 +36,7 @@ type MerchantRoomDTO struct {
 	Title         string           `json:"title"`
 	Status        model.RoomStatus `json:"status"`
 	StatusText    string           `json:"status_text"`
-	CurrentItemID string           `json:"current_item_id,omitempty"`
+	CurrentItemID string           `json:"current_item_id"`
 	OnlineCount   int              `json:"online_count"`
 	QueuedCount   int              `json:"queued_count"`
 	Actions       RoomActionsDTO   `json:"actions"`

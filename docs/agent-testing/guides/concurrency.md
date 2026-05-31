@@ -8,9 +8,11 @@
 
 本指南只规定并发一致性测试方法，不定义业务规则；具体业务规则、允许状态、错误码和通过标准必须来自目标 `modules/<module>.md` 或 `flows/<flow>.md`。
 
-## 计划先行和人工审核
+## 计划先行
 
-并发一致性测试默认采用“先生成计划、人工审核、再执行”的流程。agent 不能把计划写在对话里就直接开始测试；必须先把计划落到：
+并发一致性测试必须遵守 `templates/protocol.md` 的语义确认门和计划执行门。agent 必须先确认业务语义，再生成计划，经过 review 后再执行；review 未通过或未明确批准前，不得连接真实数据库或 Redis、不得创建测试数据、不得启动 runner、不得发起并发请求。
+
+并发一致性测试计划必须落到：
 
 ```text
 docs/agent-testing/concurrency/
@@ -30,48 +32,20 @@ YYYYMMDD-HHMMSS-<target>-<scenario>-plan.md
 
 计划文件只描述将要执行的并发一致性测试，不记录最终测试结果。测试完成后的报告仍写入 `docs/agent-testing/reports/`。
 
-计划文件必须包含审核状态：
+计划文件必须注明本次测试涉及的模块：
 
 ```text
-计划状态：
-- 审核状态：draft | approved | rejected | executed
-- 审核方式：none | file | chat
-- 审核人：
-- 审核时间：
-- 执行许可：未许可 | 已许可
-- 关联报告：
+涉及模块：
+- 目标模块：
+- 关联模块：
+- 关联 flow：
 ```
 
-agent 生成计划时只能写：
+涉及模块是本次并发一致性测试会读写、验证或依赖的模块范围。测试单个 module 时，目标模块写该 module，关联模块写被用作前置数据、跨模块状态或最终对账的数据来源。测试 flow 时，关联 flow 写目标流程，目标模块和关联模块写该流程中本次实际覆盖的模块。
 
-```text
-审核状态：draft
-审核方式：none
-执行许可：未许可
-```
+计划文件还必须记录计划来源、review 结果、批准方式和执行结果。环境阻塞、用户拒绝或计划废弃时，只记录未执行原因，不得把计划写成已执行。
 
-用户可以用两种方式批准执行：
-
-- 文件批准：人工把计划文件改为 `审核状态：approved` 且 `执行许可：已许可`。
-- 对话批准：用户在当前对话中明确说“执行这个计划”“可以开始测”“approved”等同义表达。
-
-如果用户通过对话批准，agent 必须先把批准记录回写到计划文件，再连接真实依赖或发起并发请求。回写内容至少包括：
-
-```text
-审核状态：approved
-审核方式：chat
-审核记录：用户在当前会话明确要求执行
-执行许可：已许可
-```
-
-执行完成后，agent 必须把计划文件更新为：
-
-```text
-审核状态：executed
-关联报告：docs/agent-testing/reports/<report-file>.md
-```
-
-如果环境阻塞、用户拒绝或计划被废弃，agent 不得把计划标记为 `executed`，只能在计划中记录未执行原因。
+并发计划同样适用 `templates/protocol.md` 的语义确认门；发现未确认业务语义时，必须先提问澄清，再写入计划。
 
 ## 读取顺序
 
@@ -154,7 +128,7 @@ docs/agent-testing/reports/README.md
 
 ## 设计并发场景
 
-agent 必须先将并发场景设计写入 `docs/agent-testing/concurrency/` 下的计划文件，并等待人工审核或对话批准。用户未批准前，agent 不得连接真实数据库或 Redis、不得创建测试数据、不得启动 runner、不得发起并发请求。
+agent 必须先确认并发场景语义，再将并发场景设计写入 `docs/agent-testing/concurrency/` 下的计划文件，并按 `templates/protocol.md` 的计划执行门完成 review。review 未通过或未明确批准前，agent 不得连接真实数据库或 Redis、不得创建测试数据、不得启动 runner、不得发起并发请求。
 
 每个并发场景必须包含 6 个部分：
 
@@ -169,6 +143,8 @@ agent 必须先将并发场景设计写入 `docs/agent-testing/concurrency/` 下
 
 执行任何并发一致性测试前，agent 必须先把上述 6 个部分作为“并发场景设计”完整写入计划文件，并在对话中输出计划路径和摘要，等待用户明确确认后才能继续执行。用户未确认前，agent 不得连接真实数据库或 Redis、不得创建测试数据、不得启动 runner、不得发起并发请求。
 
+如果上述 6 个部分中的任何一项只能写成“待确认”“可能”“需要用户决定”，则不得写入正式计划文件；agent 必须先提问澄清。确认后的计划应直接写明唯一采用的语义。
+
 如果用户修改场景设计，agent 必须先更新设计并再次等待确认。只有当用户确认后的设计仍然落在目标模块或流程契约边界内时，agent 才能继续；如果设计超出文档边界，必须先按 `guides/runner.md` 的规则征得扩展范围确认。
 
 计划一旦批准，执行范围就被锁定。执行过程中发现的新风险只能记录为“建议新增并发计划”或“跳过项”，不能直接扩大本次测试范围。
@@ -176,6 +152,7 @@ agent 必须先将并发场景设计写入 `docs/agent-testing/concurrency/` 下
 以下是格式示例，不是业务测试契约。真实场景必须从目标 `modules/<module>.md` 或 `flows/<flow>.md` 生成。
 
 ```text
+涉及模块：<target-module>, <related-module-or-flow>
 场景名称：多个 actor 同时更新同一资源状态
 竞争对象：<resource_state_key> / <resource_db_row>
 并发请求：N 个 actor 同时调用 <method> <path>

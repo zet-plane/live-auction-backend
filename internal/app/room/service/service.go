@@ -120,11 +120,15 @@ func (s *Service) EndRoom(ctx context.Context, current *usermodel.User, roomID s
 		return errorx.ErrInvalidRequest
 	}
 	room.Status = model.RoomIdle
+	room.CurrentItemID = ""
 	if err := s.store.UpdateRoom(room); err != nil {
 		return err
 	}
 	if updateErr := s.cache.UpdateRoomStatus(ctx, room.ID, "idle"); updateErr != nil {
 		_ = updateErr // soft fail
+	}
+	if clearErr := s.cache.ClearRoomCurrentItem(ctx, room.ID); clearErr != nil {
+		_ = clearErr // soft fail
 	}
 	return nil
 }

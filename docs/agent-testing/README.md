@@ -11,7 +11,7 @@
 | 所有测试执行任务 | `templates/protocol.md` -> `guides/runner.md` -> 目标 `modules/<module>.md` 或 `flows/<flow>.md` |
 | 并发一致性测试 | `templates/protocol.md` -> `guides/runner.md` -> `guides/concurrency.md` -> `guides/go-runner.md` -> 目标契约 |
 | 性能压测 | `templates/protocol.md` -> `guides/runner.md` -> `guides/performance.md` -> `guides/environment.md` -> 目标契约 |
-| subagent 编排 | `templates/protocol.md` -> `guides/runner.md` -> `guides/subagent.md` -> 目标契约 |
+| 已批准计划的 subagent 执行编排 | `templates/protocol.md` -> `guides/runner.md` -> `guides/subagent.md` -> 已批准计划 -> 目标契约 |
 | 环境准备、连接 DB/Redis、启动服务、创建测试数据 | `templates/protocol.md` -> `guides/environment.md` |
 | 使用 Go runner 采集结构化证据 | `templates/protocol.md` -> `guides/go-runner.md` |
 | 生成或补充模块测试文档 | `guides/module-generator.md` -> `templates/module.md` |
@@ -66,12 +66,14 @@ docs/agent-testing/
 ## 全局硬规则
 
 - 不要一次性读取整个目录。
-- 如果目标文档缺少关键业务规则，agent 必须先询问用户，不允许自行猜测。
+- 如果目标文档缺少关键业务规则、通过标准、并发语义或最终不变量，agent 必须先询问用户，不允许自行猜测。
+- 正式测试计划不得包含“待确认语义”或未决问题；语义必须先在对话中问清楚，再写入计划。
 - Agent 直连真实或线上等价依赖时，只能操作本次测试创建的数据或带明确测试前缀/批次 ID 的数据。
 - 执行并发一致性测试前，agent 必须先输出完整并发场景设计，并等待用户确认后才能连接真实依赖或发起并发请求。
 - 报告不得包含线上地址、凭据、密码、可复用 token 或其他敏感信息。
 - Subagent 的输出只是中间产物，最终通过、失败和风险结论必须由主 agent 复核后写入报告。
 - 多个 subagent 连接同一真实依赖时，必须使用互不重叠的批次 ID、名称前缀、幂等 key、Redis key 或实体 ID 集合，禁止相互污染测试数据。
+- Subagent 是已批准计划的执行器，不是测试计划内容；使用完成、阻塞或失败后，主 agent 必须关闭 subagent 并记录 cleanup。
 
 ## 文档类型
 

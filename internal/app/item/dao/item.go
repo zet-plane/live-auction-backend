@@ -7,6 +7,7 @@ import (
 
 	"github.com/zet-plane/live-auction-backend/internal/app/item/dto"
 	"github.com/zet-plane/live-auction-backend/internal/app/item/model"
+	roommodel "github.com/zet-plane/live-auction-backend/internal/app/room/model"
 	"github.com/zet-plane/live-auction-backend/pkg/errorx"
 	"github.com/zet-plane/live-auction-backend/pkg/page"
 	"gorm.io/gorm"
@@ -17,6 +18,8 @@ type Store interface {
 	CreateItemWithRule(item *model.AuctionItem, rule *model.AuctionRule) error
 	FindItemWithRule(itemID string) (*model.AuctionItem, *model.AuctionRule, error)
 	UpdateItemWithRule(item *model.AuctionItem, rule *model.AuctionRule) error
+	SetRoomCurrentItem(roomID, itemID string) error
+	ClearRoomCurrentItem(roomID, itemID string) error
 	DeleteItem(itemID string) error
 	ListItems(query dto.ListItemsInput) ([]model.ItemWithRule, int64, error)
 	ListOngoingItemsPastEndTime(before time.Time, limit int) ([]model.ItemWithRule, error)
@@ -71,6 +74,18 @@ func (s *GormStore) UpdateItemWithRule(item *model.AuctionItem, rule *model.Auct
 		}
 		return tx.Save(rule).Error
 	})
+}
+
+func (s *GormStore) SetRoomCurrentItem(roomID, itemID string) error {
+	return s.db.Model(&roommodel.LiveRoom{}).
+		Where("id = ?", roomID).
+		Update("current_item_id", itemID).Error
+}
+
+func (s *GormStore) ClearRoomCurrentItem(roomID, itemID string) error {
+	return s.db.Model(&roommodel.LiveRoom{}).
+		Where("id = ? AND current_item_id = ?", roomID, itemID).
+		Update("current_item_id", "").Error
 }
 
 func (s *GormStore) DeleteItem(itemID string) error {

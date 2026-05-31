@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"time"
 
@@ -53,6 +54,8 @@ type Cache interface {
 	DeleteAuctionState(ctx context.Context, itemID string) error
 	PushToRoomQueue(ctx context.Context, roomID, itemID string, score float64) error
 	RemoveFromRoomQueue(ctx context.Context, roomID, itemID string) error
+	SetRoomCurrentItem(ctx context.Context, roomID, itemID string) error
+	ClearRoomCurrentItem(ctx context.Context, roomID, itemID string) error
 	PlaceBidLua(ctx context.Context, itemID string, args BidLuaArgs) (*BidLuaResult, error)
 	GetRanking(ctx context.Context, itemID string, offset, limit int) ([]dto.BidderPrice, error)
 }
@@ -71,6 +74,10 @@ func itemStateKey(itemID string) string {
 
 func roomQueueKey(roomID string) string {
 	return "auction:room:" + roomID + ":item_queue"
+}
+
+func roomStateKey(roomID string) string {
+	return "auction:room:" + roomID + ":state"
 }
 
 func (c *RedisCache) InitAuctionState(ctx context.Context, itemID string, state AuctionState) error {
@@ -116,6 +123,24 @@ func (c *RedisCache) PushToRoomQueue(ctx context.Context, roomID, itemID string,
 
 func (c *RedisCache) RemoveFromRoomQueue(ctx context.Context, roomID, itemID string) error {
 	return c.client.ZRem(ctx, roomQueueKey(roomID), itemID).Err()
+}
+
+func (c *RedisCache) SetRoomCurrentItem(ctx context.Context, roomID, itemID string) error {
+	return c.client.HSet(ctx, roomStateKey(roomID), "current_item_id", itemID).Err()
+}
+
+func (c *RedisCache) ClearRoomCurrentItem(ctx context.Context, roomID, itemID string) error {
+	current, err := c.client.HGet(ctx, roomStateKey(roomID), "current_item_id").Result()
+	if errors.Is(err, redis.Nil) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if current != itemID {
+		return nil
+	}
+	return c.client.HSet(ctx, roomStateKey(roomID), "current_item_id", "").Err()
 }
 
 func boolToStr(b bool) string {

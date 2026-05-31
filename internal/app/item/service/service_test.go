@@ -16,16 +16,18 @@ import (
 )
 
 type fakeStore struct {
-	items     map[string]*itemmodel.AuctionItem
-	rules     map[string]*itemmodel.AuctionRule
-	updateErr error
-	bidLogs   []*itemmodel.BidLog
+	items            map[string]*itemmodel.AuctionItem
+	rules            map[string]*itemmodel.AuctionRule
+	roomCurrentItems map[string]string
+	updateErr        error
+	bidLogs          []*itemmodel.BidLog
 }
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{
-		items: map[string]*itemmodel.AuctionItem{},
-		rules: map[string]*itemmodel.AuctionRule{},
+		items:            map[string]*itemmodel.AuctionItem{},
+		rules:            map[string]*itemmodel.AuctionRule{},
+		roomCurrentItems: map[string]string{},
 	}
 }
 
@@ -64,6 +66,18 @@ func (s *fakeStore) UpdateItemWithRule(item *itemmodel.AuctionItem, rule *itemmo
 	ruleCopy := *rule
 	s.items[item.ID] = &itemCopy
 	s.rules[rule.ID] = &ruleCopy
+	return nil
+}
+
+func (s *fakeStore) SetRoomCurrentItem(roomID, itemID string) error {
+	s.roomCurrentItems[roomID] = itemID
+	return nil
+}
+
+func (s *fakeStore) ClearRoomCurrentItem(roomID, itemID string) error {
+	if s.roomCurrentItems[roomID] == itemID {
+		delete(s.roomCurrentItems, roomID)
+	}
 	return nil
 }
 
@@ -276,6 +290,7 @@ func TestPublishStartAndCancelValidateOwnerAndStatus(t *testing.T) {
 type fakeCache struct {
 	states      map[string]*itemcache.AuctionState
 	queues      map[string][]string
+	roomCurrent map[string]string
 	ranking     map[string]map[string]int64
 	bidderNames map[string]map[string]string
 	bidLuaCode  int
@@ -288,6 +303,7 @@ func newFakeCache() *fakeCache {
 	return &fakeCache{
 		states:      map[string]*itemcache.AuctionState{},
 		queues:      map[string][]string{},
+		roomCurrent: map[string]string{},
 		ranking:     map[string]map[string]int64{},
 		bidderNames: map[string]map[string]string{},
 	}
@@ -331,6 +347,18 @@ func (c *fakeCache) RemoveFromRoomQueue(_ context.Context, roomID, itemID string
 			c.queues[roomID] = append(q[:i], q[i+1:]...)
 			return nil
 		}
+	}
+	return nil
+}
+
+func (c *fakeCache) SetRoomCurrentItem(_ context.Context, roomID, itemID string) error {
+	c.roomCurrent[roomID] = itemID
+	return nil
+}
+
+func (c *fakeCache) ClearRoomCurrentItem(_ context.Context, roomID, itemID string) error {
+	if c.roomCurrent[roomID] == itemID {
+		delete(c.roomCurrent, roomID)
 	}
 	return nil
 }
@@ -539,6 +567,23 @@ func TestStartItemInitializesRedisState(t *testing.T) {
 	}
 }
 
+func TestStartItemSetsRoomCurrentItem(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	svc := NewService(store, itemdto.AuctionPolicy{}, fc, nil, nil, nil)
+	itemID := seedPublishedItem(t, svc, "merchant_1", "room_abc")
+
+	if err := svc.StartItem(context.Background(), &usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}, itemID); err != nil {
+		t.Fatalf("StartItem failed: %v", err)
+	}
+	if store.roomCurrentItems["room_abc"] != itemID {
+		t.Fatalf("expected MySQL room current item %q, got %q", itemID, store.roomCurrentItems["room_abc"])
+	}
+	if fc.roomCurrent["room_abc"] != itemID {
+		t.Fatalf("expected Redis room current item %q, got %q", itemID, fc.roomCurrent["room_abc"])
+	}
+}
+
 func TestStartItemFailsWhenRedisInitFails(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()
@@ -635,6 +680,26 @@ func TestCancelItemRemovesFromRoomQueueAndState(t *testing.T) {
 		if id == itemID {
 			t.Fatal("expected item removed from room queue")
 		}
+	}
+}
+
+func TestCancelItemClearsRoomCurrentItem(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	svc := NewService(store, itemdto.AuctionPolicy{}, fc, nil, nil, nil)
+	itemID := seedPublishedItem(t, svc, "merchant_1", "room_abc")
+	merchant := &usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}
+
+	_ = svc.StartItem(context.Background(), merchant, itemID)
+
+	if err := svc.CancelItem(context.Background(), merchant, itemID); err != nil {
+		t.Fatalf("CancelItem failed: %v", err)
+	}
+	if got := store.roomCurrentItems["room_abc"]; got != "" {
+		t.Fatalf("expected MySQL room current item cleared, got %q", got)
+	}
+	if got := fc.roomCurrent["room_abc"]; got != "" {
+		t.Fatalf("expected Redis room current item cleared, got %q", got)
 	}
 }
 

@@ -271,6 +271,12 @@ func (s *Service) StartItem(ctx context.Context, current *usermodel.User, itemID
 		}
 		return err
 	}
+	if err := s.store.SetRoomCurrentItem(item.RoomID, item.ID); err != nil {
+		return err
+	}
+	if s.cache != nil {
+		_ = s.cache.SetRoomCurrentItem(ctx, item.RoomID, item.ID)
+	}
 	if s.broadcaster != nil {
 		_ = s.broadcaster.Fanout(wsevent.RoomTopic(item.RoomID), wsevent.Event{
 			Type: dto.EventAuctionStarted,
@@ -299,9 +305,13 @@ func (s *Service) CancelItem(ctx context.Context, current *usermodel.User, itemI
 	if err := s.store.UpdateItemWithRule(item, rule); err != nil {
 		return err
 	}
+	if err := s.store.ClearRoomCurrentItem(item.RoomID, item.ID); err != nil {
+		return err
+	}
 	if s.cache != nil {
 		_ = s.cache.RemoveFromRoomQueue(ctx, item.RoomID, item.ID)
 		_ = s.cache.DeleteAuctionState(ctx, item.ID)
+		_ = s.cache.ClearRoomCurrentItem(ctx, item.RoomID, item.ID)
 	}
 	if s.broadcaster != nil {
 		_ = s.broadcaster.Fanout(wsevent.RoomTopic(item.RoomID), wsevent.Event{
@@ -409,9 +419,14 @@ func (s *Service) EndExpiredAuctions(ctx context.Context) {
 			logx.Warnw("item.EndExpiredAuctions update failed", "item_id", item.ID, "err", err)
 			continue
 		}
+		if err := s.store.ClearRoomCurrentItem(item.RoomID, item.ID); err != nil {
+			logx.Warnw("item.EndExpiredAuctions clear room current item failed", "room_id", item.RoomID, "item_id", item.ID, "err", err)
+			continue
+		}
 		endedCount++
 		if s.cache != nil {
 			_ = s.cache.DeleteAuctionState(ctx, item.ID)
+			_ = s.cache.ClearRoomCurrentItem(ctx, item.RoomID, item.ID)
 		}
 		if s.broadcaster != nil {
 			_ = s.broadcaster.Fanout(wsevent.RoomTopic(item.RoomID), wsevent.Event{

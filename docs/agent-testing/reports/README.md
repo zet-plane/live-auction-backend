@@ -52,6 +52,7 @@ YYYYMMDD-HHMMSS-<target>-<type>.md
 子 agent 结果摘要：（使用 subagent 时填写；未使用写"未使用"）
 主 agent 复核结论：（使用 subagent 时填写；未使用写"未使用"）
 冲突和处理：（使用 subagent 时填写；无冲突写"无"）
+Subagent cleanup：（使用 subagent 时填写关闭结果；未使用写"未使用"）
 并行数据隔离证明：（并行执行且连接真实依赖时填写；不适用写"不适用"）
 通过项：
 失败项：
@@ -73,6 +74,7 @@ Apifox 对齐偏差：（接口契约测试时填写；无偏差写"无"）
 - 使用 subagent 时，`执行 agent` 必须区分主 agent 和子 agent；子 agent 的输出必须作为证据或摘要记录，不能直接替代主 agent 的最终结论。
 - `主 agent 复核结论` 必须说明哪些子结论已复核、哪些仍为建议或阻塞。
 - `冲突和处理` 必须记录子 agent 结论冲突、范围冲突、证据不足或数据隔离问题，以及主 agent 的处理方式。
+- `Subagent cleanup` 必须记录每个已使用 subagent 是否已关闭；已完成、阻塞、失败或不再需要的 subagent 不得长期挂起。
 - 多个 subagent 并行连接真实数据库或 Redis 时，`并行数据隔离证明` 必须记录每个 subagent 的 batch id、数据前缀、幂等 key 前缀、Redis key 前缀或实体 ID 集合。
 
 ## 失败报告内容
@@ -188,6 +190,7 @@ subagent：
 - 子 agent 结果摘要：
 - 主 agent 复核结论：
 - 冲突和处理：
+- Subagent cleanup：
 - 并行数据隔离证明：
 - 读取文档：
 
