@@ -624,6 +624,7 @@ func (s *Service) persistSettledAuction(ctx context.Context, result itemcache.Se
 	if s.cache != nil {
 		_ = s.cache.UnscheduleAuctionEnd(ctx, item.ID)
 		_ = s.cache.RemoveFromRoomQueue(ctx, item.RoomID, item.ID)
+		_ = s.cache.ExpireAuctionState(ctx, item.ID, itemcache.FinalSnapshotTTL)
 		_ = s.cache.ClearRoomCurrentItem(ctx, item.RoomID, item.ID)
 	}
 	if s.broadcaster != nil {

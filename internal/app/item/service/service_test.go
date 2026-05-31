@@ -314,6 +314,7 @@ func TestPublishStartAndCancelValidateOwnerAndStatus(t *testing.T) {
 
 type fakeCache struct {
 	states            map[string]*itemcache.AuctionState
+	stateTTLs         map[string]time.Duration
 	ending            map[string]int64
 	queues            map[string][]string
 	roomCurrent       map[string]string
@@ -332,6 +333,7 @@ type fakeCache struct {
 func newFakeCache() *fakeCache {
 	return &fakeCache{
 		states:      map[string]*itemcache.AuctionState{},
+		stateTTLs:   map[string]time.Duration{},
 		ending:      map[string]int64{},
 		queues:      map[string][]string{},
 		roomCurrent: map[string]string{},
@@ -375,6 +377,15 @@ func (c *fakeCache) DeleteAuctionState(_ context.Context, itemID string) error {
 		return c.deleteErr
 	}
 	delete(c.states, itemID)
+	delete(c.stateTTLs, itemID)
+	return nil
+}
+
+func (c *fakeCache) ExpireAuctionState(_ context.Context, itemID string, ttl time.Duration) error {
+	if _, ok := c.states[itemID]; !ok {
+		return nil
+	}
+	c.stateTTLs[itemID] = ttl
 	return nil
 }
 
@@ -1406,6 +1417,9 @@ func TestSettleDueAuctionsMarksEndedAndKeepsSnapshot(t *testing.T) {
 	state := fc.states[itemID]
 	if state == nil || state.Status != "ended" {
 		t.Fatalf("expected ended redis snapshot, got %+v", state)
+	}
+	if got := fc.stateTTLs[itemID]; got != itemcache.FinalSnapshotTTL {
+		t.Fatalf("expected final snapshot TTL %s, got %s", itemcache.FinalSnapshotTTL, got)
 	}
 }
 

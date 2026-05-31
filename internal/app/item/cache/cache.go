@@ -64,10 +64,13 @@ type SettlementResult struct {
 	EndReason     string
 }
 
+const FinalSnapshotTTL = 24 * time.Hour
+
 type Cache interface {
 	InitAuctionState(ctx context.Context, itemID string, state AuctionState) error
 	GetAuctionState(ctx context.Context, itemID string) (*AuctionState, bool, error)
 	DeleteAuctionState(ctx context.Context, itemID string) error
+	ExpireAuctionState(ctx context.Context, itemID string, ttl time.Duration) error
 	ScheduleAuctionEnd(ctx context.Context, itemID string, endUnixMS int64) error
 	UnscheduleAuctionEnd(ctx context.Context, itemID string) error
 	ListDueAuctionEnds(ctx context.Context, nowUnixMS int64, limit int) ([]string, error)
@@ -206,6 +209,10 @@ func (c *RedisCache) GetAuctionState(ctx context.Context, itemID string) (*Aucti
 
 func (c *RedisCache) DeleteAuctionState(ctx context.Context, itemID string) error {
 	return c.client.Del(ctx, itemStateKey(itemID)).Err()
+}
+
+func (c *RedisCache) ExpireAuctionState(ctx context.Context, itemID string, ttl time.Duration) error {
+	return c.client.Expire(ctx, itemStateKey(itemID), ttl).Err()
 }
 
 func (c *RedisCache) ScheduleAuctionEnd(ctx context.Context, itemID string, endUnixMS int64) error {

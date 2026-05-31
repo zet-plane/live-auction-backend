@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	itemcache "github.com/zet-plane/live-auction-backend/internal/app/item/cache"
 	itemdto "github.com/zet-plane/live-auction-backend/internal/app/item/dto"
 	itemmodel "github.com/zet-plane/live-auction-backend/internal/app/item/model"
 	usermodel "github.com/zet-plane/live-auction-backend/internal/app/user/model"
@@ -271,6 +272,9 @@ func TestPlaceBidPriceCapEndsAuction(t *testing.T) {
 	}
 	if state.EndReason != "price_cap" {
 		t.Fatalf("expected end_reason price_cap, got %q", state.EndReason)
+	}
+	if got := fc.stateTTLs[itemID]; got != itemcache.FinalSnapshotTTL {
+		t.Fatalf("expected final snapshot TTL %s, got %s", itemcache.FinalSnapshotTTL, got)
 	}
 	if _, ok := fc.ending[itemID]; ok {
 		t.Fatal("expected auction end unscheduled from cache")

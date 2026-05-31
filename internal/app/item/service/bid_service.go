@@ -192,6 +192,7 @@ func (s *Service) PlaceBid(ctx context.Context, current *usermodel.User, itemID 
 		if s.cache != nil {
 			_ = s.cache.RemoveFromRoomQueue(ctx, item.RoomID, item.ID)
 			_ = s.cache.UnscheduleAuctionEnd(ctx, item.ID)
+			_ = s.cache.ExpireAuctionState(ctx, item.ID, itemcache.FinalSnapshotTTL)
 			_ = s.cache.ClearRoomCurrentItem(ctx, item.RoomID, item.ID)
 		}
 		status = bidStatus(luaResult, "ended")
