@@ -872,6 +872,53 @@ func TestListMerchantItemsMapsRedisSnapshotFields(t *testing.T) {
 	}
 }
 
+func TestListMerchantItemsKeepsResultEmptyForRedisOngoingSnapshot(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	now := time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC)
+	svc := NewService(store, itemdto.AuctionPolicy{}, fc, nil, nil, nil)
+	svc.now = func() time.Time { return now }
+	merchant := &usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}
+	itemID := seedPublishedItem(t, svc, "merchant_1", "room_abc")
+	_ = svc.StartItem(context.Background(), merchant, itemID)
+
+	endTime := now.Add(time.Minute)
+	fc.states[itemID] = &itemcache.AuctionState{
+		Status:           "ongoing",
+		CurrentPrice:     7000,
+		DealPrice:        7000,
+		LeaderUserID:     "user_live",
+		EndTime:          endTime,
+		EndTimeUnixMS:    endTime.UnixMilli(),
+		BidCount:         4,
+		ParticipantCount: 2,
+	}
+
+	result, err := svc.ListMerchantItems(context.Background(), merchant, itemdto.ListItemsInput{})
+	if err != nil {
+		t.Fatalf("ListMerchantItems failed: %v", err)
+	}
+	if len(result.List) != 1 {
+		t.Fatalf("expected 1 merchant item, got %d", len(result.List))
+	}
+	item := result.List[0]
+	if item.Status != itemmodel.ItemOngoing {
+		t.Fatalf("expected status ongoing from Redis, got %q", item.Status)
+	}
+	if item.Progress.LeaderUserID != "user_live" {
+		t.Fatalf("expected progress leader_user_id user_live, got %q", item.Progress.LeaderUserID)
+	}
+	if item.Progress.DealPrice != 7000 {
+		t.Fatalf("expected progress deal_price 7000, got %d", item.Progress.DealPrice)
+	}
+	if item.Result.WinnerUserID != "" {
+		t.Fatalf("expected empty result winner_user_id for ongoing Redis state, got %q", item.Result.WinnerUserID)
+	}
+	if item.Result.DealPrice != 0 {
+		t.Fatalf("expected result deal_price 0 for ongoing Redis state, got %d", item.Result.DealPrice)
+	}
+}
+
 func TestGetItemFallsBackToMySQLWhenCacheMiss(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()
