@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -23,6 +25,8 @@ type fakeStore struct {
 	setRoomCurrentErr   error
 	clearRoomCurrentErr error
 	bidLogs             []*itemmodel.BidLog
+	findMu              sync.Mutex
+	findItemCalls       map[string]int
 }
 
 func newFakeStore() *fakeStore {
@@ -30,6 +34,7 @@ func newFakeStore() *fakeStore {
 		items:            map[string]*itemmodel.AuctionItem{},
 		rules:            map[string]*itemmodel.AuctionRule{},
 		roomCurrentItems: map[string]string{},
+		findItemCalls:    map[string]int{},
 	}
 }
 
@@ -44,6 +49,10 @@ func (s *fakeStore) CreateItemWithRule(item *itemmodel.AuctionItem, rule *itemmo
 }
 
 func (s *fakeStore) FindItemWithRule(itemID string) (*itemmodel.AuctionItem, *itemmodel.AuctionRule, error) {
+	s.findMu.Lock()
+	s.findItemCalls[itemID]++
+	s.findMu.Unlock()
+
 	item, ok := s.items[itemID]
 	if !ok {
 		return nil, nil, errorx.ErrNotFound
@@ -304,17 +313,20 @@ func TestPublishStartAndCancelValidateOwnerAndStatus(t *testing.T) {
 }
 
 type fakeCache struct {
-	states      map[string]*itemcache.AuctionState
-	ending      map[string]int64
-	queues      map[string][]string
-	roomCurrent map[string]string
-	ranking     map[string]map[string]int64
-	bidderNames map[string]map[string]string
-	bidLuaCode  int
-	bidLuaErr   error
-	initErr     error
-	getStateErr error
-	deleteErr   error
+	states            map[string]*itemcache.AuctionState
+	ending            map[string]int64
+	queues            map[string][]string
+	roomCurrent       map[string]string
+	ranking           map[string]map[string]int64
+	bidderNames       map[string]map[string]string
+	listActiveCalls   atomic.Int32
+	listActiveStarted chan struct{}
+	listActiveRelease chan struct{}
+	bidLuaCode        int
+	bidLuaErr         error
+	initErr           error
+	getStateErr       error
+	deleteErr         error
 }
 
 func newFakeCache() *fakeCache {
@@ -396,6 +408,16 @@ func (c *fakeCache) ListDueAuctionEnds(_ context.Context, nowUnixMS int64, limit
 }
 
 func (c *fakeCache) ListActiveAuctionEnds(_ context.Context, limit int) ([]string, error) {
+	c.listActiveCalls.Add(1)
+	if c.listActiveStarted != nil {
+		select {
+		case c.listActiveStarted <- struct{}{}:
+		default:
+		}
+	}
+	if c.listActiveRelease != nil {
+		<-c.listActiveRelease
+	}
 	if limit <= 0 {
 		return nil, nil
 	}
@@ -940,6 +962,101 @@ func TestBroadcastTimeSyncFansOutOngoingActiveAuctions(t *testing.T) {
 	}
 	if payload.Status != "ongoing" {
 		t.Fatalf("expected status ongoing, got %q", payload.Status)
+	}
+}
+
+func TestBroadcastTimeSyncSkipsOverlappingRun(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	fb := &fakeBroadcaster{}
+	now := time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC)
+	svc := NewService(store, itemdto.AuctionPolicy{}, fc, nil, nil, fb)
+	svc.now = func() time.Time { return now }
+	merchant := &usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}
+	itemID := seedPublishedItem(t, svc, "merchant_1", "room_abc")
+	_ = svc.StartItem(context.Background(), merchant, itemID)
+
+	endTime := now.Add(45 * time.Second)
+	fc.states[itemID] = &itemcache.AuctionState{
+		Status:        "ongoing",
+		CurrentPrice:  1200,
+		DealPrice:     1200,
+		EndTime:       endTime,
+		EndTimeUnixMS: endTime.UnixMilli(),
+	}
+	fc.ending[itemID] = endTime.UnixMilli()
+	fc.listActiveStarted = make(chan struct{}, 2)
+	fc.listActiveRelease = make(chan struct{})
+
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		svc.BroadcastTimeSync(context.Background())
+	}()
+	<-fc.listActiveStarted
+
+	secondDone := make(chan struct{})
+	go func() {
+		defer close(secondDone)
+		svc.BroadcastTimeSync(context.Background())
+	}()
+
+	select {
+	case <-fc.listActiveStarted:
+		t.Fatal("expected overlapping BroadcastTimeSync call to return without listing active auctions")
+	case <-secondDone:
+	case <-time.After(50 * time.Millisecond):
+		t.Fatal("expected overlapping BroadcastTimeSync call to return quickly")
+	}
+
+	close(fc.listActiveRelease)
+	<-firstDone
+	if got := fc.listActiveCalls.Load(); got != 1 {
+		t.Fatalf("expected one active auction listing, got %d", got)
+	}
+}
+
+func TestBroadcastTimeSyncCachesRoomIDAfterFirstLookup(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	fb := &fakeBroadcaster{}
+	now := time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC)
+	svc := NewService(store, itemdto.AuctionPolicy{}, fc, nil, nil, fb)
+	svc.now = func() time.Time { return now }
+	merchant := &usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}
+	itemID := seedPublishedItem(t, svc, "merchant_1", "room_abc")
+	_ = svc.StartItem(context.Background(), merchant, itemID)
+
+	endTime := now.Add(45 * time.Second)
+	fc.states[itemID] = &itemcache.AuctionState{
+		Status:        "ongoing",
+		CurrentPrice:  1200,
+		DealPrice:     1200,
+		EndTime:       endTime,
+		EndTimeUnixMS: endTime.UnixMilli(),
+	}
+	fc.ending[itemID] = endTime.UnixMilli()
+	store.findMu.Lock()
+	store.findItemCalls = map[string]int{}
+	store.findMu.Unlock()
+
+	svc.BroadcastTimeSync(context.Background())
+	svc.BroadcastTimeSync(context.Background())
+
+	store.findMu.Lock()
+	got := store.findItemCalls[itemID]
+	store.findMu.Unlock()
+	if got != 1 {
+		t.Fatalf("expected room_id lookup cached after first broadcast, got %d store lookups", got)
+	}
+	timeSyncCount := 0
+	for _, f := range fb.fanouts {
+		if f.event.Type == itemdto.EventTimeSync {
+			timeSyncCount++
+		}
+	}
+	if timeSyncCount != 2 {
+		t.Fatalf("expected 2 time_sync fanouts, got %d", timeSyncCount)
 	}
 }
 

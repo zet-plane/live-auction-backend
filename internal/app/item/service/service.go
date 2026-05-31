@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	itemcache "github.com/zet-plane/live-auction-backend/internal/app/item/cache"
@@ -26,6 +28,9 @@ type Service struct {
 	orderSvc    *orderservice.Service
 	depositSvc  DepositChecker
 	broadcaster wsevent.Broadcaster
+
+	broadcastTimeSyncRunning atomic.Bool
+	timeSyncRoomIDs          sync.Map // itemID -> roomID
 }
 
 type DepositChecker interface {
@@ -541,6 +546,11 @@ func (s *Service) BroadcastTimeSync(ctx context.Context) {
 	if s.cache == nil || s.broadcaster == nil {
 		return
 	}
+	if !s.broadcastTimeSyncRunning.CompareAndSwap(false, true) {
+		return
+	}
+	defer s.broadcastTimeSyncRunning.Store(false)
+
 	itemIDs, err := s.cache.ListActiveAuctionEnds(ctx, 200)
 	if err != nil {
 		logx.Warnw("item.BroadcastTimeSync list active auction ends failed", "err", err)
@@ -561,12 +571,11 @@ func (s *Service) BroadcastTimeSync(ctx context.Context) {
 		if endUnixMS == 0 {
 			continue
 		}
-		item, _, findErr := s.store.FindItemWithRule(itemID)
-		if findErr != nil {
-			logx.Warnw("item.BroadcastTimeSync find item failed", "item_id", itemID, "err", findErr)
+		roomID, ok := s.timeSyncRoomID(itemID)
+		if !ok {
 			continue
 		}
-		_ = s.broadcaster.Fanout(wsevent.RoomTopic(item.RoomID), wsevent.Event{
+		_ = s.broadcaster.Fanout(wsevent.RoomTopic(roomID), wsevent.Event{
 			Type: dto.EventTimeSync,
 			Payload: dto.TimeSyncPayload{
 				ItemID:           itemID,
@@ -576,6 +585,24 @@ func (s *Service) BroadcastTimeSync(ctx context.Context) {
 			},
 		})
 	}
+}
+
+func (s *Service) timeSyncRoomID(itemID string) (string, bool) {
+	if roomID, ok := s.timeSyncRoomIDs.Load(itemID); ok {
+		if roomID, ok := roomID.(string); ok && roomID != "" {
+			return roomID, true
+		}
+	}
+	item, _, err := s.store.FindItemWithRule(itemID)
+	if err != nil {
+		logx.Warnw("item.BroadcastTimeSync find item failed", "item_id", itemID, "err", err)
+		return "", false
+	}
+	if item.RoomID == "" {
+		return "", false
+	}
+	s.timeSyncRoomIDs.Store(itemID, item.RoomID)
+	return item.RoomID, true
 }
 
 func (s *Service) persistSettledAuction(ctx context.Context, result itemcache.SettlementResult) bool {

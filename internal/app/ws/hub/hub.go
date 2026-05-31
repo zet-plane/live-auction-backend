@@ -111,7 +111,7 @@ func (h *Hub) SendToRoom(roomID string, event wsevent.Event) {
 func (h *Hub) Unicast(addr string, event wsevent.Event) error {
 	userID := strings.TrimPrefix(addr, "user:")
 	h.mu.RLock()
-	conns := h.users[userID]
+	conns := append([]*Conn(nil), h.users[userID]...)
 	h.mu.RUnlock()
 
 	for _, c := range conns {
@@ -121,19 +121,14 @@ func (h *Hub) Unicast(addr string, event wsevent.Event) error {
 }
 
 func (h *Hub) deliver(c *Conn, event wsevent.Event) {
-	select {
-	case c.send <- event:
-	default:
+	if !c.enqueue(event) {
 		h.closeConn(c)
 	}
 }
 
 func (h *Hub) closeConn(c *Conn) {
 	h.Remove(c)
-	if c.ws != nil {
-		c.ws.Close()
-	}
-	close(c.send)
+	c.close()
 }
 
 func (h *Hub) syncRedisOnJoin(roomID, userID string) {

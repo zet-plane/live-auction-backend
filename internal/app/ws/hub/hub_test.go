@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/zet-plane/live-auction-backend/pkg/wsevent"
@@ -177,4 +178,86 @@ func TestSlowConnectionIsClosedOnFullChannel(t *testing.T) {
 	if _, ok := h.rooms["room_1"]["slow_conn"]; ok {
 		t.Error("slow connection should have been removed from rooms index")
 	}
+}
+
+func TestCloseConnIsIdempotentAndClosedConnDeliveryDoesNotPanic(t *testing.T) {
+	h := NewHub(nil)
+	c := newTestConn("user_1", "room_1")
+	h.Register(c)
+
+	h.closeConn(c)
+	assertNotPanics(t, func() {
+		h.closeConn(c)
+	})
+
+	h.mu.Lock()
+	h.rooms["room_1"] = map[string]*Conn{c.id: c}
+	h.users["user_1"] = []*Conn{c}
+	h.mu.Unlock()
+
+	assertNotPanics(t, func() {
+		h.SendToRoom("room_1", wsevent.Event{Type: "after_close_room"})
+	})
+	assertNotPanics(t, func() {
+		_ = h.Unicast(wsevent.UserAddr("user_1"), wsevent.Event{Type: "after_close_user"})
+	})
+
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if _, ok := h.rooms["room_1"][c.id]; ok {
+		t.Fatal("expected closed conn removed from room index")
+	}
+	if len(h.users["user_1"]) != 0 {
+		t.Fatalf("expected closed conn removed from user index, got %d", len(h.users["user_1"]))
+	}
+}
+
+func TestConcurrentSendAndCloseDoesNotPanic(t *testing.T) {
+	h := NewHub(nil)
+	c := newTestConn("user_1", "room_1")
+	h.Register(c)
+
+	var wg sync.WaitGroup
+	panicCh := make(chan any, 64)
+	run := func(fn func()) {
+		defer wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				panicCh <- r
+			}
+		}()
+		fn()
+	}
+
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go run(func() {
+			for j := 0; j < 100; j++ {
+				h.SendToRoom("room_1", wsevent.Event{Type: "room_event"})
+				_ = h.Unicast(wsevent.UserAddr("user_1"), wsevent.Event{Type: "user_event"})
+			}
+		})
+	}
+	wg.Add(1)
+	go run(func() {
+		for i := 0; i < 100; i++ {
+			h.closeConn(c)
+		}
+	})
+
+	wg.Wait()
+	close(panicCh)
+	for p := range panicCh {
+		t.Fatalf("unexpected panic during concurrent send/close: %v", p)
+	}
+}
+
+func assertNotPanics(t *testing.T, fn func()) {
+	t.Helper()
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("unexpected panic: %v", r)
+		}
+	}()
+	fn()
 }

@@ -2,6 +2,7 @@ package hub
 
 import (
 	"encoding/json"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -15,12 +16,15 @@ const (
 )
 
 type Conn struct {
-	id     string
-	userID string
-	roomID string
-	ws     *websocket.Conn
-	send   chan wsevent.Event
-	hub    *Hub
+	id        string
+	userID    string
+	roomID    string
+	ws        *websocket.Conn
+	send      chan wsevent.Event
+	hub       *Hub
+	closeMu   sync.RWMutex
+	closeOnce sync.Once
+	closed    bool
 }
 
 type clientMessage struct {
@@ -41,8 +45,7 @@ func NewConn(id, userID, roomID string, ws *websocket.Conn, hub *Hub) *Conn {
 
 func (c *Conn) StartReadLoop() {
 	defer func() {
-		c.hub.Remove(c)
-		c.ws.Close()
+		c.hub.closeConn(c)
 	}()
 
 	c.ws.SetReadDeadline(time.Now().Add(readDeadline))
@@ -61,7 +64,7 @@ func (c *Conn) StartReadLoop() {
 
 		switch cm.Type {
 		case "ping":
-			c.send <- wsevent.Event{Type: "pong"}
+			c.enqueue(wsevent.Event{Type: "pong"})
 		case "leave_room":
 			return
 		}
@@ -69,7 +72,7 @@ func (c *Conn) StartReadLoop() {
 }
 
 func (c *Conn) StartWriteLoop() {
-	defer c.ws.Close()
+	defer c.hub.closeConn(c)
 
 	for event := range c.send {
 		c.ws.SetWriteDeadline(time.Now().Add(writeDeadline))
@@ -77,4 +80,30 @@ func (c *Conn) StartWriteLoop() {
 			return
 		}
 	}
+}
+
+func (c *Conn) enqueue(event wsevent.Event) bool {
+	c.closeMu.RLock()
+	defer c.closeMu.RUnlock()
+	if c.closed {
+		return false
+	}
+	select {
+	case c.send <- event:
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *Conn) close() {
+	c.closeOnce.Do(func() {
+		c.closeMu.Lock()
+		c.closed = true
+		close(c.send)
+		c.closeMu.Unlock()
+		if c.ws != nil {
+			_ = c.ws.Close()
+		}
+	})
 }
