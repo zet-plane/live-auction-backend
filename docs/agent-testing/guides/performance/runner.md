@@ -161,6 +161,9 @@ SUCCESS:
 HTTP_FAILURES:
 BUSINESS_FAILS:
 TIMEOUTS:
+ERROR_RATE:
+TIMEOUT_RATE:
+BUSINESS_FAILURE_RATE:
 P50:
 P95:
 P99:
@@ -168,6 +171,8 @@ MAX:
 STATUS_CODES:
 BUSINESS_CODES:
 ```
+
+P50 / P95 / P99 是延迟核心指标，但 runner 还必须输出吞吐、成功/失败/超时计数、派生失败率、状态码分布和业务码分布。只输出延迟分位不能作为压测证据。
 
 ## 清理边界
 

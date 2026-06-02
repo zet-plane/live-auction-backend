@@ -86,6 +86,8 @@ spec:
             sources:
               - configMap:
                   name: grafana-dashboard-combined
+              - configMap:
+                  name: grafana-dashboard-performance
 ---
 apiVersion: v1
 kind: Service

@@ -85,6 +85,35 @@ func TestMeterProviderUsesSubSecondDurationBuckets(t *testing.T) {
 	}
 }
 
+func TestRuntimeMetricsCollectsDBPoolStats(t *testing.T) {
+	reader := metric.NewManualReader()
+	mp := newMeterProvider(nil, reader)
+	cleanup, err := RegisterRuntimeMetrics(mp, fakeDBStatsProvider{})
+	if err != nil {
+		t.Fatalf("RegisterRuntimeMetrics returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := cleanup(); err != nil {
+			t.Fatalf("cleanup returned error: %v", err)
+		}
+	})
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("Collect returned error: %v", err)
+	}
+
+	if got := int64GaugeValue(t, rm, "db.client.connections.open"); got != 7 {
+		t.Fatalf("open connections = %d, want 7", got)
+	}
+	if got := int64GaugeValue(t, rm, "db.client.connections.idle"); got != 2 {
+		t.Fatalf("idle connections = %d, want 2", got)
+	}
+	if got := int64GaugeValue(t, rm, "db.client.connections.in_use"); got != 5 {
+		t.Fatalf("in-use connections = %d, want 5", got)
+	}
+}
+
 func histogramBounds(t *testing.T, rm metricdata.ResourceMetrics, name string) []float64 {
 	t.Helper()
 	for _, sm := range rm.ScopeMetrics {
@@ -104,4 +133,38 @@ func histogramBounds(t *testing.T, rm metricdata.ResourceMetrics, name string) [
 	}
 	t.Fatalf("metric %s not found in collected data", name)
 	return nil
+}
+
+func int64GaugeValue(t *testing.T, rm metricdata.ResourceMetrics, name string) int64 {
+	t.Helper()
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != name {
+				continue
+			}
+			data, ok := m.Data.(metricdata.Gauge[int64])
+			if !ok {
+				t.Fatalf("%s data type = %T, want Gauge[int64]", name, m.Data)
+			}
+			if len(data.DataPoints) != 1 {
+				t.Fatalf("%s datapoints = %d, want 1", name, len(data.DataPoints))
+			}
+			return data.DataPoints[0].Value
+		}
+	}
+	t.Fatalf("metric %s not found in collected data", name)
+	return 0
+}
+
+type fakeDBStatsProvider struct{}
+
+func (fakeDBStatsProvider) Stats() DBStats {
+	return DBStats{
+		OpenConnections: 7,
+		InUse:           5,
+		Idle:            2,
+		WaitCount:       11,
+		WaitDuration:    120 * time.Millisecond,
+		MaxOpen:         20,
+	}
 }

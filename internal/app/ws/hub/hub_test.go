@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/zet-plane/live-auction-backend/internal/core/observability"
 	"github.com/zet-plane/live-auction-backend/pkg/wsevent"
 )
 
@@ -245,6 +246,59 @@ func TestFanoutDeliversToRoom(t *testing.T) {
 	}
 }
 
+func TestFanoutRecordsBroadcastAndDeliveryMetrics(t *testing.T) {
+	rec := &captureWSRecorder{}
+	observability.SetDefaultRecorder(rec)
+	t.Cleanup(func() { observability.SetDefaultRecorder(nil) })
+
+	h := NewHub(nil)
+	c1 := newTestConn("user_1", "room_1")
+	c2 := newTestConn("user_2", "room_1")
+	h.Register(c1)
+	h.Register(c2)
+
+	if err := h.Fanout(wsevent.RoomTopic("room_1"), wsevent.Event{Type: "bid_success"}); err != nil {
+		t.Fatalf("Fanout error: %v", err)
+	}
+
+	if got := rec.connectionDelta(); got != 2 {
+		t.Fatalf("connection delta = %d, want 2", got)
+	}
+	broadcast := rec.lastBroadcast()
+	if broadcast.Mode != "fanout" || broadcast.Result != "success" || broadcast.Recipients != 2 {
+		t.Fatalf("broadcast metric = %+v", broadcast)
+	}
+	if got := rec.deliveryCount("success"); got != 2 {
+		t.Fatalf("success deliveries = %d, want 2", got)
+	}
+}
+
+func TestFullChannelRecordsDroppedDeliveryMetric(t *testing.T) {
+	rec := &captureWSRecorder{}
+	observability.SetDefaultRecorder(rec)
+	t.Cleanup(func() { observability.SetDefaultRecorder(nil) })
+
+	h := NewHub(nil)
+	c := &Conn{
+		id:     "slow_conn",
+		userID: "user_slow",
+		roomID: "room_1",
+		send:   make(chan wsevent.Event, 1),
+	}
+	h.Register(c)
+	c.send <- wsevent.Event{Type: "fill"}
+
+	h.SendToRoom("room_1", wsevent.Event{Type: "overflow"})
+
+	if got := rec.deliveryCount("dropped"); got != 1 {
+		t.Fatalf("dropped deliveries = %d, want 1", got)
+	}
+	broadcast := rec.lastBroadcast()
+	if broadcast.Mode != "fanout" || broadcast.Result != "dropped" || broadcast.Recipients != 0 {
+		t.Fatalf("broadcast metric = %+v", broadcast)
+	}
+}
+
 func TestSendToRoomDeliversEvent(t *testing.T) {
 	h := NewHub(nil)
 	c1 := newTestConn("user_1", "room_1")
@@ -476,4 +530,61 @@ func waitFor(t *testing.T, ok func() bool) {
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatal("condition was not met before timeout")
+}
+
+type captureWSRecorder struct {
+	observability.NoopRecorder
+	mu          sync.Mutex
+	connections []observability.WSConnectionMetric
+	broadcasts  []observability.WSBroadcastMetric
+	deliveries  []observability.WSDeliveryMetric
+}
+
+func (r *captureWSRecorder) WSConnection(_ context.Context, m observability.WSConnectionMetric) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.connections = append(r.connections, m)
+}
+
+func (r *captureWSRecorder) WSBroadcast(_ context.Context, m observability.WSBroadcastMetric) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.broadcasts = append(r.broadcasts, m)
+}
+
+func (r *captureWSRecorder) WSDelivery(_ context.Context, m observability.WSDeliveryMetric) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.deliveries = append(r.deliveries, m)
+}
+
+func (r *captureWSRecorder) connectionDelta() int64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var total int64
+	for _, m := range r.connections {
+		total += m.ActiveDelta
+	}
+	return total
+}
+
+func (r *captureWSRecorder) lastBroadcast() observability.WSBroadcastMetric {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.broadcasts) == 0 {
+		return observability.WSBroadcastMetric{}
+	}
+	return r.broadcasts[len(r.broadcasts)-1]
+}
+
+func (r *captureWSRecorder) deliveryCount(result string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var total int
+	for _, m := range r.deliveries {
+		if m.Result == result {
+			total++
+		}
+	}
+	return total
 }

@@ -15,6 +15,9 @@ type Recorder interface {
 	DBQuery(context.Context, DBQueryMetric)
 	Cron(context.Context, CronMetric)
 	Bid(context.Context, BidMetric)
+	WSConnection(context.Context, WSConnectionMetric)
+	WSBroadcast(context.Context, WSBroadcastMetric)
+	WSDelivery(context.Context, WSDeliveryMetric)
 	OrderAuctionCreate(context.Context, OrderMetric)
 }
 
@@ -51,18 +54,39 @@ type BidMetric struct {
 	Duration time.Duration
 }
 
+type WSConnectionMetric struct {
+	Action      string
+	Result      string
+	ActiveDelta int64
+}
+
+type WSBroadcastMetric struct {
+	Mode       string
+	Result     string
+	Recipients int64
+	Duration   time.Duration
+}
+
+type WSDeliveryMetric struct {
+	Result   string
+	Duration time.Duration
+}
+
 type OrderMetric struct {
 	Result string
 }
 
 type NoopRecorder struct{}
 
-func (NoopRecorder) HTTPRequest(context.Context, HTTPRequestMetric)  {}
-func (NoopRecorder) RedisLua(context.Context, RedisLuaMetric)        {}
-func (NoopRecorder) DBQuery(context.Context, DBQueryMetric)          {}
-func (NoopRecorder) Cron(context.Context, CronMetric)                {}
-func (NoopRecorder) Bid(context.Context, BidMetric)                  {}
-func (NoopRecorder) OrderAuctionCreate(context.Context, OrderMetric) {}
+func (NoopRecorder) HTTPRequest(context.Context, HTTPRequestMetric)   {}
+func (NoopRecorder) RedisLua(context.Context, RedisLuaMetric)         {}
+func (NoopRecorder) DBQuery(context.Context, DBQueryMetric)           {}
+func (NoopRecorder) Cron(context.Context, CronMetric)                 {}
+func (NoopRecorder) Bid(context.Context, BidMetric)                   {}
+func (NoopRecorder) WSConnection(context.Context, WSConnectionMetric) {}
+func (NoopRecorder) WSBroadcast(context.Context, WSBroadcastMetric)   {}
+func (NoopRecorder) WSDelivery(context.Context, WSDeliveryMetric)     {}
+func (NoopRecorder) OrderAuctionCreate(context.Context, OrderMetric)  {}
 
 var defaultRecorder Recorder = NoopRecorder{}
 
@@ -79,18 +103,25 @@ func DefaultRecorder() Recorder {
 }
 
 type OTelRecorder struct {
-	httpCount        metric.Int64Counter
-	httpDuration     metric.Float64Histogram
-	redisLuaCount    metric.Int64Counter
-	redisLuaDuration metric.Float64Histogram
-	dbCount          metric.Int64Counter
-	dbDuration       metric.Float64Histogram
-	cronCount        metric.Int64Counter
-	cronDuration     metric.Float64Histogram
-	bidCount         metric.Int64Counter
-	bidAmount        metric.Int64Histogram
-	bidDuration      metric.Float64Histogram
-	orderCount       metric.Int64Counter
+	httpCount           metric.Int64Counter
+	httpDuration        metric.Float64Histogram
+	redisLuaCount       metric.Int64Counter
+	redisLuaDuration    metric.Float64Histogram
+	dbCount             metric.Int64Counter
+	dbDuration          metric.Float64Histogram
+	cronCount           metric.Int64Counter
+	cronDuration        metric.Float64Histogram
+	bidCount            metric.Int64Counter
+	bidAmount           metric.Int64Histogram
+	bidDuration         metric.Float64Histogram
+	wsConnectionCount   metric.Int64Counter
+	wsConnectionActive  metric.Int64UpDownCounter
+	wsBroadcastCount    metric.Int64Counter
+	wsBroadcastTargets  metric.Int64Histogram
+	wsBroadcastDuration metric.Float64Histogram
+	wsDeliveryCount     metric.Int64Counter
+	wsDeliveryDuration  metric.Float64Histogram
+	orderCount          metric.Int64Counter
 }
 
 func NewRecorder() (*OTelRecorder, error) {
@@ -139,23 +170,58 @@ func NewRecorder() (*OTelRecorder, error) {
 	if err != nil {
 		return nil, err
 	}
+	wsConnectionCount, err := meter.Int64Counter("ws.connection.count")
+	if err != nil {
+		return nil, err
+	}
+	wsConnectionActive, err := meter.Int64UpDownCounter("ws.connection.active")
+	if err != nil {
+		return nil, err
+	}
+	wsBroadcastCount, err := meter.Int64Counter("ws.broadcast.count")
+	if err != nil {
+		return nil, err
+	}
+	wsBroadcastTargets, err := meter.Int64Histogram("ws.broadcast.recipients")
+	if err != nil {
+		return nil, err
+	}
+	wsBroadcastDuration, err := meter.Float64Histogram("ws.broadcast.duration")
+	if err != nil {
+		return nil, err
+	}
+	wsDeliveryCount, err := meter.Int64Counter("ws.delivery.count")
+	if err != nil {
+		return nil, err
+	}
+	wsDeliveryDuration, err := meter.Float64Histogram("ws.delivery.duration")
+	if err != nil {
+		return nil, err
+	}
 	orderCount, err := meter.Int64Counter("order.auction_create.count")
 	if err != nil {
 		return nil, err
 	}
 	return &OTelRecorder{
-		httpCount:        httpCount,
-		httpDuration:     httpDuration,
-		redisLuaCount:    redisLuaCount,
-		redisLuaDuration: redisLuaDuration,
-		dbCount:          dbCount,
-		dbDuration:       dbDuration,
-		cronCount:        cronCount,
-		cronDuration:     cronDuration,
-		bidCount:         bidCount,
-		bidAmount:        bidAmount,
-		bidDuration:      bidDuration,
-		orderCount:       orderCount,
+		httpCount:           httpCount,
+		httpDuration:        httpDuration,
+		redisLuaCount:       redisLuaCount,
+		redisLuaDuration:    redisLuaDuration,
+		dbCount:             dbCount,
+		dbDuration:          dbDuration,
+		cronCount:           cronCount,
+		cronDuration:        cronDuration,
+		bidCount:            bidCount,
+		bidAmount:           bidAmount,
+		bidDuration:         bidDuration,
+		wsConnectionCount:   wsConnectionCount,
+		wsConnectionActive:  wsConnectionActive,
+		wsBroadcastCount:    wsBroadcastCount,
+		wsBroadcastTargets:  wsBroadcastTargets,
+		wsBroadcastDuration: wsBroadcastDuration,
+		wsDeliveryCount:     wsDeliveryCount,
+		wsDeliveryDuration:  wsDeliveryDuration,
+		orderCount:          orderCount,
 	}, nil
 }
 
@@ -197,6 +263,33 @@ func (r *OTelRecorder) Bid(ctx context.Context, m BidMetric) {
 	r.bidCount.Add(ctx, 1, opts)
 	r.bidAmount.Record(ctx, m.Amount, opts)
 	r.bidDuration.Record(ctx, m.Duration.Seconds(), opts)
+}
+
+func (r *OTelRecorder) WSConnection(ctx context.Context, m WSConnectionMetric) {
+	opts := metric.WithAttributes(
+		attribute.String("action", SafeReason(m.Action)),
+		attribute.String("result", SafeReason(m.Result)),
+	)
+	r.wsConnectionCount.Add(ctx, 1, opts)
+	if m.ActiveDelta != 0 {
+		r.wsConnectionActive.Add(ctx, m.ActiveDelta, metric.WithAttributes(attribute.String("result", SafeReason(m.Result))))
+	}
+}
+
+func (r *OTelRecorder) WSBroadcast(ctx context.Context, m WSBroadcastMetric) {
+	opts := metric.WithAttributes(
+		attribute.String("mode", SafeReason(m.Mode)),
+		attribute.String("result", SafeReason(m.Result)),
+	)
+	r.wsBroadcastCount.Add(ctx, 1, opts)
+	r.wsBroadcastTargets.Record(ctx, m.Recipients, opts)
+	r.wsBroadcastDuration.Record(ctx, m.Duration.Seconds(), opts)
+}
+
+func (r *OTelRecorder) WSDelivery(ctx context.Context, m WSDeliveryMetric) {
+	opts := metric.WithAttributes(attribute.String("result", SafeReason(m.Result)))
+	r.wsDeliveryCount.Add(ctx, 1, opts)
+	r.wsDeliveryDuration.Record(ctx, m.Duration.Seconds(), opts)
 }
 
 func (r *OTelRecorder) OrderAuctionCreate(ctx context.Context, m OrderMetric) {

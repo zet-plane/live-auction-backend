@@ -10,7 +10,7 @@
 | --- | --- |
 | 所有测试执行任务 | `templates/protocol.md` -> `guides/runner.md` -> 目标 `modules/<module>.md` 或 `flows/<flow>.md` |
 | 并发一致性测试 | `templates/protocol.md` -> `guides/runner.md` -> `guides/concurrency.md` -> `guides/go-runner.md` -> 目标契约 |
-| 性能压测 | `templates/protocol.md` -> `guides/runner.md` -> `guides/performance/README.md` -> `guides/performance/types.md` -> `guides/performance/online.md` -> `guides/performance/runner.md` -> `guides/environment.md` -> `guides/performance/scenarios.md` -> 目标契约 |
+| 性能压测 | `templates/protocol.md` -> `guides/runner.md` -> `guides/performance/README.md` -> `guides/performance/types.md` -> `guides/performance/online.md` -> `guides/performance/runner.md` -> `guides/environment.md` -> 目标契约 |
 | 已批准计划的 subagent 执行编排 | `templates/protocol.md` -> `guides/runner.md` -> `guides/subagent.md` -> 已批准计划 -> 目标契约 |
 | 环境准备、连接 DB/Redis、启动服务、创建测试数据 | `templates/protocol.md` -> `guides/environment.md` |
 | 使用 Go runner 采集结构化证据 | `templates/protocol.md` -> `guides/go-runner.md` |
@@ -33,7 +33,6 @@ docs/agent-testing/
 │   │   ├── online.md
 │   │   ├── runner.md
 │   │   ├── subagent.md
-│   │   ├── scenarios.md
 │   │   └── performance-runner.go
 │   ├── go-runner.md
 │   └── module-generator.md

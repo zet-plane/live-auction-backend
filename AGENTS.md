@@ -23,6 +23,12 @@ rtk go test ./...
 rtk go run main.go server -c config.yaml
 ```
 
+## Project-Local Skills
+
+- For online server, k3s, deployment webhook, mihomo, production manifest, ingress, TLS, or observability tasks, first apply `skills/live-auction-online-ops/SKILL.md`.
+- For testing tasks, first apply `skills/agent-testing-gate/SKILL.md`.
+- These skills are repository-local. Do not assume they apply outside `live-auction-backend`.
+
 ## Project Shape
 
 This is a Go backend for live-auction e-commerce. The core domain is real-time auctioning of high-value non-standard goods.

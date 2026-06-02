@@ -15,3 +15,10 @@ resources:
   - 10-grafana.yaml
   - 11-app.yaml
   - 12-ingress.yaml
+configMapGenerator:
+  - name: grafana-dashboard-performance
+    namespace: live-auction
+    files:
+      - performance-dashboard.json=dashboards/performance-dashboard.json
+generatorOptions:
+  disableNameSuffixHash: true

@@ -4,8 +4,10 @@ import (
 	"context"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/zet-plane/live-auction-backend/internal/core/observability"
 	"github.com/zet-plane/live-auction-backend/pkg/logx"
 	"github.com/zet-plane/live-auction-backend/pkg/wsevent"
 )
@@ -64,6 +66,19 @@ func (h *Hub) Register(c *Conn) {
 	h.users[c.userID] = append(h.users[c.userID], c)
 	h.mu.Unlock()
 
+	observability.DefaultRecorder().WSConnection(context.Background(), observability.WSConnectionMetric{
+		Action:      "register",
+		Result:      "success",
+		ActiveDelta: 1,
+	})
+	for range replaced {
+		observability.DefaultRecorder().WSConnection(context.Background(), observability.WSConnectionMetric{
+			Action:      "replace",
+			Result:      "success",
+			ActiveDelta: -1,
+		})
+	}
+
 	for _, old := range replaced {
 		old.close()
 	}
@@ -103,6 +118,13 @@ func (h *Hub) Remove(c *Conn) {
 	if removed && h.presence != nil {
 		go h.syncPresenceOnLeave(c.roomID, c.userID)
 	}
+	if removed {
+		observability.DefaultRecorder().WSConnection(context.Background(), observability.WSConnectionMetric{
+			Action:      "remove",
+			Result:      "success",
+			ActiveDelta: -1,
+		})
+	}
 }
 
 func (h *Hub) removeUserConnLocked(c *Conn) {
@@ -127,6 +149,7 @@ func (h *Hub) Fanout(topic string, event wsevent.Event) error {
 }
 
 func (h *Hub) SendToRoom(roomID string, event wsevent.Event) {
+	start := time.Now()
 	h.mu.RLock()
 	room := h.rooms[roomID]
 	conns := make([]*Conn, 0, len(room))
@@ -135,27 +158,71 @@ func (h *Hub) SendToRoom(roomID string, event wsevent.Event) {
 	}
 	h.mu.RUnlock()
 
+	var delivered int64
+	var dropped int64
 	for _, c := range conns {
-		h.deliver(c, event)
+		if h.deliver(c, event) {
+			delivered++
+		} else {
+			dropped++
+		}
 	}
+	result := "success"
+	if dropped > 0 {
+		result = "dropped"
+	}
+	observability.DefaultRecorder().WSBroadcast(context.Background(), observability.WSBroadcastMetric{
+		Mode:       "fanout",
+		Result:     result,
+		Recipients: delivered,
+		Duration:   time.Since(start),
+	})
 }
 
 func (h *Hub) Unicast(addr string, event wsevent.Event) error {
+	start := time.Now()
 	userID := strings.TrimPrefix(addr, "user:")
 	h.mu.RLock()
 	conns := append([]*Conn(nil), h.users[userID]...)
 	h.mu.RUnlock()
 
+	var delivered int64
+	var dropped int64
 	for _, c := range conns {
-		h.deliver(c, event)
+		if h.deliver(c, event) {
+			delivered++
+		} else {
+			dropped++
+		}
 	}
+	result := "success"
+	if dropped > 0 {
+		result = "dropped"
+	}
+	observability.DefaultRecorder().WSBroadcast(context.Background(), observability.WSBroadcastMetric{
+		Mode:       "unicast",
+		Result:     result,
+		Recipients: delivered,
+		Duration:   time.Since(start),
+	})
 	return nil
 }
 
-func (h *Hub) deliver(c *Conn, event wsevent.Event) {
+func (h *Hub) deliver(c *Conn, event wsevent.Event) bool {
+	start := time.Now()
 	if !c.enqueue(event) {
 		h.closeConn(c)
+		observability.DefaultRecorder().WSDelivery(context.Background(), observability.WSDeliveryMetric{
+			Result:   "dropped",
+			Duration: time.Since(start),
+		})
+		return false
 	}
+	observability.DefaultRecorder().WSDelivery(context.Background(), observability.WSDeliveryMetric{
+		Result:   "success",
+		Duration: time.Since(start),
+	})
+	return true
 }
 
 func (h *Hub) closeConn(c *Conn) {

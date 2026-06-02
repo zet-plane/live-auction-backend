@@ -25,6 +25,7 @@ import (
 	"github.com/zet-plane/live-auction-backend/internal/middleware/response"
 	"github.com/zet-plane/live-auction-backend/internal/middleware/web"
 	"github.com/zet-plane/live-auction-backend/pkg/logx"
+	"go.opentelemetry.io/otel"
 	"gorm.io/gorm"
 )
 
@@ -76,6 +77,20 @@ var StartCmd = &cobra.Command{
 		})
 		if err != nil {
 			logx.Fatalf("failed to connect database: %v", err)
+		}
+		sqlDB, err := db.DB()
+		if err != nil {
+			logx.Fatalf("failed to access database pool: %v", err)
+		}
+		cleanupRuntimeMetrics, err := observability.RegisterRuntimeMetrics(otel.GetMeterProvider(), observability.SQLDBStatsProvider{DB: sqlDB})
+		if err != nil {
+			logx.Errorf("runtime metrics setup failed: %v", err)
+		} else {
+			defer func() {
+				if err := cleanupRuntimeMetrics(); err != nil {
+					logx.Errorf("runtime metrics cleanup failed: %v", err)
+				}
+			}()
 		}
 
 		rdb, err := cache.Open(cache.Config{

@@ -402,6 +402,9 @@ func printStageSummary(s StageSummary) {
 	fmt.Printf("  HTTP_FAILURES: %d\n", s.HTTPFailures)
 	fmt.Printf("  BUSINESS_FAILS: %d\n", s.BusinessFails)
 	fmt.Printf("  TIMEOUTS: %d\n", s.Timeouts)
+	fmt.Printf("  ERROR_RATE: %.4f\n", ratio(s.HTTPFailures+s.BusinessFails, s.Total))
+	fmt.Printf("  TIMEOUT_RATE: %.4f\n", ratio(s.Timeouts, s.Total))
+	fmt.Printf("  BUSINESS_FAILURE_RATE: %.4f\n", ratio(s.BusinessFails, s.Total))
 	fmt.Printf("  P50: %s\n", s.P50)
 	fmt.Printf("  P95: %s\n", s.P95)
 	fmt.Printf("  P99: %s\n", s.P99)
@@ -431,6 +434,9 @@ func printSummary(cfg Config, summaries []StageSummary) {
 	fmt.Printf("  HTTP_FAILURES: %d\n", httpFailures)
 	fmt.Printf("  BUSINESS_FAILS: %d\n", businessFails)
 	fmt.Printf("  TIMEOUTS: %d\n", timeouts)
+	fmt.Printf("  ERROR_RATE: %.4f\n", ratio(httpFailures+businessFails, total))
+	fmt.Printf("  TIMEOUT_RATE: %.4f\n", ratio(timeouts, total))
+	fmt.Printf("  BUSINESS_FAILURE_RATE: %.4f\n", ratio(businessFails, total))
 	fmt.Printf("  RUNNER_CODE_RETAINED: true\n")
 }
 
@@ -516,6 +522,13 @@ func jsonLine(v any) string {
 		return "{}"
 	}
 	return string(b)
+}
+
+func ratio(part, total int64) float64 {
+	if total == 0 {
+		return 0
+	}
+	return float64(part) / float64(total)
 }
 
 func present(v string) string {

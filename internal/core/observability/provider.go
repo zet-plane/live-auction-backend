@@ -116,6 +116,8 @@ func durationHistogramViews() []metric.View {
 		"auction.place_bid.lua.duration",
 		"cron.job.duration",
 		"auction.bid.duration",
+		"ws.broadcast.duration",
+		"ws.delivery.duration",
 	}
 	views := make([]metric.View, 0, len(names))
 	for _, name := range names {

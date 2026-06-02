@@ -1,6 +1,6 @@
 # 性能压测指南
 
-本指南是性能压测入口。它负责定义读取顺序、执行路线和结论门槛；类型定义、线上闭环、subagent 编排、runner 落地和场景矩阵分别由专项文档承载。
+本指南是性能压测入口。它负责定义读取顺序、执行路线和结论门槛；类型定义、线上闭环、subagent 编排和 runner 落地分别由专项文档承载。
 
 通用计划字段、依赖授权、数据隔离、证据、报告、清理、敏感信息和失败输出规则见 `docs/agent-testing/templates/protocol.md`。性能压测不能替代并发一致性测试；并发出价唯一性、幂等和最终状态不变量见 `docs/agent-testing/guides/concurrency.md`。
 
@@ -17,7 +17,6 @@ docs/agent-testing/guides/performance/types.md
 docs/agent-testing/guides/performance/online.md
 docs/agent-testing/guides/performance/runner.md
 docs/agent-testing/guides/environment.md
-docs/agent-testing/guides/performance/scenarios.md
 docs/agent-testing/modules/<module>.md 或 docs/agent-testing/flows/<flow>.md
 ```
 
@@ -43,7 +42,6 @@ docs/agent-testing/reports/README.md
 | `performance/online.md` | 线上受控压测闭环、port-forward 模式、授权和判停 |
 | `performance/runner.md` | performance runner 代码落地、运行、STOP 文件和输出块 |
 | `performance/subagent.md` | 主 agent 和 subagent 的角色拆分、状态机和权限边界 |
-| `performance/scenarios.md` | 出价、WebSocket、房间和商品的推荐压测场景 |
 
 ## 适用范围
 
@@ -67,6 +65,7 @@ docs/agent-testing/reports/README.md
 - 正式性能压测必须声明 `PerformanceTestPlan`，字段见 `performance/types.md`。
 - 正式性能压测应使用 `performance/performance-runner.go` 落地可复跑代码，规则见 `performance/runner.md`。
 - 线上或线上等价压测必须遵守 `performance/online.md` 的授权门、就绪门、判停门和收尾门。
+- 线上或线上等价压测必须先明确被测目标并确认线上服务入口可达；入口不通时停止在环境阻塞，不得继续发压。
 - 计划批准后才能创建线上测试数据、连接线上 Redis / MySQL、发起线上 HTTP / WebSocket 请求或启动压测工具。
 - 压测代码保留作为证据资产；线上测试数据必须按 `batch_id` 清理或记录未清理原因。
 - 使用 `kubectl port-forward` 压线上服务时，只能形成 `single_source_online` 级别结论，不得单独作为线上峰值容量结论。
@@ -74,17 +73,18 @@ docs/agent-testing/reports/README.md
 
 ## 执行路线
 
-1. 读取目标模块或流程契约，确认业务规则、状态不变量和通过标准。
-2. 按 `performance/types.md` 生成 `PerformanceTestPlan`。
-3. 按 `performance/online.md` 确认环境、授权、命令范围、停止条件和人工旁路监控。
-4. 按 `performance/runner.md` 落地 runner 代码到 `docs/agent-testing/performance-runs/<batch_id>/`。
-5. 按 `environment.md` 做真实依赖和服务可达性检查。
-6. 执行 smoke，证明脚本、认证、数据、监控和对账没有误打非测试数据。
-7. 按计划执行 step load、peak hold 和可选 soak。
-8. 每档采集 runner 输出、Prometheus / 日志 / `kubectl` 摘要和业务对账。
-9. 触发停止条件时立即进入 stopping -> cleanup -> reported。
-10. 清理本批次测试数据，保留 runner 代码和脱敏证据。
-11. 按 `reports/README.md` 写报告。
+1. 读取目标模块或流程契约，确认要测试的模块、流程、接口或 WebSocket 入口，以及业务规则、状态不变量和通过标准。
+2. 按 `performance/online.md` 和 `environment.md` 确认线上服务入口、授权范围和只读可达性探测方式。
+3. 如果线上服务入口不可达，停止在环境阻塞，不创建测试数据、不落地 runner、不启动压测。
+4. 按 `performance/types.md` 生成 `PerformanceTestPlan`。
+5. 按 `performance/online.md` 确认命令范围、停止条件和人工旁路监控。
+6. 按 `performance/runner.md` 落地 runner 代码到 `docs/agent-testing/performance-runs/<batch_id>/`。
+7. 执行 smoke，证明脚本、认证、数据、监控和对账没有误打非测试数据。
+8. 按计划执行 step load、peak hold 和可选 soak。
+9. 每档采集 runner 输出、Prometheus / 日志 / `kubectl` 摘要和业务对账。
+10. 触发停止条件时立即进入 stopping -> cleanup -> reported。
+11. 清理本批次测试数据，保留 runner 代码和脱敏证据。
+12. 按 `reports/README.md` 写报告。
 
 ## 压测计划字段
 
@@ -92,6 +92,9 @@ docs/agent-testing/reports/README.md
 
 ```text
 PerformanceEnvironment：
+被测目标：
+线上入口：
+服务可达性探测：
 LoadSource：
 LoadModel：
 Thresholds：
@@ -114,12 +117,14 @@ runner 代码路径：
 ```text
 压测目标：
 压测环境：
+线上入口可达性：
 压测源：
 压测模型：
 通过阈值：
 压测数据批次：
 runner 代码路径：
 每档压测结果：
+最低统计指标：
 资源观测：
 日志观测：
 瓶颈分析：
@@ -133,9 +138,11 @@ runner 清理结果：
 
 每档压测结果建议使用表格：
 
-| 阶段 | 时间窗口 | 并发 / QPS 目标 | 实际 QPS | P95 | P99 | 错误率 | 业务错误码 | CPU | MySQL 摘要 | Redis 摘要 | 对账 | 结论 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| smoke |  | 10 QPS |  |  |  |  |  |  |  |  |  |  |
+| 阶段 | 时间窗口 | 目标 QPS | 实际 QPS | 并发 | 总数 | 成功 | HTTP 失败率 | 业务失败率 | 超时率 | P50 | P95 | P99 | 状态码 | 业务码 | CPU | MySQL 摘要 | Redis 摘要 | 对账 | 结论 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| smoke |  | 10 |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+
+最低统计指标包括：目标 QPS、实际 QPS、并发、总请求数、成功数、HTTP 失败数、业务失败数、超时数、错误率、超时率、业务失败率、P50、P95、P99、最大延迟、HTTP 状态码分布和业务码分布。P50 / P95 / P99 是必要指标，但不足以单独支撑压测结论。
 
 ## 通过标准
 

@@ -81,8 +81,10 @@ LoadModel:
 
 ```text
 Thresholds:
+  p50:
   p95:
   p99:
+  actual_qps:
   error_rate:
   timeout_rate:
   business_failure_rate:
@@ -100,6 +102,49 @@ StopCondition:
 ```
 
 停止条件优先级高于压测目标。触发停止条件后，agent 不得继续加压。
+
+## 最低统计指标
+
+性能压测不能只统计 P50 / P95 / P99。延迟分位只能说明“有多慢”，不能说明“是否打到目标压力”“失败是否被隐藏”或“瓶颈在哪里”。
+
+每个压测阶段至少统计：
+
+```text
+target_qps:
+actual_qps:
+concurrency:
+total:
+success:
+http_failures:
+business_failures:
+timeouts:
+error_rate:
+timeout_rate:
+business_failure_rate:
+p50:
+p95:
+p99:
+max:
+status_codes:
+business_codes:
+```
+
+线上或线上等价压测还必须采集资源和依赖观测：
+
+```text
+app_cpu:
+app_memory:
+gc:
+goroutines:
+pod_restart:
+panic_or_oom:
+mysql_summary:
+redis_summary:
+load_source_cpu:
+load_source_network:
+```
+
+业务链路压测还必须执行抽样对账。没有业务对账时，不能只凭延迟分位和 HTTP 状态码写 `passed`。
 
 ## ObservabilityPlan
 

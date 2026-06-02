@@ -1,0 +1,18 @@
+[
+  {
+    "op": "replace",
+    "path": "/spec/template/spec/volumes/3/projected/sources",
+    "value": [
+      {
+        "configMap": {
+          "name": "grafana-dashboard-combined"
+        }
+      },
+      {
+        "configMap": {
+          "name": "grafana-dashboard-performance"
+        }
+      }
+    ]
+  }
+]
