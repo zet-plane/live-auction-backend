@@ -63,7 +63,25 @@ func (s *GormStore) FindUserByID(id string) (*model.User, error) {
 }
 
 func (s *GormStore) UpdateUser(user *model.User) error {
-	return s.db.Save(user).Error
+	result := s.db.Model(&model.User{}).
+		Where("id = ?", user.ID).
+		Updates(userProfileUpdateValues(user))
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func userProfileUpdateValues(user *model.User) map[string]any {
+	return map[string]any{
+		"name":       user.Name,
+		"avatar_url": user.AvatarURL,
+		"motto":      user.Motto,
+		"identity":   user.Identity,
+	}
 }
 
 func (s *GormStore) DeleteUser(id string) error {
