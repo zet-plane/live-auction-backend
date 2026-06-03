@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -491,6 +492,7 @@ func TestGetRankingPagination(t *testing.T) {
 }
 
 type fakeBroadcaster struct {
+	mu       sync.Mutex
 	fanouts  []fakeFanout
 	unicasts []fakeUnicast
 }
@@ -504,11 +506,53 @@ type fakeUnicast struct {
 }
 
 func (f *fakeBroadcaster) Fanout(topic string, event wsevent.Event) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.fanouts = append(f.fanouts, fakeFanout{topic, event})
 	return nil
 }
 func (f *fakeBroadcaster) Unicast(addr string, event wsevent.Event) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.unicasts = append(f.unicasts, fakeUnicast{addr, event})
+	return nil
+}
+
+func (f *fakeBroadcaster) fanoutSnapshot() []fakeFanout {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]fakeFanout(nil), f.fanouts...)
+}
+
+func (f *fakeBroadcaster) unicastSnapshot() []fakeUnicast {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]fakeUnicast(nil), f.unicasts...)
+}
+
+func (f *fakeBroadcaster) resetUnicasts() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.unicasts = nil
+}
+
+func waitForBidFanouts(t *testing.T, fb *fakeBroadcaster, want int) []fakeFanout {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		fanouts := fb.fanoutSnapshot()
+		count := 0
+		for _, f := range fanouts {
+			if f.event.Type == itemdto.EventBidSuccess {
+				count++
+			}
+		}
+		if count >= want {
+			return fanouts
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("expected at least %d bid_success fanouts, got %v", want, fb.fanoutSnapshot())
 	return nil
 }
 
@@ -517,7 +561,10 @@ func TestPlaceBidBroadcastsBidSuccess(t *testing.T) {
 	fc := newFakeCache()
 	fb := &fakeBroadcaster{}
 	svc := NewService(store, testPolicy, fc, nil, nil, fb)
-	endTime := time.Now().Add(5 * time.Minute)
+	svc.bidBroadcastDelay = time.Millisecond
+	now := time.Date(2026, 6, 3, 16, 0, 0, 0, time.UTC)
+	svc.now = func() time.Time { return now }
+	endTime := now.Add(5 * time.Minute)
 	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 0, endTime)
 
 	_, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
@@ -527,8 +574,18 @@ func TestPlaceBidBroadcastsBidSuccess(t *testing.T) {
 		t.Fatalf("PlaceBid failed: %v", err)
 	}
 	found := false
-	for _, f := range fb.fanouts {
+	for _, f := range waitForBidFanouts(t, fb, 1) {
 		if f.event.Type == itemdto.EventBidSuccess {
+			payload, ok := f.event.Payload.(itemdto.BidSuccessPayload)
+			if !ok {
+				t.Fatalf("expected BidSuccessPayload, got %T", f.event.Payload)
+			}
+			if payload.ServerTimeUnixMS != now.UnixMilli() {
+				t.Fatalf("expected server_time_unix_ms %d, got %d", now.UnixMilli(), payload.ServerTimeUnixMS)
+			}
+			if payload.EndTimeUnixMS != endTime.UnixMilli() {
+				t.Fatalf("expected end_time_unix_ms %d, got %d", endTime.UnixMilli(), payload.EndTimeUnixMS)
+			}
 			found = true
 		}
 	}
@@ -549,7 +606,7 @@ func TestPlaceBidBroadcastsUserOutbid(t *testing.T) {
 	user2 := &usermodel.User{ID: "user_2", Name: "Bob", Identity: usermodel.IdentityUser}
 
 	_, _ = svc.PlaceBid(context.Background(), user1, itemID, itemdto.PlaceBidInput{Price: 100, IdempotencyKey: "k1", UserName: "Alice"})
-	fb.unicasts = nil
+	fb.resetUnicasts()
 
 	_, err := svc.PlaceBid(context.Background(), user2, itemID, itemdto.PlaceBidInput{Price: 200, IdempotencyKey: "k2", UserName: "Bob"})
 	if err != nil {
@@ -557,12 +614,55 @@ func TestPlaceBidBroadcastsUserOutbid(t *testing.T) {
 	}
 
 	found := false
-	for _, u := range fb.unicasts {
+	for _, u := range fb.unicastSnapshot() {
 		if u.event.Type == itemdto.EventUserOutbid && u.addr == wsevent.UserAddr("user_1") {
 			found = true
 		}
 	}
 	if !found {
 		t.Errorf("expected user_outbid unicast to user_1, got: %v", fb.unicasts)
+	}
+}
+
+func TestPlaceBidCoalescesBidSuccessFanout(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	fb := &fakeBroadcaster{}
+	svc := NewService(store, testPolicy, fc, nil, nil, fb)
+	svc.bidBroadcastDelay = 10 * time.Millisecond
+	now := time.Date(2026, 6, 3, 16, 5, 0, 0, time.UTC)
+	svc.now = func() time.Time { return now }
+	endTime := now.Add(5 * time.Minute)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 0, endTime)
+
+	for i, price := range []int64{100, 200, 300} {
+		user := &usermodel.User{ID: fmt.Sprintf("user_%d", i+1), Name: fmt.Sprintf("User%d", i+1), Identity: usermodel.IdentityUser}
+		_, err := svc.PlaceBid(context.Background(), user, itemID, itemdto.PlaceBidInput{
+			Price: price, IdempotencyKey: fmt.Sprintf("coalesce_%d", i), UserName: user.Name,
+		})
+		if err != nil {
+			t.Fatalf("PlaceBid %d failed: %v", i, err)
+		}
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	var bidFanouts []fakeFanout
+	for _, f := range fb.fanoutSnapshot() {
+		if f.event.Type == itemdto.EventBidSuccess {
+			bidFanouts = append(bidFanouts, f)
+		}
+	}
+	if len(bidFanouts) != 1 {
+		t.Fatalf("expected coalesced bid_success fanouts = 1, got %d (%+v)", len(bidFanouts), bidFanouts)
+	}
+	payload, ok := bidFanouts[0].event.Payload.(itemdto.BidSuccessPayload)
+	if !ok {
+		t.Fatalf("expected BidSuccessPayload, got %T", bidFanouts[0].event.Payload)
+	}
+	if payload.CurrentPrice != 300 || payload.LeaderUserID != "user_3" {
+		t.Fatalf("expected latest bid payload user_3/300, got %+v", payload)
+	}
+	if payload.ServerTimeUnixMS != now.UnixMilli() || payload.EndTimeUnixMS != endTime.UnixMilli() {
+		t.Fatalf("expected clock fields server=%d end=%d, got %+v", now.UnixMilli(), endTime.UnixMilli(), payload)
 	}
 }

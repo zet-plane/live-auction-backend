@@ -69,6 +69,7 @@ func (s *Service) PlaceBid(ctx context.Context, current *usermodel.User, itemID 
 	}
 
 	bidID = "bid_" + snowflake.MakeUUID()
+	now := s.now()
 	luaResult, err := s.cache.PlaceBidLua(ctx, item.ID, itemcache.BidLuaArgs{
 		UserID:            current.ID,
 		UserName:          input.UserName,
@@ -80,7 +81,7 @@ func (s *Service) PlaceBid(ctx context.Context, current *usermodel.User, itemID 
 		AutoExtendSec:     s.policy.AutoExtendSec,
 		MaxExtendCount:    s.policy.MaxExtendCount,
 		MaxTotalExtendSec: s.policy.MaxTotalExtendSec,
-		NowUnix:           s.now().Unix(),
+		NowUnix:           now.Unix(),
 		IdempotencyKey:    input.IdempotencyKey,
 		IdempotencyTTL:    86400,
 	})
@@ -140,25 +141,27 @@ func (s *Service) PlaceBid(ctx context.Context, current *usermodel.User, itemID 
 	}
 
 	if s.broadcaster != nil {
-		endTime := time.Unix(luaResult.EndTimeUnix, 0)
-		_ = s.broadcaster.Fanout(wsevent.RoomTopic(item.RoomID), wsevent.Event{
-			Type: dto.EventBidSuccess,
-			Payload: dto.BidSuccessPayload{
-				ItemID:       item.ID,
-				UserID:       current.ID,
-				Price:        input.Price,
-				CurrentPrice: luaResult.CurrentPrice,
-				LeaderUserID: luaResult.LeaderUserID,
-				EndTime:      endTime,
-			},
+		endTime := bidEndTime(luaResult)
+		endTimeUnixMS := bidEndTimeUnixMS(luaResult)
+		s.enqueueBidSuccess(item.RoomID, dto.BidSuccessPayload{
+			ItemID:           item.ID,
+			UserID:           current.ID,
+			Price:            input.Price,
+			CurrentPrice:     luaResult.CurrentPrice,
+			LeaderUserID:     luaResult.LeaderUserID,
+			EndTime:          endTime,
+			ServerTimeUnixMS: now.UnixMilli(),
+			EndTimeUnixMS:    endTimeUnixMS,
 		})
 		if luaResult.PrevLeaderUserID != "" && luaResult.PrevLeaderUserID != luaResult.LeaderUserID {
 			_ = s.broadcaster.Unicast(wsevent.UserAddr(luaResult.PrevLeaderUserID), wsevent.Event{
 				Type: dto.EventUserOutbid,
 				Payload: dto.UserOutbidPayload{
-					ItemID:       item.ID,
-					NewLeaderID:  luaResult.LeaderUserID,
-					CurrentPrice: luaResult.CurrentPrice,
+					ItemID:           item.ID,
+					NewLeaderID:      luaResult.LeaderUserID,
+					CurrentPrice:     luaResult.CurrentPrice,
+					ServerTimeUnixMS: now.UnixMilli(),
+					EndTimeUnixMS:    endTimeUnixMS,
 				},
 			})
 		}
@@ -166,9 +169,11 @@ func (s *Service) PlaceBid(ctx context.Context, current *usermodel.User, itemID 
 			_ = s.broadcaster.Fanout(wsevent.RoomTopic(item.RoomID), wsevent.Event{
 				Type: dto.EventAuctionExtended,
 				Payload: dto.AuctionExtendedPayload{
-					ItemID:        item.ID,
-					NewEndTime:    endTime,
-					ExtendSeconds: s.policy.AutoExtendSec,
+					ItemID:           item.ID,
+					NewEndTime:       endTime,
+					ExtendSeconds:    s.policy.AutoExtendSec,
+					ServerTimeUnixMS: now.UnixMilli(),
+					NewEndTimeUnixMS: endTimeUnixMS,
 				},
 			})
 		}
@@ -203,15 +208,18 @@ func (s *Service) PlaceBid(ctx context.Context, current *usermodel.User, itemID 
 			}
 		}
 		if s.broadcaster != nil {
+			s.flushBidSuccessNow(item.RoomID, item.ID)
+			endedAtUnixMS := s.now().UnixMilli()
 			_ = s.broadcaster.Fanout(wsevent.RoomTopic(item.RoomID), wsevent.Event{
 				Type: dto.EventAuctionEnded,
 				Payload: dto.AuctionEndedPayload{
-					ItemID:        item.ID,
-					WinnerUserID:  current.ID,
-					LeaderUserID:  current.ID,
-					DealPrice:     input.Price,
-					EndedAtUnixMS: s.now().UnixMilli(),
-					EndReason:     "price_cap",
+					ItemID:           item.ID,
+					WinnerUserID:     current.ID,
+					LeaderUserID:     current.ID,
+					DealPrice:        input.Price,
+					ServerTimeUnixMS: endedAtUnixMS,
+					EndedAtUnixMS:    endedAtUnixMS,
+					EndReason:        "price_cap",
 				},
 			})
 			if orderID != "" {
@@ -249,6 +257,16 @@ func bidEndTimeUnixMS(result *itemcache.BidLuaResult) int64 {
 		return result.EndTimeUnix * 1000
 	}
 	return 0
+}
+
+func bidEndTime(result *itemcache.BidLuaResult) time.Time {
+	if result.EndTimeUnixMS > 0 {
+		return time.UnixMilli(result.EndTimeUnixMS)
+	}
+	if result.EndTimeUnix > 0 {
+		return time.Unix(result.EndTimeUnix, 0)
+	}
+	return time.Time{}
 }
 
 func bidStatus(result *itemcache.BidLuaResult, fallback string) string {

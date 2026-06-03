@@ -31,6 +31,9 @@ type Service struct {
 
 	broadcastTimeSyncRunning atomic.Bool
 	timeSyncRoomIDs          sync.Map // itemID -> roomID
+	bidBroadcastMu           sync.Mutex
+	pendingBidBroadcasts     map[string]*pendingBidBroadcast
+	bidBroadcastDelay        time.Duration
 }
 
 type DepositChecker interface {
@@ -39,13 +42,14 @@ type DepositChecker interface {
 
 func NewService(store dao.Store, policy dto.AuctionPolicy, cache itemcache.Cache, orderSvc *orderservice.Service, depositSvc DepositChecker, broadcaster wsevent.Broadcaster) *Service {
 	return &Service{
-		store:       store,
-		cache:       cache,
-		policy:      policy,
-		now:         time.Now,
-		orderSvc:    orderSvc,
-		depositSvc:  depositSvc,
-		broadcaster: broadcaster,
+		store:             store,
+		cache:             cache,
+		policy:            policy,
+		now:               time.Now,
+		orderSvc:          orderSvc,
+		depositSvc:        depositSvc,
+		broadcaster:       broadcaster,
+		bidBroadcastDelay: 100 * time.Millisecond,
 	}
 }
 
@@ -283,13 +287,16 @@ func (s *Service) StartItem(ctx context.Context, current *usermodel.User, itemID
 		_ = s.cache.SetRoomCurrentItem(ctx, item.RoomID, item.ID)
 	}
 	if s.broadcaster != nil {
+		now := s.now()
 		_ = s.broadcaster.Fanout(wsevent.RoomTopic(item.RoomID), wsevent.Event{
 			Type: dto.EventAuctionStarted,
 			Payload: dto.AuctionStartedPayload{
-				ItemID:    item.ID,
-				RoomID:    item.RoomID,
-				StartTime: s.now(),
-				EndTime:   rule.EndTime,
+				ItemID:           item.ID,
+				RoomID:           item.RoomID,
+				StartTime:        now,
+				EndTime:          rule.EndTime,
+				ServerTimeUnixMS: now.UnixMilli(),
+				EndTimeUnixMS:    rule.EndTime.UnixMilli(),
 			},
 		})
 	}
@@ -631,12 +638,13 @@ func (s *Service) persistSettledAuction(ctx context.Context, result itemcache.Se
 		_ = s.broadcaster.Fanout(wsevent.RoomTopic(item.RoomID), wsevent.Event{
 			Type: dto.EventAuctionEnded,
 			Payload: dto.AuctionEndedPayload{
-				ItemID:        item.ID,
-				WinnerUserID:  result.LeaderUserID,
-				LeaderUserID:  result.LeaderUserID,
-				DealPrice:     result.DealPrice,
-				EndedAtUnixMS: result.EndedAtUnixMS,
-				EndReason:     result.EndReason,
+				ItemID:           item.ID,
+				WinnerUserID:     result.LeaderUserID,
+				LeaderUserID:     result.LeaderUserID,
+				DealPrice:        result.DealPrice,
+				ServerTimeUnixMS: s.now().UnixMilli(),
+				EndedAtUnixMS:    result.EndedAtUnixMS,
+				EndReason:        result.EndReason,
 			},
 		})
 	}
