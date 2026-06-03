@@ -18,6 +18,7 @@ type Recorder interface {
 	WSConnection(context.Context, WSConnectionMetric)
 	WSBroadcast(context.Context, WSBroadcastMetric)
 	WSDelivery(context.Context, WSDeliveryMetric)
+	WSWrite(context.Context, WSWriteMetric)
 	OrderAuctionCreate(context.Context, OrderMetric)
 }
 
@@ -57,19 +58,34 @@ type BidMetric struct {
 type WSConnectionMetric struct {
 	Action      string
 	Result      string
+	Reason      string
 	ActiveDelta int64
 }
 
 type WSBroadcastMetric struct {
 	Mode       string
 	Result     string
+	EventType  string
 	Recipients int64
 	Duration   time.Duration
 }
 
 type WSDeliveryMetric struct {
-	Result   string
-	Duration time.Duration
+	Result    string
+	Reason    string
+	EventType string
+	QueueLen  int64
+	QueueCap  int64
+	Duration  time.Duration
+}
+
+type WSWriteMetric struct {
+	Result    string
+	Reason    string
+	EventType string
+	QueueLen  int64
+	QueueCap  int64
+	Duration  time.Duration
 }
 
 type OrderMetric struct {
@@ -86,6 +102,7 @@ func (NoopRecorder) Bid(context.Context, BidMetric)                   {}
 func (NoopRecorder) WSConnection(context.Context, WSConnectionMetric) {}
 func (NoopRecorder) WSBroadcast(context.Context, WSBroadcastMetric)   {}
 func (NoopRecorder) WSDelivery(context.Context, WSDeliveryMetric)     {}
+func (NoopRecorder) WSWrite(context.Context, WSWriteMetric)           {}
 func (NoopRecorder) OrderAuctionCreate(context.Context, OrderMetric)  {}
 
 var defaultRecorder Recorder = NoopRecorder{}
@@ -121,6 +138,9 @@ type OTelRecorder struct {
 	wsBroadcastDuration metric.Float64Histogram
 	wsDeliveryCount     metric.Int64Counter
 	wsDeliveryDuration  metric.Float64Histogram
+	wsWriteCount        metric.Int64Counter
+	wsWriteDuration     metric.Float64Histogram
+	wsSendQueueDepth    metric.Int64Histogram
 	orderCount          metric.Int64Counter
 }
 
@@ -198,6 +218,18 @@ func NewRecorder() (*OTelRecorder, error) {
 	if err != nil {
 		return nil, err
 	}
+	wsWriteCount, err := meter.Int64Counter("ws.write.count")
+	if err != nil {
+		return nil, err
+	}
+	wsWriteDuration, err := meter.Float64Histogram("ws.write.duration")
+	if err != nil {
+		return nil, err
+	}
+	wsSendQueueDepth, err := meter.Int64Histogram("ws.send_queue.depth")
+	if err != nil {
+		return nil, err
+	}
 	orderCount, err := meter.Int64Counter("order.auction_create.count")
 	if err != nil {
 		return nil, err
@@ -221,6 +253,9 @@ func NewRecorder() (*OTelRecorder, error) {
 		wsBroadcastDuration: wsBroadcastDuration,
 		wsDeliveryCount:     wsDeliveryCount,
 		wsDeliveryDuration:  wsDeliveryDuration,
+		wsWriteCount:        wsWriteCount,
+		wsWriteDuration:     wsWriteDuration,
+		wsSendQueueDepth:    wsSendQueueDepth,
 		orderCount:          orderCount,
 	}, nil
 }
@@ -269,10 +304,11 @@ func (r *OTelRecorder) WSConnection(ctx context.Context, m WSConnectionMetric) {
 	opts := metric.WithAttributes(
 		attribute.String("action", SafeReason(m.Action)),
 		attribute.String("result", SafeReason(m.Result)),
+		attribute.String("reason", SafeReason(m.Reason)),
 	)
 	r.wsConnectionCount.Add(ctx, 1, opts)
 	if m.ActiveDelta != 0 {
-		r.wsConnectionActive.Add(ctx, m.ActiveDelta, metric.WithAttributes(attribute.String("result", SafeReason(m.Result))))
+		r.wsConnectionActive.Add(ctx, m.ActiveDelta, opts)
 	}
 }
 
@@ -280,6 +316,7 @@ func (r *OTelRecorder) WSBroadcast(ctx context.Context, m WSBroadcastMetric) {
 	opts := metric.WithAttributes(
 		attribute.String("mode", SafeReason(m.Mode)),
 		attribute.String("result", SafeReason(m.Result)),
+		attribute.String("event_type", SafeReason(m.EventType)),
 	)
 	r.wsBroadcastCount.Add(ctx, 1, opts)
 	r.wsBroadcastTargets.Record(ctx, m.Recipients, opts)
@@ -287,9 +324,25 @@ func (r *OTelRecorder) WSBroadcast(ctx context.Context, m WSBroadcastMetric) {
 }
 
 func (r *OTelRecorder) WSDelivery(ctx context.Context, m WSDeliveryMetric) {
-	opts := metric.WithAttributes(attribute.String("result", SafeReason(m.Result)))
+	opts := metric.WithAttributes(
+		attribute.String("result", SafeReason(m.Result)),
+		attribute.String("reason", SafeReason(m.Reason)),
+		attribute.String("event_type", SafeReason(m.EventType)),
+	)
 	r.wsDeliveryCount.Add(ctx, 1, opts)
 	r.wsDeliveryDuration.Record(ctx, m.Duration.Seconds(), opts)
+	r.wsSendQueueDepth.Record(ctx, m.QueueLen, opts)
+}
+
+func (r *OTelRecorder) WSWrite(ctx context.Context, m WSWriteMetric) {
+	opts := metric.WithAttributes(
+		attribute.String("result", SafeReason(m.Result)),
+		attribute.String("reason", SafeReason(m.Reason)),
+		attribute.String("event_type", SafeReason(m.EventType)),
+	)
+	r.wsWriteCount.Add(ctx, 1, opts)
+	r.wsWriteDuration.Record(ctx, m.Duration.Seconds(), opts)
+	r.wsSendQueueDepth.Record(ctx, m.QueueLen, opts)
 }
 
 func (r *OTelRecorder) OrderAuctionCreate(ctx context.Context, m OrderMetric) {

@@ -268,7 +268,7 @@ data:
           "datasource": {"type": "prometheus", "uid": "Prometheus"},
           "targets": [
             {
-              "expr": "topk(12, histogram_quantile(0.95, sum(rate(http_server_request_duration_bucket[$__rate_interval])) by (le, http_route)))",
+              "expr": "topk(12, histogram_quantile(0.95, sum(rate(http_server_request_duration_bucket[24h])) by (le, http_route)))",
               "legendFormat": "{{http_route}}",
               "refId": "A"
             }

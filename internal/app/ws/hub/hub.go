@@ -174,6 +174,7 @@ func (h *Hub) SendToRoom(roomID string, event wsevent.Event) {
 	observability.DefaultRecorder().WSBroadcast(context.Background(), observability.WSBroadcastMetric{
 		Mode:       "fanout",
 		Result:     result,
+		EventType:  event.Type,
 		Recipients: delivered,
 		Duration:   time.Since(start),
 	})
@@ -202,6 +203,7 @@ func (h *Hub) Unicast(addr string, event wsevent.Event) error {
 	observability.DefaultRecorder().WSBroadcast(context.Background(), observability.WSBroadcastMetric{
 		Mode:       "unicast",
 		Result:     result,
+		EventType:  event.Type,
 		Recipients: delivered,
 		Duration:   time.Since(start),
 	})
@@ -210,28 +212,55 @@ func (h *Hub) Unicast(addr string, event wsevent.Event) error {
 
 func (h *Hub) deliver(c *Conn, event wsevent.Event) bool {
 	start := time.Now()
+	queueLen := int64(len(c.send))
+	queueCap := int64(cap(c.send))
 	if !c.enqueue(event) {
-		h.closeConn(c)
+		reason := "send_queue_full"
+		if c.isClosed() {
+			reason = "closed"
+		}
+		h.closeConnWithReason(c, reason)
 		observability.DefaultRecorder().WSDelivery(context.Background(), observability.WSDeliveryMetric{
-			Result:   "dropped",
-			Duration: time.Since(start),
+			Result:    "dropped",
+			Reason:    reason,
+			EventType: event.Type,
+			QueueLen:  queueLen,
+			QueueCap:  queueCap,
+			Duration:  time.Since(start),
 		})
 		return false
 	}
 	observability.DefaultRecorder().WSDelivery(context.Background(), observability.WSDeliveryMetric{
-		Result:   "success",
-		Duration: time.Since(start),
+		Result:    "success",
+		EventType: event.Type,
+		QueueLen:  int64(len(c.send)),
+		QueueCap:  queueCap,
+		Duration:  time.Since(start),
 	})
 	return true
 }
 
 func (h *Hub) closeConn(c *Conn) {
+	h.closeConnWithReason(c, "unspecified")
+}
+
+func (h *Hub) closeConnWithReason(c *Conn, reason string) {
 	if c.isClosed() {
 		h.Remove(c)
+		observability.DefaultRecorder().WSConnection(context.Background(), observability.WSConnectionMetric{
+			Action: "close",
+			Result: "already_closed",
+			Reason: reason,
+		})
 		return
 	}
 	c.closeWith(func() {
 		h.Remove(c)
+	})
+	observability.DefaultRecorder().WSConnection(context.Background(), observability.WSConnectionMetric{
+		Action: "close",
+		Result: "success",
+		Reason: reason,
 	})
 }
 

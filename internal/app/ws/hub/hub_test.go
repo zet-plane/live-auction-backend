@@ -128,6 +128,8 @@ type fakeSocket struct {
 	pingCh            chan struct{}
 	pongHandler       func(string) error
 	readDeadlineCalls int
+	writeJSONErr      error
+	writeJSONCh       chan struct{}
 	closeOnce         sync.Once
 }
 
@@ -154,7 +156,16 @@ func (s *fakeSocket) ReadMessage() (int, []byte, error) {
 
 func (s *fakeSocket) SetWriteDeadline(time.Time) error { return nil }
 
-func (s *fakeSocket) WriteJSON(any) error { return nil }
+func (s *fakeSocket) WriteJSON(any) error {
+	s.mu.Lock()
+	err := s.writeJSONErr
+	ch := s.writeJSONCh
+	s.mu.Unlock()
+	if ch != nil {
+		close(ch)
+	}
+	return err
+}
 
 func (s *fakeSocket) WriteControl(messageType int, _ []byte, _ time.Time) error {
 	if messageType == websocket.PingMessage {
@@ -268,8 +279,15 @@ func TestFanoutRecordsBroadcastAndDeliveryMetrics(t *testing.T) {
 	if broadcast.Mode != "fanout" || broadcast.Result != "success" || broadcast.Recipients != 2 {
 		t.Fatalf("broadcast metric = %+v", broadcast)
 	}
+	if broadcast.EventType != "bid_success" {
+		t.Fatalf("broadcast event type = %q, want bid_success", broadcast.EventType)
+	}
 	if got := rec.deliveryCount("success"); got != 2 {
 		t.Fatalf("success deliveries = %d, want 2", got)
+	}
+	delivery := rec.lastDelivery()
+	if delivery.EventType != "bid_success" || delivery.QueueCap != 8 || delivery.QueueLen != 1 {
+		t.Fatalf("delivery metric = %+v", delivery)
 	}
 }
 
@@ -292,6 +310,10 @@ func TestFullChannelRecordsDroppedDeliveryMetric(t *testing.T) {
 
 	if got := rec.deliveryCount("dropped"); got != 1 {
 		t.Fatalf("dropped deliveries = %d, want 1", got)
+	}
+	delivery := rec.lastDelivery()
+	if delivery.EventType != "overflow" || delivery.Reason != "send_queue_full" || delivery.QueueLen != 1 || delivery.QueueCap != 1 {
+		t.Fatalf("dropped delivery metric = %+v", delivery)
 	}
 	broadcast := rec.lastBroadcast()
 	if broadcast.Mode != "fanout" || broadcast.Result != "dropped" || broadcast.Recipients != 0 {
@@ -373,6 +395,36 @@ func TestStartWriteLoopSendsServerControlPing(t *testing.T) {
 	case <-ws.pingCh:
 	case <-time.After(time.Second):
 		t.Fatal("expected server to send websocket control ping")
+	}
+}
+
+func TestStartWriteLoopRecordsSocketWriteMetrics(t *testing.T) {
+	rec := &captureWSRecorder{}
+	observability.SetDefaultRecorder(rec)
+	t.Cleanup(func() { observability.SetDefaultRecorder(nil) })
+
+	h := NewHub(nil)
+	ws := newFakeSocket()
+	ws.writeJSONErr = errors.New("i/o timeout")
+	ws.writeJSONCh = make(chan struct{})
+	conn := NewConn("conn_1", "user_1", "room_1", ws, h)
+	h.Register(conn)
+	go conn.StartWriteLoop()
+
+	if !conn.enqueue(wsevent.Event{Type: "bid_success"}) {
+		t.Fatal("expected enqueue to succeed")
+	}
+
+	select {
+	case <-ws.writeJSONCh:
+	case <-time.After(time.Second):
+		t.Fatal("expected write loop to call WriteJSON")
+	}
+	waitFor(t, func() bool { return rec.writeCount("failed") == 1 && rec.closeReasonCount("write_json_timeout") == 1 })
+
+	write := rec.lastWrite()
+	if write.EventType != "bid_success" || write.Reason != "timeout" || write.QueueCap != sendBufSize {
+		t.Fatalf("write metric = %+v", write)
 	}
 }
 
@@ -538,6 +590,7 @@ type captureWSRecorder struct {
 	connections []observability.WSConnectionMetric
 	broadcasts  []observability.WSBroadcastMetric
 	deliveries  []observability.WSDeliveryMetric
+	writes      []observability.WSWriteMetric
 }
 
 func (r *captureWSRecorder) WSConnection(_ context.Context, m observability.WSConnectionMetric) {
@@ -556,6 +609,12 @@ func (r *captureWSRecorder) WSDelivery(_ context.Context, m observability.WSDeli
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.deliveries = append(r.deliveries, m)
+}
+
+func (r *captureWSRecorder) WSWrite(_ context.Context, m observability.WSWriteMetric) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.writes = append(r.writes, m)
 }
 
 func (r *captureWSRecorder) connectionDelta() int64 {
@@ -577,12 +636,54 @@ func (r *captureWSRecorder) lastBroadcast() observability.WSBroadcastMetric {
 	return r.broadcasts[len(r.broadcasts)-1]
 }
 
+func (r *captureWSRecorder) lastDelivery() observability.WSDeliveryMetric {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.deliveries) == 0 {
+		return observability.WSDeliveryMetric{}
+	}
+	return r.deliveries[len(r.deliveries)-1]
+}
+
 func (r *captureWSRecorder) deliveryCount(result string) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	var total int
 	for _, m := range r.deliveries {
 		if m.Result == result {
+			total++
+		}
+	}
+	return total
+}
+
+func (r *captureWSRecorder) lastWrite() observability.WSWriteMetric {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.writes) == 0 {
+		return observability.WSWriteMetric{}
+	}
+	return r.writes[len(r.writes)-1]
+}
+
+func (r *captureWSRecorder) writeCount(result string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var total int
+	for _, m := range r.writes {
+		if m.Result == result {
+			total++
+		}
+	}
+	return total
+}
+
+func (r *captureWSRecorder) closeReasonCount(reason string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var total int
+	for _, m := range r.connections {
+		if m.Action == "close" && m.Reason == reason {
 			total++
 		}
 	}

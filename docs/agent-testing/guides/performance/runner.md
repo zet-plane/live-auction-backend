@@ -90,9 +90,15 @@ rtk env \
 | `PERF_BASE_URL` | 被测服务入口，线上地址必须脱敏 | 不写完整线上值 |
 | `PERF_AUTH_TOKEN` | 临时测试 token | 禁止 |
 | `PERF_PROMETHEUS_URL` | Prometheus 入口，线上地址必须脱敏 | 不写完整线上值 |
+| `PERF_OBSERVABILITY_STEP` | Prometheus `query_range` 采样步长，例如 `30s` | 可以 |
 | `PERF_STOP_FILE` | 本地 STOP 文件路径 | 可以 |
 | `PERF_HUMAN_MONITOR` | 人工旁路监控者标识 | 可以 |
 | `PERF_REQUEST_TIMEOUT` | 单请求超时，例如 `5s` | 可以 |
+| `PERF_START_QPS` | 从指定 QPS 档开始复跑 | 可以 |
+| `PERF_END_QPS` | 在指定 QPS 档结束，用于受控短验证 | 可以 |
+| `PERF_WS_CONNECT_CONCURRENCY` | WebSocket 建连并发度；一用户一连接场景默认 `8`，避免入口层握手尖峰 | 可以 |
+| `PERF_WS_CONNECT_TIMEOUT` | 单条 WebSocket 握手超时，例如 `15s` | 可以 |
+| `PERF_WS_CONNECT_MAX_ATTEMPTS` | WebSocket 建连最大尝试次数；应高于目标 WS 数 | 可以 |
 
 ## Port-forward 模式
 
@@ -164,15 +170,15 @@ TIMEOUTS:
 ERROR_RATE:
 TIMEOUT_RATE:
 BUSINESS_FAILURE_RATE:
-P50:
-P95:
-P99:
-MAX:
+CLIENT_E2E_P50:
+CLIENT_E2E_P95:
+CLIENT_E2E_P99:
+CLIENT_E2E_MAX:
 STATUS_CODES:
 BUSINESS_CODES:
 ```
 
-P50 / P95 / P99 是延迟核心指标，但 runner 还必须输出吞吐、成功/失败/超时计数、派生失败率、状态码分布和业务码分布。只输出延迟分位不能作为压测证据。
+`CLIENT_E2E_P50/P95/P99/MAX` 是压测源看到的端到端耗时，包含本机调度、HTTP client、DNS/TLS、公网链路、Ingress、服务内处理和响应传回。它用于记录外部体验和网络噪声，不作为服务端接口性能优化的默认硬判停条件。服务端接口性能必须优先使用 Prometheus `server_http_p95/server_http_p99` 时间线判断。runner 还必须输出吞吐、成功/失败/超时计数、派生失败率、状态码分布和业务码分布；只输出延迟分位不能作为压测证据。
 
 ## 清理边界
 

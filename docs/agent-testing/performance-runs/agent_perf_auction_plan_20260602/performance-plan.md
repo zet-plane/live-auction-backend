@@ -3,7 +3,7 @@
 ## 计划状态
 
 ```text
-计划版本：v0.5
+计划版本：v0.6
 创建日期：2026-06-02
 批次 ID：agent_perf_auction_plan_20260602
 状态：待审核，未批准执行
@@ -22,14 +22,14 @@
 
 ## 测试目标
 
-验证 `live-auction-backend` 在直播竞拍高峰下的性能容量、延迟、错误率、资源水位和首个瓶颈。
+验证 `live-auction-backend` 在核心竞拍读写链路高压下的性能容量、延迟、错误率、资源水位和首个瓶颈。
 
 重点回答：
 
-- 在目标在线用户数、HTTP QPS、出价 TPS 和 WebSocket 连接数下，服务是否稳定。
-- 出价、商品详情、排行榜、房间详情、WebSocket 推送的 P50 / P95 / P99 是否满足阈值。
-- Redis Lua、MySQL 同步写 `bid_logs`、WebSocket 扇出、应用 Pod CPU / 内存中，哪个最先成为瓶颈。
-- 压力升高后系统是否平稳退化，而不是出现 5xx、超时、Pod 重启、连接雪崩或资源持续爬升。
+- 在目标 HTTP QPS、出价 TPS 和同房间 WebSocket 连接数下，服务是否稳定。
+- 出价、商品详情、排行榜的 P50 / P95 / P99 是否满足阈值。
+- Redis Lua、MySQL 同步写 `bid_logs`、WebSocket 同步广播、每秒 `time_sync` 推送、排行榜 Redis / MySQL 读取、商品当前价 Redis state 读取、应用 Pod CPU / 内存中，哪个最先成为瓶颈。
+- 压力升高后系统是否平稳退化，而不是出现 5xx、超时、Pod 重启或资源持续爬升。
 
 ## 非目标
 
@@ -102,45 +102,57 @@ known_limit：本机单压测源和本机网络可能先于服务端成为瓶颈
 
 ## 业务场景模型
 
-参考 PTS 电商示例，将直播竞拍拆成多个并行业务会话，每个会话内部按用户真实行为串行调用 API。
+本轮按用户确认的核心接口比例，只压测出价写链路、排行榜读取和商品详情/当前价读取，同时维持目标 WebSocket 连接数以覆盖出价成功后的同步广播路径。房间、WebSocket ticket、WebSocket 握手、商家后台和健康检查不进入 HTTP QPS 请求比例；它们只可用于前置测试数据准备、连接建立、只读可达性探测或阶段后对账。
 
 | 会话 | 用户行为 | 串行步骤 | 目标 | 建议流量占比 |
 | --- | --- | --- | --- | --- |
-| A. 旁观用户浏览 | 进入直播间并持续刷新状态 | `GET /api/v1/rooms/{room_id}` -> `GET /api/v1/items/{item_id}` -> `GET /api/v1/items/{item_id}/ranking` | 模拟只看不出价用户 | 55% |
-| B. 出价用户 | 查看详情后出价，再查看排行榜 | `GET /api/v1/items/{item_id}` -> `POST /api/v1/items/{item_id}/bids` -> `GET /api/v1/items/{item_id}/ranking` | 核心出价 TPS | 20% |
-| C. WebSocket 用户 | 获取 ticket 并保持长连接 | `POST /api/v1/ws-ticket` -> `GET /ws/v1/rooms/{room_id}` -> 接收推送/心跳 | 模拟直播实时连接和广播扇出 | 20% |
-| D. 商家低频操作 | 查询商家直播间或开始测试拍品 | `GET /api/v1/merchant/room`，必要时 `POST /api/v1/items/{item_id}/start` | 模拟运营后台低频流量 | 5% |
+| A. 出价用户 | 提交有效或预期竞价冲突的出价 | `POST /api/v1/items/{item_id}/bids` | 核心出价写链路，重点观察 Redis Lua、保证金检查、同步写 `bid_logs` 和出价事件生产 | 80% |
+| B. 排行榜读取 | 查询当前拍品排行榜 | `GET /api/v1/items/{item_id}/ranking` | 观察 Redis ranking 读取，以及 Redis miss / 异常时 MySQL 聚合 fallback 风险 | 10% |
+| C. 商品详情读取 | 查询商品详情和当前价 | `GET /api/v1/items/{item_id}` | 观察 MySQL item/rule 读取和 ongoing 状态下 Redis auction state 覆盖 | 10% |
+
+本轮 WebSocket 模型：每个阶段先建立目标数量的同房间 WebSocket 长连接，随后在该连接数下执行 80/10/10 HTTP 压测流量。`POST /api/v1/ws-ticket` 和 `GET /ws/v1/rooms/{room_id}` 用于建连，不计入 HTTP QPS 请求比例；WebSocket 连接成功率、连接保持、出价事件接收、广播延迟和每秒 `time_sync` 推送稳定性进入本轮观察与判停。
+
+## 被测接口与业务代码定位
+
+性能报告必须把每条压测链路对应到业务代码路径，便于后续按瓶颈定位到模块、Service、DAO、Redis Lua 或 WebSocket Hub。
+
+| 接口 / 协议 | 所属会话 | Router | Handler | Service / 核心逻辑 | DAO / Cache / Hub | 主要性能风险 |
+| --- | --- | --- | --- | --- | --- | --- |
+| `POST /api/v1/items/{item_id}/bids` | A | `internal/app/item/router/item.go` | `internal/app/item/handler/bid.go` `PlaceBid` | `internal/app/item/service/bid_service.go` `PlaceBid` | `internal/app/item/cache/bid.go`、`internal/app/item/dao/bid_log.go`、`internal/app/deposit/service/service.go`、`internal/app/order/service/service.go` | Redis Lua 原子出价、保证金检查、同步写 `bid_logs`、一口价成单、出价事件生产 |
+| `GET /api/v1/items/{item_id}/ranking` | B | `internal/app/item/router/item.go` | `internal/app/item/handler/bid.go` `GetRanking` | `internal/app/item/service/bid_service.go` `GetRanking` | `internal/app/item/cache/bid.go`、`internal/app/item/dao/bid_log.go` | Redis ranking 读取、Redis miss 后 MySQL 聚合 fallback |
+| `GET /api/v1/items/{item_id}` | C | `internal/app/item/router/item.go` | `internal/app/item/handler/item.go` `GetItem` | `internal/app/item/service/service.go` `GetItem` | `internal/app/item/dao/item.go`、`internal/app/item/cache/cache.go` | MySQL 查 item/rule、ongoing 状态下 Redis state 读取 |
+| `POST /api/v1/ws-ticket` | WS 建连 | `internal/app/ws/router/router.go` | `internal/app/ws/handler/ticket.go` `IssueTicket` | ticket 生成和 Redis 写入 | Redis key `ws:ticket:{ticket}` | 建连前置，Redis SET / TTL，不计入 HTTP 压测 QPS |
+| `GET /ws/v1/rooms/{room_id}` | WS 建连和保持 | `internal/app/ws/router/router.go` | `internal/app/ws/handler/ws.go` `ServeWS` | WebSocket upgrade、ticket `GETDEL`、连接注册、`time_sync` 接收 | `internal/app/ws/hub/hub.go`、`internal/app/ws/hub/conn.go` | 同房间连接数、Hub 索引、慢连接剔除、出价广播扇出、每秒 `time_sync` 推送 |
 
 ## 请求占比
 
-第一轮建议请求占比：
+本轮请求占比：
 
 | 接口 | 占比 | 说明 |
 | --- | --- | --- |
-| `GET /api/v1/rooms/{room_id}` | 20% | 直播间状态 |
-| `GET /api/v1/items/{item_id}` | 25% | 商品详情和当前价 |
-| `GET /api/v1/items/{item_id}/ranking` | 25% | 排行榜读取 |
-| `POST /api/v1/items/{item_id}/bids` | 15% | 核心写链路 |
-| `POST /api/v1/ws-ticket` | 5% | WebSocket ticket 获取 |
-| 商家后台低频接口 | 5% | 商家状态操作 |
-| `GET /api/v1/health` 或轻量探测 | 5% | 健康探测 |
+| `POST /api/v1/items/{item_id}/bids` | 80% | 核心出价写链路 |
+| `GET /api/v1/items/{item_id}/ranking` | 10% | 排行榜读取 |
+| `GET /api/v1/items/{item_id}` | 10% | 商品详情和当前价 |
 
-WebSocket 连接数独立统计，不完全折算为 HTTP QPS。
+其他 HTTP 接口不进入压测请求比例。`POST /api/v1/merchant/room`、`POST /api/v1/items`、`POST /api/v1/items/{item_id}/publish`、`POST /api/v1/items/{item_id}/start` 只允许在 setup 阶段创建本批次测试数据时调用；`POST /api/v1/ws-ticket` 和 `GET /ws/v1/rooms/{room_id}` 只用于建立并维持目标 WebSocket 连接；`GET /health` 或 `/api/v1/health` 只允许在 preflight 中做只读可达性探测。
 
 ## LoadModel
 
-第一轮建议阶段：
+本轮建议阶段：
 
 | 阶段 | 目标 HTTP QPS | 目标 WebSocket 连接数 | 持续时间 | Ramp | 目的 |
 | --- | --- | --- | --- | --- | --- |
-| smoke | 10 | 20 | 3 分钟 | 1 分钟 | 验证脚本、认证、测试数据和监控 |
-| step_load_1 | 50 | 100 | 5 分钟 | 1 分钟 | 模拟 100+ 在线用户 |
-| step_load_2 | 100 | 200 | 5 分钟 | 2 分钟 | 观察 Redis / MySQL / 应用资源 |
-| step_load_3 | 200 | 400 | 5 分钟 | 2 分钟 | 寻找首个明显瓶颈 |
-| peak_hold | 审核时确认 | 审核时确认 | 10 分钟 | 2 分钟 | 验证峰值保持能力 |
-| soak（可选） | 峰值 60%-70% | 峰值 60%-70% | 30-60 分钟 | 5 分钟 | 验证内存、goroutine 和连接稳定性 |
+| smoke | 10 | 20 | 3 分钟 | 0-1 分钟 | 验证脚本、认证、测试数据、WS 建连、监控和对账 |
+| step_load_1 | 30 | 60 | 3 分钟 | 0-1 分钟 | 观察低压下服务端接口延迟、WS 广播和错误率 |
+| step_load_2 | 50 | 100 | 3 分钟 | 0-1 分钟 | 观察 Redis Lua、MySQL 写入、排行榜读取和 WS 扇出趋势 |
+| step_load_3 | 70 | 140 | 3 分钟 | 0-1 分钟 | 观察核心写链路和 WS 广播是否出现抖动 |
+| step_load_4 | 100 | 200 | 3 分钟 | 0-1 分钟 | 寻找 100 QPS / 200 WS 下首个明显瓶颈 |
+| step_load_5 | 130 | 260 | 3 分钟 | 0-1 分钟 | 观察接近峰值时资源、服务端延迟和 WS 保持 |
+| step_load_6 | 150 | 300 | 3 分钟 | 0-1 分钟 | 观察本轮上限压力下退化表现 |
 
-不允许跳过 smoke 直接进入 peak hold。
+本轮默认按 `目标 WebSocket 连接数 = 目标 HTTP QPS * 2` 建模；每条 WebSocket 连接对应 1 个测试普通用户并连接到同一个测试房间。runner 准备的测试普通用户数量必须同时覆盖最大目标 WS 连接数和 80% 出价写流量，避免少量用户反复出价导致业务冲突比例失真。
+
+不允许跳过 smoke 直接进入高 QPS 阶段。
 
 ## 探测方法
 
@@ -148,10 +160,10 @@ WebSocket 连接数独立统计，不完全折算为 HTTP QPS。
 
 1. Preflight 只读探测：本机 agent 按 `skills/live-auction-online-ops/SKILL.md` 做线上只读检查，确认被测入口、后端版本、Pod 数、资源限制、MySQL / Redis / Prometheus / 日志可观测性。
 2. Runner 落地：从 `docs/agent-testing/guides/performance/performance-runner.go` 创建正式批次 `main.go`。
-3. Smoke：小流量验证脚本、认证、测试数据、WebSocket 连接、监控采集和抽样对账均可用。
-4. Step load：本机 agent 按 `step_load_1 -> step_load_2 -> step_load_3` 逐档加压，每档结束后采集 runner 输出、线上只读监控摘要、日志摘要和业务健康抽样。
-5. Peak hold：在审核确认的目标峰值保持 10 分钟，观察延迟、错误率、资源水位和退化表现。
-6. Soak 可选：以峰值 60%-70% 做 30-60 分钟稳定性探测，重点观察内存、goroutine、WebSocket 连接和 DB / Redis 资源是否持续爬升。
+3. Smoke：小流量验证脚本、认证、测试数据、WebSocket 建连、监控采集和抽样对账均可用。
+4. Step load：本机 agent 按 `10/20 WS -> 30/60 WS -> 50/100 WS -> 70/140 WS -> 100/200 WS -> 130/260 WS -> 150/300 WS` 逐档加压，每档结束后采集 runner 输出、线上只读监控摘要、日志摘要和业务健康抽样。
+5. 本轮不执行 peak hold 或 soak；若 150 QPS 未出现瓶颈，后续另行审核更高阶梯或保持压测。
+6. 报告必须明确 WebSocket 结论只覆盖本轮同房间目标连接数和出价广播扇出，不覆盖更大规模在线人数容量。
 7. STOP 文件判停：runner 每次发请求前检查 `PERF_STOP_FILE`，触发后停止继续加压并进入 `RECONCILE` 和 `CLEANUP`。
 8. 收尾：关闭临时连接或 port-forward，清理本批次数据，保留 runner 代码、脱敏复跑说明和脱敏证据。
 
@@ -206,6 +218,7 @@ BUSINESS_CODES:
 - 1 个测试直播间。
 - 2-3 个测试拍品。
 - 100-500 个测试普通用户。
+- 测试普通用户数必须足够支撑最大目标 QPS 下 80% 出价写流量，避免少量用户反复并发出价导致预期竞价冲突比例失真。
 - 出价用户使用独立 token。
 - 如果拍品规则要求保证金，出价用户应预先缴纳本批次测试保证金。
 
@@ -233,6 +246,7 @@ BUSINESS_CODES:
 | Redis Lua P99 | `< 150ms` |
 | WebSocket 连接成功率 | `> 99%` |
 | WebSocket 广播延迟 P95 | `< 500ms` |
+| WebSocket `time_sync` 推送间隔 | 平均约 1 秒，P95 间隔 `< 2s`，无持续缺失 |
 | Pod CPU | `< 80%` |
 | Pod 内存 | 稳定，无持续爬升 |
 | 服务器 CPU | `< 80%`，load5 不持续超过 CPU 核数 |
@@ -255,6 +269,7 @@ BUSINESS_CODES:
 | Redis Lua P99 | `> 300ms` | 连续 2 分钟 | stop_load |
 | WebSocket 连接成功率 | `< 95%` | 当前阶段 | stop_load |
 | WebSocket 广播延迟 P95 | `> 1500ms` | 连续 2 分钟 | stop_load |
+| WebSocket `time_sync` P95 间隔 | `> 3s` 或持续缺失 | 连续 2 分钟 | stop_load |
 | Pod restart / OOM | 任意发生 | 立即 | abort_test |
 | 服务器 CPU | `> 90%` 或 load5 持续超过 CPU 核数 | 连续 3 分钟 | stop_load |
 | 服务器内存 | `> 90%` 或可用内存持续过低 | 连续 3 分钟 | stop_load |
@@ -284,7 +299,7 @@ BUSINESS_CODES:
 - 服务器磁盘：根分区和关键数据盘/PVC 对应磁盘使用率、可用空间、I/O wait、读写吞吐、磁盘延迟。
 - Redis：ops/sec、latency、blocked clients、used memory。
 - MySQL：connections、threads、slow queries、lock wait。
-- WebSocket：连接数、连接成功率、断连率、消息接收延迟。
+- WebSocket：目标连接数、连接成功率、断连率、活跃连接数、出价消息接收延迟、丢消息或慢连接剔除摘要、每秒 `time_sync` 接收数、`time_sync` P50/P95/P99 间隔和持续缺失窗口。
 
 服务器级指标优先通过 Prometheus / node-exporter 查询，参考 `docs/design/k8s-node-resource-observability.md` 中的 CPU、内存、网络、磁盘和 load 指标。如果 node-exporter 或 Prometheus 节点指标不可用，agent 只能使用 `kubectl top nodes`、`kubectl top pods` 和经授权的只读 SSH 系统命令做降级摘要，并在报告中标记“节点指标可信度受限”。
 
@@ -298,7 +313,9 @@ BUSINESS_CODES:
 - 抽样查询排行榜，确认响应正常且耗时在阈值内。
 - 抽样检查成功出价数和 `bid_logs` 写入量是否明显偏离。
 - 抽样检查 Redis auction state key 是否存在且未异常丢失。
-- 抽样检查 WebSocket 客户端是否收到 `bid_success`、`auction_extended` 或其他预期推送。
+- 抽样检查 Redis ranking 最高价、商品详情当前价和 `bid_logs` 写入趋势是否明显矛盾。
+- 抽样检查 WebSocket 客户端是否收到 `bid_success`、`auction_extended` 或其他预期出价事件，并记录端到端消息延迟摘要。
+- 抽样检查 WebSocket 客户端是否持续收到 `time_sync`，记录每阶段每连接平均接收数、P95 接收间隔、最大接收间隔和缺失窗口。
 
 该对账只用于确认压测没有明显业务写入断层，不输出并发一致性结论。
 
@@ -346,11 +363,13 @@ docs/agent-testing/performance-runs/<batch_id>/
 压测环境：
 压测源：
 业务链路模型：
+被测接口与业务代码定位：
 请求比例：
 阶段模型：
 性能时间线：
 关键事件时间线：
 阶段演进分析：
+热点接口 / 代码路径分析：
 停止条件触发情况：
 抽样对账时间线：
 清理时间线：
@@ -362,11 +381,11 @@ docs/agent-testing/performance-runs/<batch_id>/
 
 建议时间线表：
 
-| 时间窗口 | 阶段 | 目标 QPS | 实际 QPS | 出价 TPS | WS 连接数 | P50 | P95 | P99 | HTTP 失败率 | 业务失败率 | 超时率 | Redis Lua P95/P99 | MySQL 摘要 | WebSocket 摘要 | Pod CPU/内存 | 服务器 CPU/内存 | 服务器网络 | 服务器磁盘 | 关键观察 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| T+00:00~00:30 | smoke | 10 |  |  | 20 |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| T+00:30~01:00 | smoke | 10 |  |  | 20 |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| T+03:00~04:00 | step_load_1 | 50 |  |  | 100 |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| 时间窗口 | 阶段 | 目标 QPS | 实际 QPS | 目标 WS | 活跃 WS | 出价 TPS | 商品详情 QPS | 排行榜 QPS | P50 | P95 | P99 | HTTP 失败率 | 业务失败率 | 超时率 | Redis Lua P95/P99 | MySQL 摘要 | WebSocket 摘要 | `time_sync` 摘要 | Pod CPU/内存 | 服务器 CPU/内存 | 服务器网络 | 服务器磁盘 | 关键观察 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| T+00:00~00:30 | smoke | 10 |  | 20 |  | 8 | 1 | 1 |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| T+00:30~01:00 | smoke | 10 |  | 20 |  | 8 | 1 | 1 |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| T+03:00~04:00 | step_load_1 | 30 |  | 60 |  | 24 | 3 | 3 |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
 
 关键事件时间线单独记录：
 
@@ -377,12 +396,13 @@ docs/agent-testing/performance-runs/<batch_id>/
 
 阶段演进分析按阶段写：
 
-- `smoke`：脚本、认证、测试数据、监控和抽样对账是否可用。
-- `step_load_1`：50 QPS / 100 WS 下延迟、错误率和资源是否稳定。
-- `step_load_2`：100 QPS / 200 WS 下是否出现资源趋势变化。
-- `step_load_3`：200 QPS / 400 WS 下首个瓶颈是否开始显现。
-- `peak_hold`：峰值保持期间指标是否平稳，是否有周期性抖动或资源持续爬升。
-- `soak`：长时间运行下内存、goroutine、WebSocket 连接、服务器网络和磁盘是否稳定。
+- `smoke`：脚本、认证、测试数据、WebSocket 建连、监控和抽样对账是否可用。
+- `step_load_1`：30 QPS / 60 WS 下延迟、错误率、广播和资源是否稳定。
+- `step_load_2`：50 QPS / 100 WS 下 Redis Lua、MySQL 写入、排行榜读取和 WS 扇出是否出现趋势变化。
+- `step_load_3`：70 QPS / 140 WS 下核心写链路和广播是否出现抖动。
+- `step_load_4`：100 QPS / 200 WS 下首个明显瓶颈是否开始显现。
+- `step_load_5`：130 QPS / 260 WS 下服务端延迟、错误率、WS 保持和资源水位是否接近停止条件。
+- `step_load_6`：150 QPS / 300 WS 下退化表现和首个瓶颈证据。
 
 最终结论只作为时间线分析后的汇总，必须引用具体时间窗口和证据，不能只写一个静态结果。
 
@@ -405,16 +425,16 @@ docs/agent-testing/performance-runs/<batch_id>/
 
 ## 建议第一轮执行边界
 
-建议第一轮只做受控小流量容量探测：
+建议第一轮只做核心接口受控容量探测：
 
 ```text
-smoke -> 50 QPS + 100 WS -> 100 QPS + 200 WS -> 200 QPS + 400 WS
+10/20 WS -> 30/60 WS -> 50/100 WS -> 70/140 WS -> 100/200 WS -> 130/260 WS -> 150/300 WS
 ```
 
-如果 200 QPS 阶段已经出现 MySQL `bid_logs` 写入抖动、Redis Lua 延迟升高、WebSocket 断连率升高或 Pod 资源过高，应停止继续加压，先定位瓶颈。
+如果任一阶段已经出现 MySQL `bid_logs` 写入抖动、Redis Lua 延迟升高、WebSocket 广播延迟或断连率升高、商品详情 / 排行榜服务端 P99 破阈、HTTP 5xx / timeout 上升或 Pod 资源过高，应停止继续加压，先定位瓶颈。
 
 当前后端最值得优先观察的瓶颈是：
 
 ```text
-成功出价后的同步 MySQL 落库 + WebSocket 房间扇出
+成功出价后的 Redis Lua 原子更新 + 同步 MySQL `bid_logs` 落库 + WebSocket 同房间广播
 ```

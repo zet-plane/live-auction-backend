@@ -118,6 +118,7 @@ func durationHistogramViews() []metric.View {
 		"auction.bid.duration",
 		"ws.broadcast.duration",
 		"ws.delivery.duration",
+		"ws.write.duration",
 	}
 	views := make([]metric.View, 0, len(names))
 	for _, name := range names {

@@ -1,11 +1,14 @@
 package hub
 
 import (
+	"context"
 	"encoding/json"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/zet-plane/live-auction-backend/internal/core/observability"
 	"github.com/zet-plane/live-auction-backend/pkg/wsevent"
 )
 
@@ -57,7 +60,7 @@ func NewConn(id, userID, roomID string, ws socket, hub *Hub) *Conn {
 
 func (c *Conn) StartReadLoop() {
 	defer func() {
-		c.hub.closeConn(c)
+		c.hub.closeConnWithReason(c, "read_loop_exit")
 	}()
 
 	c.ws.SetReadDeadline(time.Now().Add(readDeadline))
@@ -87,7 +90,10 @@ func (c *Conn) StartReadLoop() {
 }
 
 func (c *Conn) StartWriteLoop() {
-	defer c.hub.closeConn(c)
+	closeReason := "write_loop_exit"
+	defer func() {
+		c.hub.closeConnWithReason(c, closeReason)
+	}()
 
 	ticker := time.NewTicker(pingInterval)
 	defer ticker.Stop()
@@ -96,18 +102,59 @@ func (c *Conn) StartWriteLoop() {
 		select {
 		case event, ok := <-c.send:
 			if !ok {
+				closeReason = "send_closed"
 				return
 			}
+			queueLen := int64(len(c.send))
+			queueCap := int64(cap(c.send))
 			c.ws.SetWriteDeadline(time.Now().Add(writeDeadline))
+			start := time.Now()
 			if err := c.ws.WriteJSON(event); err != nil {
+				reason := classifySocketWriteReason(err)
+				closeReason = "write_json_" + reason
+				observability.DefaultRecorder().WSWrite(context.Background(), observability.WSWriteMetric{
+					Result:    "failed",
+					Reason:    reason,
+					EventType: event.Type,
+					QueueLen:  queueLen,
+					QueueCap:  queueCap,
+					Duration:  time.Since(start),
+				})
 				return
 			}
+			observability.DefaultRecorder().WSWrite(context.Background(), observability.WSWriteMetric{
+				Result:    "success",
+				EventType: event.Type,
+				QueueLen:  queueLen,
+				QueueCap:  queueCap,
+				Duration:  time.Since(start),
+			})
 		case <-ticker.C:
 			deadline := time.Now().Add(writeDeadline)
 			if err := c.ws.WriteControl(websocket.PingMessage, nil, deadline); err != nil {
+				closeReason = "ping_" + classifySocketWriteReason(err)
 				return
 			}
 		}
+	}
+}
+
+func classifySocketWriteReason(err error) string {
+	if err == nil {
+		return "none"
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "timeout"), strings.Contains(msg, "deadline"):
+		return "timeout"
+	case strings.Contains(msg, "reset"):
+		return "connection_reset"
+	case strings.Contains(msg, "broken pipe"):
+		return "broken_pipe"
+	case strings.Contains(msg, "closed"):
+		return "closed"
+	default:
+		return "write_error"
 	}
 }
 
