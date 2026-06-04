@@ -380,7 +380,7 @@ func (c *fakeCache) GetAuctionHotConfig(ctx context.Context, itemID string) (*it
 	if err != nil || !ok {
 		return nil, ok, err
 	}
-	if state.RoomID == "" || state.BidIncrement <= 0 || state.EndTimeUnixMS <= 0 {
+	if state.Status == "" || state.RoomID == "" || state.BidIncrement <= 0 || state.EndTimeUnixMS <= 0 {
 		return nil, false, nil
 	}
 	return &itemcache.AuctionHotConfig{

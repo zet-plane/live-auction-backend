@@ -183,6 +183,48 @@ func TestPlaceBidRejectsNonOngoingHotStateWithoutStoreLookup(t *testing.T) {
 	}
 }
 
+func TestPlaceBidRebuildsHotStateWhenStatusMissing(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	svc := NewService(store, testPolicy, fc, nil, nil, nil)
+	endTime := time.Now().Add(5 * time.Minute)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 1000, 100, 0, endTime)
+
+	store.findItemWithRuleCalls = 0
+	fc.states[itemID] = &itemcache.AuctionState{
+		RoomID:            "room_1",
+		CurrentPrice:      1000,
+		DealPrice:         1000,
+		EndTime:           endTime,
+		EndTimeUnixMS:     endTime.UnixMilli(),
+		BidIncrement:      100,
+		PriceCap:          0,
+		DepositAmount:     0,
+		ExtendTriggerSec:  testPolicy.ExtendTriggerSec,
+		AutoExtendSec:     testPolicy.AutoExtendSec,
+		MaxExtendCount:    testPolicy.MaxExtendCount,
+		MaxTotalExtendSec: testPolicy.MaxTotalExtendSec,
+	}
+
+	result, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
+		Price:          1100,
+		IdempotencyKey: "missing_status_hot_state",
+		UserName:       "Alice",
+	})
+	if err != nil {
+		t.Fatalf("PlaceBid failed after hot state rebuild: %v", err)
+	}
+	if result.CurrentPrice != 1100 {
+		t.Fatalf("expected current_price 1100, got %d", result.CurrentPrice)
+	}
+	if store.findItemWithRuleCalls != 1 {
+		t.Fatalf("expected one FindItemWithRule call for rebuild, got %d", store.findItemWithRuleCalls)
+	}
+	if fc.states[itemID].Status != "ongoing" {
+		t.Fatalf("expected rebuilt hot state status ongoing, got %q", fc.states[itemID].Status)
+	}
+}
+
 func TestPlaceBidRejectsNonOngoingItem(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()
