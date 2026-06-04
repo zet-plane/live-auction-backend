@@ -777,6 +777,7 @@ func TestStartItemInitializesHotBidFields(t *testing.T) {
 	itemID := seedPublishedItem(t, svc, "merchant_1", "room_1")
 	rule := store.rules[store.items[itemID].RuleID]
 	rule.PriceCap = 5000
+	rule.DepositAmount = 800
 
 	if err := svc.StartItem(context.Background(), &usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}, itemID); err != nil {
 		t.Fatalf("StartItem failed: %v", err)
@@ -793,6 +794,9 @@ func TestStartItemInitializesHotBidFields(t *testing.T) {
 	}
 	if state.PriceCap != 5000 {
 		t.Fatalf("expected price_cap 5000, got %d", state.PriceCap)
+	}
+	if state.DepositAmount != 800 {
+		t.Fatalf("expected deposit_amount 800, got %d", state.DepositAmount)
 	}
 	if state.ExtendTriggerSec != 30 {
 		t.Fatalf("expected extend_trigger_sec 30, got %d", state.ExtendTriggerSec)
