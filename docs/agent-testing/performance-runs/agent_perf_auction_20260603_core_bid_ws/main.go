@@ -1266,6 +1266,22 @@ func defaultPrometheusQueries() []prometheusQuery {
 			Query: `sum(rate(auction_bid_count_total[1m]))`,
 		},
 		{
+			Name:  "bid_broadcast_rps",
+			Query: `sum(rate(auction_bid_broadcast_count_total[1m])) by (action, result)`,
+		},
+		{
+			Name:  "bid_broadcast_flush_p95",
+			Query: `histogram_quantile(0.95, sum(rate(auction_bid_broadcast_duration_bucket{action="flush"}[1m])) by (le))`,
+		},
+		{
+			Name:  "bid_broadcast_bids_p95",
+			Query: `histogram_quantile(0.95, sum(rate(auction_bid_broadcast_bids_bucket{action="flush"}[1m])) by (le))`,
+		},
+		{
+			Name:  "bid_broadcast_pending_p95",
+			Query: `histogram_quantile(0.95, sum(rate(auction_bid_broadcast_pending_bucket[1m])) by (le))`,
+		},
+		{
 			Name:  "lua_result_rps",
 			Query: `sum(rate(auction_place_bid_lua_result_count_total[1m]))`,
 		},
@@ -1276,6 +1292,22 @@ func defaultPrometheusQueries() []prometheusQuery {
 		{
 			Name:  "ws_active",
 			Query: `sum(ws_connection_active)`,
+		},
+		{
+			Name:  "ws_delivery_rps",
+			Query: `sum(rate(ws_delivery_count_total[1m])) by (event_type, result)`,
+		},
+		{
+			Name:  "ws_write_rps",
+			Query: `sum(rate(ws_write_count_total[1m])) by (event_type, result)`,
+		},
+		{
+			Name:  "ws_write_p95",
+			Query: `histogram_quantile(0.95, sum(rate(ws_write_duration_bucket[1m])) by (le, event_type, result))`,
+		},
+		{
+			Name:  "ws_send_queue_depth_p95",
+			Query: `histogram_quantile(0.95, sum(rate(ws_send_queue_depth_bucket[1m])) by (le, event_type, result))`,
 		},
 		{
 			Name:  "backend_restarts",

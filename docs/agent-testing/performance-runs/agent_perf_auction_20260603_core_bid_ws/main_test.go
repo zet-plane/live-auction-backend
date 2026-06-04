@@ -464,9 +464,17 @@ func TestDefaultPrometheusQueriesUseObservedMetricNames(t *testing.T) {
 		"http_server_request_duration_bucket",
 		"http_server_request_count_total",
 		"auction_bid_count_total",
+		"auction_bid_broadcast_count_total",
+		"auction_bid_broadcast_duration_bucket",
+		"auction_bid_broadcast_bids_bucket",
+		"auction_bid_broadcast_pending_bucket",
 		"auction_place_bid_lua_result_count_total",
 		"db_client_operation_count_total",
 		"ws_connection_active",
+		"ws_delivery_count_total",
+		"ws_write_count_total",
+		"ws_write_duration_bucket",
+		"ws_send_queue_depth_bucket",
 	} {
 		if !strings.Contains(joined, metric) {
 			t.Fatalf("expected default Prometheus queries to include %s; got:%s", metric, joined)
