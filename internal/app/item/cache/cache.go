@@ -35,6 +35,20 @@ type AuctionState struct {
 	EndReason         string
 }
 
+type AuctionHotConfig struct {
+	ItemID            string
+	RoomID            string
+	Status            string
+	BidIncrement      int64
+	PriceCap          int64
+	DepositAmount     int64
+	ExtendTriggerSec  int
+	AutoExtendSec     int
+	MaxExtendCount    int
+	MaxTotalExtendSec int
+	EndTimeUnixMS     int64
+}
+
 type BidLuaArgs struct {
 	UserID            string
 	UserName          string
@@ -77,6 +91,7 @@ const FinalSnapshotTTL = 24 * time.Hour
 type Cache interface {
 	InitAuctionState(ctx context.Context, itemID string, state AuctionState) error
 	GetAuctionState(ctx context.Context, itemID string) (*AuctionState, bool, error)
+	GetAuctionHotConfig(ctx context.Context, itemID string) (*AuctionHotConfig, bool, error)
 	DeleteAuctionState(ctx context.Context, itemID string) error
 	ExpireAuctionState(ctx context.Context, itemID string, ttl time.Duration) error
 	ScheduleAuctionEnd(ctx context.Context, itemID string, endUnixMS int64) error
@@ -228,6 +243,29 @@ func (c *RedisCache) GetAuctionState(ctx context.Context, itemID string) (*Aucti
 		MaxExtendCount:    parseInt(vals["max_extend_count"]),
 		MaxTotalExtendSec: parseInt(vals["max_total_extend_sec"]),
 		EndReason:         vals["end_reason"],
+	}, true, nil
+}
+
+func (c *RedisCache) GetAuctionHotConfig(ctx context.Context, itemID string) (*AuctionHotConfig, bool, error) {
+	state, ok, err := c.GetAuctionState(ctx, itemID)
+	if err != nil || !ok {
+		return nil, ok, err
+	}
+	if state.RoomID == "" || state.BidIncrement <= 0 || state.EndTimeUnixMS <= 0 {
+		return nil, false, nil
+	}
+	return &AuctionHotConfig{
+		ItemID:            itemID,
+		RoomID:            state.RoomID,
+		Status:            state.Status,
+		BidIncrement:      state.BidIncrement,
+		PriceCap:          state.PriceCap,
+		DepositAmount:     state.DepositAmount,
+		ExtendTriggerSec:  state.ExtendTriggerSec,
+		AutoExtendSec:     state.AutoExtendSec,
+		MaxExtendCount:    state.MaxExtendCount,
+		MaxTotalExtendSec: state.MaxTotalExtendSec,
+		EndTimeUnixMS:     state.EndTimeUnixMS,
 	}, true, nil
 }
 

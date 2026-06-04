@@ -18,15 +18,16 @@ import (
 )
 
 type fakeStore struct {
-	items               map[string]*itemmodel.AuctionItem
-	rules               map[string]*itemmodel.AuctionRule
-	roomCurrentItems    map[string]string
-	updateErr           error
-	setRoomCurrentErr   error
-	clearRoomCurrentErr error
-	bidLogs             []*itemmodel.BidLog
-	findMu              sync.Mutex
-	findItemCalls       map[string]int
+	items                 map[string]*itemmodel.AuctionItem
+	rules                 map[string]*itemmodel.AuctionRule
+	roomCurrentItems      map[string]string
+	updateErr             error
+	setRoomCurrentErr     error
+	clearRoomCurrentErr   error
+	bidLogs               []*itemmodel.BidLog
+	findMu                sync.Mutex
+	findItemCalls         map[string]int
+	findItemWithRuleCalls int
 }
 
 func newFakeStore() *fakeStore {
@@ -50,6 +51,7 @@ func (s *fakeStore) CreateItemWithRule(item *itemmodel.AuctionItem, rule *itemmo
 
 func (s *fakeStore) FindItemWithRule(itemID string) (*itemmodel.AuctionItem, *itemmodel.AuctionRule, error) {
 	s.findMu.Lock()
+	s.findItemWithRuleCalls++
 	s.findItemCalls[itemID]++
 	s.findMu.Unlock()
 
@@ -325,6 +327,7 @@ type fakeCache struct {
 	listActiveRelease chan struct{}
 	bidLuaCode        int
 	bidLuaErr         error
+	bidLuaResult      *itemcache.BidLuaResult
 	initErr           error
 	getStateErr       error
 	deleteErr         error
@@ -370,6 +373,29 @@ func (c *fakeCache) GetAuctionState(_ context.Context, itemID string) (*itemcach
 	}
 	cp := *s
 	return &cp, true, nil
+}
+
+func (c *fakeCache) GetAuctionHotConfig(ctx context.Context, itemID string) (*itemcache.AuctionHotConfig, bool, error) {
+	state, ok, err := c.GetAuctionState(ctx, itemID)
+	if err != nil || !ok {
+		return nil, ok, err
+	}
+	if state.RoomID == "" || state.BidIncrement <= 0 || state.EndTimeUnixMS <= 0 {
+		return nil, false, nil
+	}
+	return &itemcache.AuctionHotConfig{
+		ItemID:            itemID,
+		RoomID:            state.RoomID,
+		Status:            state.Status,
+		BidIncrement:      state.BidIncrement,
+		PriceCap:          state.PriceCap,
+		DepositAmount:     state.DepositAmount,
+		ExtendTriggerSec:  state.ExtendTriggerSec,
+		AutoExtendSec:     state.AutoExtendSec,
+		MaxExtendCount:    state.MaxExtendCount,
+		MaxTotalExtendSec: state.MaxTotalExtendSec,
+		EndTimeUnixMS:     state.EndTimeUnixMS,
+	}, true, nil
 }
 
 func (c *fakeCache) DeleteAuctionState(_ context.Context, itemID string) error {
@@ -517,6 +543,10 @@ func (c *fakeCache) ClearRoomCurrentItem(_ context.Context, roomID, itemID strin
 func (c *fakeCache) PlaceBidLua(_ context.Context, itemID string, args itemcache.BidLuaArgs) (*itemcache.BidLuaResult, error) {
 	if c.bidLuaErr != nil {
 		return nil, c.bidLuaErr
+	}
+	if c.bidLuaResult != nil {
+		result := *c.bidLuaResult
+		return &result, nil
 	}
 	if c.bidLuaCode != 0 {
 		result := &itemcache.BidLuaResult{Code: c.bidLuaCode}

@@ -97,6 +97,55 @@ func TestPlaceBidSucceeds(t *testing.T) {
 	}
 }
 
+func TestPlaceBidUsesHotStateWithoutStoreLookup(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	svc := NewService(store, testPolicy, fc, nil, nil, nil)
+	endTime := time.Now().Add(5 * time.Minute)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 1000, 100, 0, endTime)
+
+	store.findItemWithRuleCalls = 0
+	fc.states[itemID] = &itemcache.AuctionState{
+		Status:            "ongoing",
+		RoomID:            "room_1",
+		CurrentPrice:      1000,
+		DealPrice:         1000,
+		EndTime:           endTime,
+		EndTimeUnixMS:     endTime.UnixMilli(),
+		BidIncrement:      100,
+		PriceCap:          0,
+		DepositAmount:     0,
+		ExtendTriggerSec:  testPolicy.ExtendTriggerSec,
+		AutoExtendSec:     testPolicy.AutoExtendSec,
+		MaxExtendCount:    testPolicy.MaxExtendCount,
+		MaxTotalExtendSec: testPolicy.MaxTotalExtendSec,
+	}
+	fc.bidLuaResult = &itemcache.BidLuaResult{
+		Code:          0,
+		BidID:         "bid_hot",
+		CurrentPrice:  1100,
+		LeaderUserID:  "user_1",
+		EndTimeUnix:   endTime.Unix(),
+		EndTimeUnixMS: endTime.UnixMilli(),
+		Status:        "ongoing",
+	}
+
+	result, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
+		Price:          1100,
+		IdempotencyKey: "hot_state",
+		UserName:       "Alice",
+	})
+	if err != nil {
+		t.Fatalf("PlaceBid failed: %v", err)
+	}
+	if result.BidID != "bid_hot" {
+		t.Fatalf("expected bid_id bid_hot, got %q", result.BidID)
+	}
+	if store.findItemWithRuleCalls != 0 {
+		t.Fatalf("expected no FindItemWithRule calls, got %d", store.findItemWithRuleCalls)
+	}
+}
+
 func TestPlaceBidRejectsNonOngoingItem(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()
@@ -329,6 +378,7 @@ func TestPlaceBidRejectsMissingDepositBeforeRedis(t *testing.T) {
 	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 0, endTime)
 	rule := store.rules[store.items[itemID].RuleID]
 	rule.DepositAmount = 5000
+	fc.states[itemID].DepositAmount = 5000
 
 	_, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
 		Price: 100, IdempotencyKey: "missing_deposit", UserName: "Alice",
@@ -360,6 +410,7 @@ func TestPlaceBidAllowsPaidDeposit(t *testing.T) {
 	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 0, endTime)
 	rule := store.rules[store.items[itemID].RuleID]
 	rule.DepositAmount = 5000
+	fc.states[itemID].DepositAmount = 5000
 
 	result, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
 		Price: 100, IdempotencyKey: "paid_deposit", UserName: "Alice",
