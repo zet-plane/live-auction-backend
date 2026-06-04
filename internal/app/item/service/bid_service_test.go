@@ -89,11 +89,14 @@ func TestPlaceBidSucceeds(t *testing.T) {
 	if result.Status != "ongoing" {
 		t.Fatalf("expected status ongoing, got %q", result.Status)
 	}
-	if len(store.bidLogs) != 1 {
-		t.Fatalf("expected 1 bid log, got %d", len(store.bidLogs))
+	if len(store.bidLogs) != 0 {
+		t.Fatalf("expected no synchronous bid logs, got %d", len(store.bidLogs))
 	}
-	if store.bidLogs[0].RoomID != "room_1" {
-		t.Fatalf("expected room_id room_1, got %q", store.bidLogs[0].RoomID)
+	if len(fc.bidLogEvents) != 1 {
+		t.Fatalf("expected 1 bid log event, got %d", len(fc.bidLogEvents))
+	}
+	if fc.bidLogEvents[0].RoomID != "room_1" {
+		t.Fatalf("expected room_id room_1, got %q", fc.bidLogEvents[0].RoomID)
 	}
 }
 
@@ -201,6 +204,59 @@ func TestPlaceBidSuccessfulBidAppendsBidLogEvent(t *testing.T) {
 	}
 	if event.CreatedAtUnixMS != now.UnixMilli() {
 		t.Fatalf("expected created_at_unix_ms %d, got %d", now.UnixMilli(), event.CreatedAtUnixMS)
+	}
+}
+
+func TestPlaceBidSuccessfulBidDoesNotSynchronouslyCreateBidLog(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	now := time.Date(2026, 6, 1, 13, 0, 0, 0, time.UTC)
+	svc := NewService(store, testPolicy, fc, nil, nil, nil)
+	svc.now = func() time.Time { return now }
+	endTime := now.Add(5 * time.Minute)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 1000, 100, 0, endTime)
+
+	fc.states[itemID] = &itemcache.AuctionState{
+		Status:            "ongoing",
+		RoomID:            "room_1",
+		CurrentPrice:      1000,
+		DealPrice:         1000,
+		EndTime:           endTime,
+		EndTimeUnixMS:     endTime.UnixMilli(),
+		BidIncrement:      100,
+		PriceCap:          0,
+		DepositAmount:     0,
+		ExtendTriggerSec:  testPolicy.ExtendTriggerSec,
+		AutoExtendSec:     testPolicy.AutoExtendSec,
+		MaxExtendCount:    testPolicy.MaxExtendCount,
+		MaxTotalExtendSec: testPolicy.MaxTotalExtendSec,
+	}
+	fc.bidLuaResult = &itemcache.BidLuaResult{
+		Code:          0,
+		BidID:         "bid_async",
+		CurrentPrice:  1300,
+		LeaderUserID:  "user_1",
+		EndTimeUnix:   endTime.Unix(),
+		EndTimeUnixMS: endTime.UnixMilli(),
+		Status:        "ongoing",
+	}
+
+	result, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
+		Price:          1300,
+		IdempotencyKey: "async_bid_log",
+		UserName:       "Alice",
+	})
+	if err != nil {
+		t.Fatalf("PlaceBid failed: %v", err)
+	}
+	if result.BidID != "bid_async" {
+		t.Fatalf("expected bid_id bid_async, got %q", result.BidID)
+	}
+	if len(store.bidLogs) != 0 {
+		t.Fatalf("expected no synchronous bid logs, got %d", len(store.bidLogs))
+	}
+	if len(fc.bidLogEvents) != 1 {
+		t.Fatalf("expected 1 bid log event, got %d", len(fc.bidLogEvents))
 	}
 }
 
@@ -610,15 +666,15 @@ func TestPlaceBidIdempotent(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("idempotent bid should not fail: %v", err)
 	}
-	// BidLog must not be written a second time
+	// BidLog event must not be appended a second time.
 	count := 0
-	for _, l := range store.bidLogs {
-		if l.ItemID == itemID {
+	for _, event := range fc.bidLogEvents {
+		if event.ItemID == itemID {
 			count++
 		}
 	}
 	if count != 1 {
-		t.Fatalf("expected 1 bid log after idempotent retry, got %d", count)
+		t.Fatalf("expected 1 bid log event after idempotent retry, got %d", count)
 	}
 }
 
@@ -794,8 +850,11 @@ func TestPlaceBidAllowsPaidDeposit(t *testing.T) {
 	if deposits.calls != 1 {
 		t.Fatalf("expected one deposit checker call, got %d", deposits.calls)
 	}
-	if len(store.bidLogs) != 1 {
-		t.Fatalf("expected one bid log, got %d", len(store.bidLogs))
+	if len(store.bidLogs) != 0 {
+		t.Fatalf("expected no synchronous bid logs, got %d", len(store.bidLogs))
+	}
+	if len(fc.bidLogEvents) != 1 {
+		t.Fatalf("expected one bid log event, got %d", len(fc.bidLogEvents))
 	}
 }
 

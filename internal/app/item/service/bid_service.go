@@ -127,19 +127,6 @@ func (s *Service) PlaceBid(ctx context.Context, current *usermodel.User, itemID 
 		}
 	}
 
-	// TODO: 高并发场景下改为异步落库（写入 Redis LIST，worker 批量消费）
-	bidLog := &model.BidLog{
-		ID:     luaResult.BidID,
-		ItemID: hot.ItemID,
-		RoomID: hot.RoomID,
-		UserID: current.ID,
-		Price:  input.Price,
-	}
-	if err := s.store.CreateBidLog(bidLog); err != nil {
-		bidResult = "error"
-		bidReason = "db_error"
-		return nil, err
-	}
 	if err := s.cache.AppendBidLogEvent(ctx, itemcache.BidLogEvent{
 		BidID:           luaResult.BidID,
 		ItemID:          hot.ItemID,
