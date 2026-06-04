@@ -328,6 +328,7 @@ type fakeCache struct {
 	bidLuaCode        int
 	bidLuaErr         error
 	bidLuaResult      *itemcache.BidLuaResult
+	lastBidLuaArgs    *itemcache.BidLuaArgs
 	initErr           error
 	getStateErr       error
 	deleteErr         error
@@ -380,7 +381,14 @@ func (c *fakeCache) GetAuctionHotConfig(ctx context.Context, itemID string) (*it
 	if err != nil || !ok {
 		return nil, ok, err
 	}
-	if state.Status == "" || state.RoomID == "" || state.BidIncrement <= 0 || state.EndTimeUnixMS <= 0 {
+	if state.Status == "" ||
+		state.RoomID == "" ||
+		state.BidIncrement <= 0 ||
+		state.EndTimeUnixMS <= 0 ||
+		state.ExtendTriggerSec <= 0 ||
+		state.AutoExtendSec <= 0 ||
+		state.MaxExtendCount <= 0 ||
+		state.MaxTotalExtendSec <= 0 {
 		return nil, false, nil
 	}
 	return &itemcache.AuctionHotConfig{
@@ -544,6 +552,8 @@ func (c *fakeCache) PlaceBidLua(_ context.Context, itemID string, args itemcache
 	if c.bidLuaErr != nil {
 		return nil, c.bidLuaErr
 	}
+	argsCopy := args
+	c.lastBidLuaArgs = &argsCopy
 	if c.bidLuaResult != nil {
 		result := *c.bidLuaResult
 		return &result, nil

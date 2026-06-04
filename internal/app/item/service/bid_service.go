@@ -268,6 +268,16 @@ func (s *Service) bidHotConfig(ctx context.Context, itemID string) (*itemcache.A
 		return nil, errorx.ErrInvalidRequest
 	}
 
+	var existing *itemcache.AuctionState
+	if state, stateOK, stateErr := s.cache.GetAuctionState(ctx, itemID); stateErr != nil {
+		return nil, stateErr
+	} else if stateOK {
+		if state.Status != "" && state.Status != string(model.ItemOngoing) {
+			return nil, errorx.ErrInvalidRequest
+		}
+		existing = state
+	}
+
 	item, rule, err := s.store.FindItemWithRule(itemID)
 	if err != nil {
 		return nil, err
@@ -292,6 +302,10 @@ func (s *Service) bidHotConfig(ctx context.Context, itemID string) (*itemcache.A
 		MaxExtendCount:    s.policy.MaxExtendCount,
 		MaxTotalExtendSec: s.policy.MaxTotalExtendSec,
 	}
+	if existing != nil {
+		preserveDynamicAuctionState(&state, existing)
+		endTimeUnixMS = state.EndTimeUnixMS
+	}
 	if err := s.cache.InitAuctionState(ctx, item.ID, state); err != nil {
 		return nil, err
 	}
@@ -311,6 +325,33 @@ func (s *Service) bidHotConfig(ctx context.Context, itemID string) (*itemcache.A
 		MaxTotalExtendSec: s.policy.MaxTotalExtendSec,
 		EndTimeUnixMS:     endTimeUnixMS,
 	}, nil
+}
+
+func preserveDynamicAuctionState(state, existing *itemcache.AuctionState) {
+	if existing.CurrentPrice > 0 {
+		state.CurrentPrice = existing.CurrentPrice
+	}
+	switch {
+	case existing.DealPrice > 0:
+		state.DealPrice = existing.DealPrice
+	case existing.CurrentPrice > 0:
+		state.DealPrice = existing.CurrentPrice
+	}
+	state.LeaderUserID = existing.LeaderUserID
+	if existing.EndTimeUnixMS > 0 {
+		state.EndTimeUnixMS = existing.EndTimeUnixMS
+		state.EndTime = time.UnixMilli(existing.EndTimeUnixMS)
+	} else if !existing.EndTime.IsZero() {
+		state.EndTime = existing.EndTime
+		state.EndTimeUnixMS = existing.EndTime.UnixMilli()
+	}
+	state.BidCount = existing.BidCount
+	state.ParticipantCount = existing.ParticipantCount
+	state.IsExtended = existing.IsExtended
+	state.ExtendCount = existing.ExtendCount
+	state.TotalExtendedSec = existing.TotalExtendedSec
+	state.EndedAtUnixMS = existing.EndedAtUnixMS
+	state.EndReason = existing.EndReason
 }
 
 func bidEndTimeUnixMS(result *itemcache.BidLuaResult) int64 {

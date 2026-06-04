@@ -225,6 +225,93 @@ func TestPlaceBidRebuildsHotStateWhenStatusMissing(t *testing.T) {
 	}
 }
 
+func TestPlaceBidCompletesIncompleteHotStateWithoutResettingPrice(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	svc := NewService(store, testPolicy, fc, nil, nil, nil)
+	endTime := time.Now().Add(5 * time.Minute)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 1000, 100, 0, endTime)
+
+	store.findItemWithRuleCalls = 0
+	fc.states[itemID] = &itemcache.AuctionState{
+		Status:            "ongoing",
+		CurrentPrice:      1500,
+		DealPrice:         1500,
+		LeaderUserID:      "user_2",
+		EndTime:           endTime,
+		EndTimeUnixMS:     endTime.UnixMilli(),
+		BidCount:          3,
+		ParticipantCount:  2,
+		ExtendCount:       1,
+		TotalExtendedSec:  10,
+		IsExtended:        true,
+		ExtendTriggerSec:  testPolicy.ExtendTriggerSec,
+		AutoExtendSec:     testPolicy.AutoExtendSec,
+		MaxExtendCount:    testPolicy.MaxExtendCount,
+		MaxTotalExtendSec: testPolicy.MaxTotalExtendSec,
+	}
+
+	_, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
+		Price:          1100,
+		IdempotencyKey: "preserve_dynamic_state",
+		UserName:       "Alice",
+	})
+	var ce *errorx.CodeError
+	if !errors.As(err, &ce) || ce.Code != 40003 {
+		t.Fatalf("expected price too low after preserving current price, got %v", err)
+	}
+	if store.findItemWithRuleCalls != 1 {
+		t.Fatalf("expected one FindItemWithRule call for repair, got %d", store.findItemWithRuleCalls)
+	}
+	state := fc.states[itemID]
+	if state.CurrentPrice != 1500 || state.DealPrice != 1500 || state.LeaderUserID != "user_2" {
+		t.Fatalf("expected dynamic state preserved, got price/deal/leader %d/%d/%q", state.CurrentPrice, state.DealPrice, state.LeaderUserID)
+	}
+	if state.RoomID != "room_1" || state.BidIncrement != 100 {
+		t.Fatalf("expected hot fields completed from DB, got room=%q increment=%d", state.RoomID, state.BidIncrement)
+	}
+}
+
+func TestPlaceBidRepairsMissingPolicyHotFields(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	svc := NewService(store, testPolicy, fc, nil, nil, nil)
+	endTime := time.Now().Add(5 * time.Minute)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 1000, 100, 0, endTime)
+
+	store.findItemWithRuleCalls = 0
+	fc.states[itemID] = &itemcache.AuctionState{
+		Status:        "ongoing",
+		RoomID:        "room_1",
+		CurrentPrice:  1000,
+		DealPrice:     1000,
+		EndTime:       endTime,
+		EndTimeUnixMS: endTime.UnixMilli(),
+		BidIncrement:  100,
+	}
+
+	_, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
+		Price:          1100,
+		IdempotencyKey: "repair_policy_fields",
+		UserName:       "Alice",
+	})
+	if err != nil {
+		t.Fatalf("PlaceBid failed after policy repair: %v", err)
+	}
+	if store.findItemWithRuleCalls != 1 {
+		t.Fatalf("expected one FindItemWithRule call for policy repair, got %d", store.findItemWithRuleCalls)
+	}
+	if fc.lastBidLuaArgs == nil {
+		t.Fatal("expected PlaceBidLua to be called")
+	}
+	if fc.lastBidLuaArgs.ExtendTriggerSec != testPolicy.ExtendTriggerSec ||
+		fc.lastBidLuaArgs.AutoExtendSec != testPolicy.AutoExtendSec ||
+		fc.lastBidLuaArgs.MaxExtendCount != testPolicy.MaxExtendCount ||
+		fc.lastBidLuaArgs.MaxTotalExtendSec != testPolicy.MaxTotalExtendSec {
+		t.Fatalf("expected repaired policy args %+v, got %+v", testPolicy, fc.lastBidLuaArgs)
+	}
+}
+
 func TestPlaceBidRejectsNonOngoingItem(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()

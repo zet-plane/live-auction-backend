@@ -251,7 +251,14 @@ func (c *RedisCache) GetAuctionHotConfig(ctx context.Context, itemID string) (*A
 	if err != nil || !ok {
 		return nil, ok, err
 	}
-	if state.Status == "" || state.RoomID == "" || state.BidIncrement <= 0 || state.EndTimeUnixMS <= 0 {
+	if state.Status == "" ||
+		state.RoomID == "" ||
+		state.BidIncrement <= 0 ||
+		state.EndTimeUnixMS <= 0 ||
+		state.ExtendTriggerSec <= 0 ||
+		state.AutoExtendSec <= 0 ||
+		state.MaxExtendCount <= 0 ||
+		state.MaxTotalExtendSec <= 0 {
 		return nil, false, nil
 	}
 	return &AuctionHotConfig{
