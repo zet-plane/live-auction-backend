@@ -116,6 +116,7 @@ func durationHistogramViews() []metric.View {
 		"auction.place_bid.lua.duration",
 		"cron.job.duration",
 		"auction.bid.duration",
+		"auction.bid_broadcast.duration",
 		"ws.broadcast.duration",
 		"ws.delivery.duration",
 		"ws.write.duration",

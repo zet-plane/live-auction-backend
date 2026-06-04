@@ -90,6 +90,99 @@ func TestLoadConfigUsesApprovedQPSStages(t *testing.T) {
 	}
 }
 
+func TestLoadConfigCanDisableWebSocketTargets(t *testing.T) {
+	t.Setenv("PERF_DISABLE_WS", "true")
+
+	cfg := loadConfig()
+
+	for _, stage := range cfg.Stages {
+		if stage.TargetWS != 0 {
+			t.Fatalf("expected websocket target to be disabled for %s, got %d", stage.Name, stage.TargetWS)
+		}
+	}
+}
+
+func TestLoadConfigCanUseCustomQPSStages(t *testing.T) {
+	t.Setenv("PERF_STAGE_QPS", "150,200,300,500")
+	t.Setenv("PERF_DISABLE_WS", "true")
+	t.Setenv("PERF_REQUEST_MIX", "bid_only")
+
+	cfg := loadConfig()
+
+	want := []float64{150, 200, 300, 500}
+	if len(cfg.Stages) != len(want) {
+		t.Fatalf("expected %d custom stages, got %d", len(want), len(cfg.Stages))
+	}
+	for i, qps := range want {
+		stage := cfg.Stages[i]
+		if stage.TargetQPS != qps || stage.Concurrency != int(qps) || stage.TargetWS != 0 || stage.RequestMix != "bid_only" {
+			t.Fatalf("unexpected custom stage %d: %#v", i, stage)
+		}
+	}
+}
+
+func TestLoadConfigCanRunCleanupOnly(t *testing.T) {
+	t.Setenv("PERF_CLEANUP_ONLY", "true")
+
+	cfg := loadConfig()
+
+	if !cfg.CleanupOnly {
+		t.Fatal("expected cleanup-only mode to be enabled")
+	}
+}
+
+func TestLoadConfigCanOverrideCustomWebSocketTargets(t *testing.T) {
+	t.Setenv("PERF_STAGE_QPS", "5,5")
+	t.Setenv("PERF_STAGE_WS", "200,400")
+	t.Setenv("PERF_REQUEST_MIX", "item_only")
+
+	cfg := loadConfig()
+
+	wantWS := []int{200, 400}
+	if len(cfg.Stages) != len(wantWS) {
+		t.Fatalf("expected %d custom stages, got %d", len(wantWS), len(cfg.Stages))
+	}
+	for i, ws := range wantWS {
+		stage := cfg.Stages[i]
+		if stage.TargetQPS != 5 || stage.Concurrency != 5 || stage.TargetWS != ws || stage.RequestMix != "item_only" {
+			t.Fatalf("unexpected ws hold stage %d: %#v", i, stage)
+		}
+	}
+}
+
+func TestBatchScopedCleanupCredentialsAreDeterministic(t *testing.T) {
+	batchID := "agent_perf_auction_20260604_ws_limit_probe_fanout"
+
+	if got := merchantAccount(batchID); got != compactBatch(batchID)+"_m" {
+		t.Fatalf("unexpected merchant account: %s", got)
+	}
+	if got := userAccount(batchID, 7); got != compactBatch(batchID)+"_u007" {
+		t.Fatalf("unexpected user account: %s", got)
+	}
+	if got := batchPassword(batchID); got != "PerfPass_"+compactBatch(batchID) {
+		t.Fatalf("unexpected password derivation: %s", got)
+	}
+}
+
+func TestIsBatchMerchantItemOnlySelectsRunnerOwnedItems(t *testing.T) {
+	batchID := "agent_perf_auction_20260604_ws_limit_probe_fanout"
+	tests := []struct {
+		name string
+		item cleanupMerchantItem
+		want bool
+	}{
+		{name: "owned item", item: cleanupMerchantItem{Title: "agent_perf_item_" + batchID}, want: true},
+		{name: "same batch wrong prefix", item: cleanupMerchantItem{Title: "manual_item_" + batchID}, want: false},
+		{name: "runner prefix different batch", item: cleanupMerchantItem{Title: "agent_perf_item_other_batch"}, want: false},
+	}
+
+	for _, tt := range tests {
+		if got := isBatchMerchantItem(batchID, tt.item); got != tt.want {
+			t.Fatalf("%s: got %t, want %t", tt.name, got, tt.want)
+		}
+	}
+}
+
 func TestMerchantDisplayNameFitsUserNameLimit(t *testing.T) {
 	got := merchantDisplayName("agent_perf_auction_20260603_ws_prom_validation2")
 
@@ -153,6 +246,32 @@ func TestBuildRequestUsesCoreBidRankingItemMix(t *testing.T) {
 	}
 	if bids != 80 || rankings != 10 || items != 10 || other != 0 {
 		t.Fatalf("expected 80/10/10 core mix and no other requests, got bids=%d rankings=%d items=%d other=%d", bids, rankings, items, other)
+	}
+}
+
+func TestBuildRequestCanUseBidOnlyMix(t *testing.T) {
+	data := &TestData{
+		ItemID:     "item_test",
+		UserTokens: []string{"token_1"},
+	}
+	for n := uint64(0); n < 100; n++ {
+		spec := buildRequest(Config{}, data, StageConfig{RequestMix: "bid_only"}, 0, n)
+		if spec.Method != http.MethodPost || !strings.HasSuffix(spec.Path, "/bids") {
+			t.Fatalf("expected bid-only request at n=%d, got %#v", n, spec)
+		}
+	}
+}
+
+func TestBuildRequestCanUseItemOnlyMix(t *testing.T) {
+	data := &TestData{
+		ItemID:     "item_test",
+		UserTokens: []string{"token_1"},
+	}
+	for n := uint64(0); n < 100; n++ {
+		spec := buildRequest(Config{}, data, StageConfig{RequestMix: "item_only"}, 0, n)
+		if spec.Method != http.MethodGet || strings.Contains(spec.Path, "/bids") || strings.Contains(spec.Path, "/ranking") {
+			t.Fatalf("expected item-only request at n=%d, got %#v", n, spec)
+		}
 	}
 }
 

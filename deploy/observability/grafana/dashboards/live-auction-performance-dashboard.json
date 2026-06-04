@@ -92,23 +92,24 @@
     {
       "id": 7,
       "type": "timeseries",
-      "title": "Redis Lua 耗时与返回码",
+      "title": "Redis Lua 延迟 P50 / P95 / P99",
       "datasource": {"type": "prometheus", "uid": "Prometheus"},
       "targets": [
-        {"expr": "histogram_quantile(0.95, sum(rate(auction_place_bid_lua_duration_bucket[$__rate_interval])) by (le, code))", "legendFormat": "lua p95 code={{code}}", "refId": "A"},
-        {"expr": "sum(rate(auction_place_bid_lua_result_count_total[$__rate_interval])) by (code)", "legendFormat": "lua code {{code}}/s", "refId": "B"}
+        {"expr": "histogram_quantile(0.50, sum(rate(auction_place_bid_lua_duration_bucket[$__rate_interval])) by (le))", "legendFormat": "lua p50", "refId": "A"},
+        {"expr": "histogram_quantile(0.95, sum(rate(auction_place_bid_lua_duration_bucket[$__rate_interval])) by (le))", "legendFormat": "lua p95", "refId": "B"},
+        {"expr": "histogram_quantile(0.99, sum(rate(auction_place_bid_lua_duration_bucket[$__rate_interval])) by (le))", "legendFormat": "lua p99", "refId": "C"}
       ],
-      "fieldConfig": {"defaults": {"unit": "short", "decimals": 3, "custom": {"drawStyle": "line", "lineInterpolation": "smooth", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never"}}, "overrides": []},
+      "fieldConfig": {"defaults": {"unit": "s", "decimals": 3, "custom": {"drawStyle": "line", "lineInterpolation": "smooth", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never"}}, "overrides": []},
       "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
       "gridPos": {"x": 12, "y": 4, "w": 12, "h": 8}
     },
     {
       "id": 8,
       "type": "timeseries",
-      "title": "出价结果分布",
+      "title": "Redis Lua 返回码",
       "datasource": {"type": "prometheus", "uid": "Prometheus"},
       "targets": [
-        {"expr": "sum(rate(auction_bid_count_total[$__rate_interval])) by (result, reason)", "legendFormat": "{{result}} {{reason}}", "refId": "A"}
+        {"expr": "sum(rate(auction_place_bid_lua_result_count_total[$__rate_interval])) by (code)", "legendFormat": "code {{code}}/s", "refId": "A"}
       ],
       "fieldConfig": {"defaults": {"unit": "ops", "decimals": 2, "custom": {"drawStyle": "line", "lineInterpolation": "smooth", "lineWidth": 2, "fillOpacity": 12, "showPoints": "never"}}, "overrides": []},
       "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
@@ -117,26 +118,27 @@
     {
       "id": 9,
       "type": "timeseries",
-      "title": "BidLog / MySQL 写入",
+      "title": "MySQL BidLog 延迟 P50 / P95 / P99",
       "datasource": {"type": "prometheus", "uid": "Prometheus"},
       "targets": [
-        {"expr": "sum(rate(db_client_operation_count_total{db_sql_table=~\"bid_logs|bid_logs.*\"}[$__rate_interval])) by (db_operation, result)", "legendFormat": "{{db_operation}} {{result}}/s", "refId": "A"},
-        {"expr": "histogram_quantile(0.95, sum(rate(db_client_operation_duration_bucket{db_sql_table=~\"bid_logs|bid_logs.*\"}[$__rate_interval])) by (le, db_operation))", "legendFormat": "{{db_operation}} p95", "refId": "B"}
+        {"expr": "histogram_quantile(0.50, sum(rate(db_client_operation_duration_bucket{db_sql_table=~\"bid_logs|bid_logs.*\"}[$__rate_interval])) by (le, db_operation, result))", "legendFormat": "{{db_operation}} {{result}} p50", "refId": "A"},
+        {"expr": "histogram_quantile(0.95, sum(rate(db_client_operation_duration_bucket{db_sql_table=~\"bid_logs|bid_logs.*\"}[$__rate_interval])) by (le, db_operation, result))", "legendFormat": "{{db_operation}} {{result}} p95", "refId": "B"},
+        {"expr": "histogram_quantile(0.99, sum(rate(db_client_operation_duration_bucket{db_sql_table=~\"bid_logs|bid_logs.*\"}[$__rate_interval])) by (le, db_operation, result))", "legendFormat": "{{db_operation}} {{result}} p99", "refId": "C"}
       ],
-      "fieldConfig": {"defaults": {"unit": "short", "decimals": 3, "custom": {"drawStyle": "line", "lineInterpolation": "smooth", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never"}}, "overrides": []},
+      "fieldConfig": {"defaults": {"unit": "s", "decimals": 3, "custom": {"drawStyle": "line", "lineInterpolation": "smooth", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never"}}, "overrides": []},
       "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
       "gridPos": {"x": 8, "y": 12, "w": 8, "h": 8}
     },
     {
       "id": 10,
       "type": "timeseries",
-      "title": "MySQL 连接池",
+      "title": "MySQL 写入 / 连接池",
       "datasource": {"type": "prometheus", "uid": "Prometheus"},
       "targets": [
-        {"expr": "db_client_connections_open", "legendFormat": "open", "refId": "A"},
-        {"expr": "db_client_connections_in_use", "legendFormat": "in_use", "refId": "B"},
-        {"expr": "db_client_connections_idle", "legendFormat": "idle", "refId": "C"},
-        {"expr": "rate(db_client_connections_wait_count[$__rate_interval])", "legendFormat": "wait/s", "refId": "D"}
+        {"expr": "sum(rate(db_client_operation_count_total{db_sql_table=~\"bid_logs|bid_logs.*\"}[$__rate_interval])) by (db_operation, result)", "legendFormat": "{{db_operation}} {{result}}/s", "refId": "A"},
+        {"expr": "sum(rate(db_client_operation_count_total{db_sql_table=~\"bid_logs|bid_logs.*\", slow=\"true\"}[$__rate_interval])) by (db_operation, result)", "legendFormat": "slow {{db_operation}} {{result}}/s", "refId": "B"},
+        {"expr": "db_client_connections_in_use", "legendFormat": "connections in_use", "refId": "C"},
+        {"expr": "rate(db_client_connections_wait_count[$__rate_interval])", "legendFormat": "pool wait/s", "refId": "D"}
       ],
       "fieldConfig": {"defaults": {"unit": "short", "decimals": 2, "custom": {"drawStyle": "line", "lineInterpolation": "smooth", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never"}}, "overrides": []},
       "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
@@ -144,6 +146,18 @@
     },
     {
       "id": 11,
+      "type": "timeseries",
+      "title": "出价结果分布",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [
+        {"expr": "sum(rate(auction_bid_count_total[$__rate_interval])) by (result, reason)", "legendFormat": "{{result}} {{reason}}", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "ops", "decimals": 2, "custom": {"drawStyle": "line", "lineInterpolation": "smooth", "lineWidth": 2, "fillOpacity": 12, "showPoints": "never"}}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "gridPos": {"x": 0, "y": 20, "w": 8, "h": 8}
+    },
+    {
+      "id": 12,
       "type": "timeseries",
       "title": "WebSocket 连接 / 断连 / 丢弃",
       "datasource": {"type": "prometheus", "uid": "Prometheus"},
@@ -153,10 +167,10 @@
       ],
       "fieldConfig": {"defaults": {"unit": "ops", "decimals": 2, "custom": {"drawStyle": "line", "lineInterpolation": "smooth", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never"}}, "overrides": []},
       "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
-      "gridPos": {"x": 0, "y": 20, "w": 8, "h": 8}
+      "gridPos": {"x": 8, "y": 20, "w": 8, "h": 8}
     },
     {
-      "id": 12,
+      "id": 13,
       "type": "timeseries",
       "title": "WebSocket 广播延迟",
       "datasource": {"type": "prometheus", "uid": "Prometheus"},
@@ -167,10 +181,10 @@
       ],
       "fieldConfig": {"defaults": {"unit": "short", "decimals": 3, "custom": {"drawStyle": "line", "lineInterpolation": "smooth", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never"}}, "overrides": []},
       "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
-      "gridPos": {"x": 8, "y": 20, "w": 8, "h": 8}
+      "gridPos": {"x": 16, "y": 20, "w": 8, "h": 8}
     },
     {
-      "id": 13,
+      "id": 14,
       "type": "timeseries",
       "title": "读接口 QPS",
       "datasource": {"type": "prometheus", "uid": "Prometheus"},
@@ -179,10 +193,10 @@
       ],
       "fieldConfig": {"defaults": {"unit": "reqps", "decimals": 2, "custom": {"drawStyle": "line", "lineInterpolation": "smooth", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never"}}, "overrides": []},
       "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
-      "gridPos": {"x": 16, "y": 20, "w": 8, "h": 8}
+      "gridPos": {"x": 0, "y": 28, "w": 8, "h": 8}
     },
     {
-      "id": 14,
+      "id": 15,
       "type": "timeseries",
       "title": "读接口 P95 / P99",
       "datasource": {"type": "prometheus", "uid": "Prometheus"},
@@ -192,10 +206,10 @@
       ],
       "fieldConfig": {"defaults": {"unit": "s", "decimals": 3, "custom": {"drawStyle": "line", "lineInterpolation": "smooth", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never"}}, "overrides": []},
       "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
-      "gridPos": {"x": 0, "y": 28, "w": 12, "h": 8}
+      "gridPos": {"x": 8, "y": 28, "w": 8, "h": 8}
     },
     {
-      "id": 15,
+      "id": 20,
       "type": "timeseries",
       "title": "Pod CPU / 内存",
       "datasource": {"type": "prometheus", "uid": "Prometheus"},
@@ -205,7 +219,7 @@
       ],
       "fieldConfig": {"defaults": {"unit": "short", "decimals": 2, "custom": {"drawStyle": "line", "lineInterpolation": "smooth", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never"}}, "overrides": []},
       "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
-      "gridPos": {"x": 12, "y": 28, "w": 12, "h": 8}
+      "gridPos": {"x": 16, "y": 28, "w": 8, "h": 8}
     },
     {
       "id": 16,

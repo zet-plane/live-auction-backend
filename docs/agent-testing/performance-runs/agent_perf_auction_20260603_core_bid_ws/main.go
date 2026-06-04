@@ -33,6 +33,7 @@ type Config struct {
 	WSConnectMaxAttempts int
 	ObservabilityStep    time.Duration
 	UserCount            int
+	CleanupOnly          bool
 	Stages               []StageConfig
 }
 
@@ -161,6 +162,12 @@ func main() {
 	printPlan(cfg)
 	printPreflight(ctx, cfg, client)
 
+	if cfg.CleanupOnly {
+		fmt.Println("\n=== CLEANUP_ONLY")
+		fmt.Printf("  RESULT: %s\n", cleanupBatchOnly(ctx, cfg, client))
+		return
+	}
+
 	data, err := setupData(ctx, cfg, client)
 	if err != nil {
 		fmt.Println("\n=== STOP_EVENT")
@@ -205,15 +212,12 @@ func main() {
 
 func loadConfig() Config {
 	batchID := getenv("PERF_BATCH_ID", "agent_perf_auction_20260603_core_bid_ws")
-	stages := filterStages([]StageConfig{
-		{Name: "smoke_10qps_20ws", TargetQPS: 10, TargetWS: 20, Concurrency: 10, Duration: 3 * time.Minute, RequestMix: "core_bid_80_ranking_10_item_10"},
-		{Name: "step_30qps_60ws", TargetQPS: 30, TargetWS: 60, Concurrency: 30, Duration: 3 * time.Minute, RequestMix: "core_bid_80_ranking_10_item_10"},
-		{Name: "step_50qps_100ws", TargetQPS: 50, TargetWS: 100, Concurrency: 50, Duration: 3 * time.Minute, RequestMix: "core_bid_80_ranking_10_item_10"},
-		{Name: "step_70qps_140ws", TargetQPS: 70, TargetWS: 140, Concurrency: 70, Duration: 3 * time.Minute, RequestMix: "core_bid_80_ranking_10_item_10"},
-		{Name: "step_100qps_200ws", TargetQPS: 100, TargetWS: 200, Concurrency: 100, Duration: 3 * time.Minute, RequestMix: "core_bid_80_ranking_10_item_10"},
-		{Name: "step_130qps_260ws", TargetQPS: 130, TargetWS: 260, Concurrency: 130, Duration: 3 * time.Minute, RequestMix: "core_bid_80_ranking_10_item_10"},
-		{Name: "step_150qps_300ws", TargetQPS: 150, TargetWS: 300, Concurrency: 150, Duration: 3 * time.Minute, RequestMix: "core_bid_80_ranking_10_item_10"},
-	}, envInt("PERF_START_QPS", 0), envInt("PERF_END_QPS", 0))
+	stages := defaultStages()
+	requestMix := getenv("PERF_REQUEST_MIX", "core_bid_80_ranking_10_item_10")
+	if customStages := customQPSStages(os.Getenv("PERF_STAGE_QPS"), requestMix); len(customStages) > 0 {
+		stages = customStages
+	}
+	stages = applyStageOverrides(filterStages(stages, envInt("PERF_START_QPS", 0), envInt("PERF_END_QPS", 0)), requestMix, envBool("PERF_DISABLE_WS", false), csvPositiveInts(os.Getenv("PERF_STAGE_WS")))
 	return Config{
 		BatchID:              batchID,
 		Environment:          getenv("PERF_ENVIRONMENT", "single_source_online"),
@@ -227,8 +231,77 @@ func loadConfig() Config {
 		WSConnectMaxAttempts: envInt("PERF_WS_CONNECT_MAX_ATTEMPTS", 700),
 		ObservabilityStep:    envDuration("PERF_OBSERVABILITY_STEP", 30*time.Second),
 		UserCount:            envInt("PERF_USER_COUNT", 320),
+		CleanupOnly:          envBool("PERF_CLEANUP_ONLY", false),
 		Stages:               stages,
 	}
+}
+
+func defaultStages() []StageConfig {
+	return []StageConfig{
+		{Name: "smoke_10qps_20ws", TargetQPS: 10, TargetWS: 20, Concurrency: 10, Duration: 3 * time.Minute, RequestMix: "core_bid_80_ranking_10_item_10"},
+		{Name: "step_30qps_60ws", TargetQPS: 30, TargetWS: 60, Concurrency: 30, Duration: 3 * time.Minute, RequestMix: "core_bid_80_ranking_10_item_10"},
+		{Name: "step_50qps_100ws", TargetQPS: 50, TargetWS: 100, Concurrency: 50, Duration: 3 * time.Minute, RequestMix: "core_bid_80_ranking_10_item_10"},
+		{Name: "step_70qps_140ws", TargetQPS: 70, TargetWS: 140, Concurrency: 70, Duration: 3 * time.Minute, RequestMix: "core_bid_80_ranking_10_item_10"},
+		{Name: "step_100qps_200ws", TargetQPS: 100, TargetWS: 200, Concurrency: 100, Duration: 3 * time.Minute, RequestMix: "core_bid_80_ranking_10_item_10"},
+		{Name: "step_130qps_260ws", TargetQPS: 130, TargetWS: 260, Concurrency: 130, Duration: 3 * time.Minute, RequestMix: "core_bid_80_ranking_10_item_10"},
+		{Name: "step_150qps_300ws", TargetQPS: 150, TargetWS: 300, Concurrency: 150, Duration: 3 * time.Minute, RequestMix: "core_bid_80_ranking_10_item_10"},
+	}
+}
+
+func customQPSStages(raw string, requestMix string) []StageConfig {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	stages := make([]StageConfig, 0, len(parts))
+	for _, part := range parts {
+		qps, err := strconv.Atoi(strings.TrimSpace(part))
+		if err != nil || qps <= 0 {
+			continue
+		}
+		stages = append(stages, StageConfig{
+			Name:        fmt.Sprintf("custom_%dqps", qps),
+			TargetQPS:   float64(qps),
+			TargetWS:    qps * 2,
+			Concurrency: qps,
+			Duration:    3 * time.Minute,
+			RequestMix:  requestMix,
+		})
+	}
+	return stages
+}
+
+func applyStageOverrides(stages []StageConfig, requestMix string, disableWS bool, wsTargets []int) []StageConfig {
+	out := make([]StageConfig, 0, len(stages))
+	for _, stage := range stages {
+		stage.RequestMix = requestMix
+		if len(wsTargets) > len(out) {
+			stage.TargetWS = wsTargets[len(out)]
+		}
+		if disableWS {
+			stage.TargetWS = 0
+		}
+		out = append(out, stage)
+	}
+	return out
+}
+
+func csvPositiveInts(raw string) []int {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	values := make([]int, 0, len(parts))
+	for _, part := range parts {
+		value, err := strconv.Atoi(strings.TrimSpace(part))
+		if err != nil || value < 0 {
+			continue
+		}
+		values = append(values, value)
+	}
+	return values
 }
 
 func filterStages(stages []StageConfig, startQPS int, endQPS int) []StageConfig {
@@ -253,9 +326,9 @@ func filterStages(stages []StageConfig, startQPS int, endQPS int) []StageConfig 
 
 func setupData(ctx context.Context, cfg Config, client *http.Client) (*TestData, error) {
 	data := &TestData{HTTPClient: client, WSStats: newWSStats()}
-	password := "PerfPass_" + compactBatch(cfg.BatchID)
+	password := batchPassword(cfg.BatchID)
 
-	merchantToken, merchantID, err := register(ctx, cfg, client, compactBatch(cfg.BatchID)+"_m", password)
+	merchantToken, merchantID, err := register(ctx, cfg, client, merchantAccount(cfg.BatchID), password)
 	if err != nil {
 		return nil, fmt.Errorf("register merchant: %w", err)
 	}
@@ -308,7 +381,7 @@ func setupData(ctx context.Context, cfg Config, client *http.Client) (*TestData,
 	}
 
 	for i := 0; i < cfg.UserCount; i++ {
-		token, userID, err := register(ctx, cfg, client, fmt.Sprintf("%s_u%03d", compactBatch(cfg.BatchID), i), password)
+		token, userID, err := register(ctx, cfg, client, userAccount(cfg.BatchID, i), password)
 		if err != nil {
 			return nil, fmt.Errorf("register user %d: %w", i, err)
 		}
@@ -322,13 +395,21 @@ func setupData(ctx context.Context, cfg Config, client *http.Client) (*TestData,
 }
 
 func register(ctx context.Context, cfg Config, client *http.Client, account string, password string) (string, string, error) {
+	return auth(ctx, cfg, client, "/api/v1/auth/register", account, password)
+}
+
+func login(ctx context.Context, cfg Config, client *http.Client, account string, password string) (string, string, error) {
+	return auth(ctx, cfg, client, "/api/v1/auth/login", account, password)
+}
+
+func auth(ctx context.Context, cfg Config, client *http.Client, path string, account string, password string) (string, string, error) {
 	var result struct {
 		Token string `json:"token"`
 		User  struct {
 			ID string `json:"id"`
 		} `json:"user"`
 	}
-	err := postJSON(ctx, cfg, client, "/api/v1/auth/register", "", map[string]any{
+	err := postJSON(ctx, cfg, client, path, "", map[string]any{
 		"account":  account,
 		"password": password,
 	}, &result)
@@ -343,6 +424,12 @@ func register(ctx context.Context, cfg Config, client *http.Client, account stri
 
 func buildRequest(cfg Config, data *TestData, stage StageConfig, workerID int, n uint64) RequestSpec {
 	userIdx := int(n) % len(data.UserTokens)
+	if stage.RequestMix == "bid_only" {
+		return RequestSpec{Method: http.MethodPost, Path: "/api/v1/items/" + url.PathEscape(data.ItemID) + "/bids", Token: data.UserTokens[userIdx]}
+	}
+	if stage.RequestMix == "item_only" {
+		return RequestSpec{Method: http.MethodGet, Path: "/api/v1/items/" + url.PathEscape(data.ItemID)}
+	}
 	switch n % 10 {
 	case 0, 1, 2, 3, 4, 5, 6, 7:
 		return RequestSpec{Method: http.MethodPost, Path: "/api/v1/items/" + url.PathEscape(data.ItemID) + "/bids", Token: data.UserTokens[userIdx]}
@@ -883,8 +970,103 @@ func cleanup(ctx context.Context, cfg Config, data *TestData) string {
 	return strings.Join(parts, " ")
 }
 
+type cleanupMerchantItem struct {
+	ID     string `json:"id"`
+	RoomID string `json:"room_id"`
+	Title  string `json:"title"`
+	Status string `json:"status"`
+}
+
+func cleanupBatchOnly(ctx context.Context, cfg Config, client *http.Client) string {
+	password := batchPassword(cfg.BatchID)
+	parts := []string{fmt.Sprintf("batch_id=%s", cfg.BatchID)}
+
+	merchantToken, _, merchantErr := login(ctx, cfg, client, merchantAccount(cfg.BatchID), password)
+	if merchantErr != nil {
+		parts = append(parts, "merchant_login=err")
+	} else {
+		parts = append(parts, "merchant_login=ok")
+		items, listErr := listBatchMerchantItems(ctx, cfg, client, merchantToken)
+		cancelOK, cancelErr := 0, 0
+		if listErr != nil {
+			parts = append(parts, "list_items=err")
+		} else {
+			for _, item := range items {
+				if !isBatchMerchantItem(cfg.BatchID, item) {
+					continue
+				}
+				err := postJSON(ctx, cfg, client, "/api/v1/items/"+url.PathEscape(item.ID)+"/cancel", merchantToken, nil, nil)
+				if err == nil {
+					cancelOK++
+				} else {
+					cancelErr++
+				}
+			}
+			parts = append(parts, fmt.Sprintf("batch_items_seen=%d cancel_ok=%d cancel_err=%d", len(items), cancelOK, cancelErr))
+		}
+		var room struct {
+			ID string `json:"id"`
+		}
+		if err := getJSON(ctx, cfg, client, "/api/v1/merchant/room", merchantToken, &room); err != nil || room.ID == "" {
+			parts = append(parts, "end_room=skip")
+		} else {
+			parts = append(parts, "end_room="+okErr(postJSON(ctx, cfg, client, "/api/v1/rooms/"+url.PathEscape(room.ID)+"/end", merchantToken, nil, nil)))
+		}
+	}
+
+	loginOK, deleteOK, deleteErr := 0, 0, 0
+	for i := 0; i < cfg.UserCount; i++ {
+		token, _, err := login(ctx, cfg, client, userAccount(cfg.BatchID, i), password)
+		if err != nil {
+			continue
+		}
+		loginOK++
+		if err := deleteJSON(ctx, cfg, client, "/api/v1/users/me", token); err != nil {
+			deleteErr++
+		} else {
+			deleteOK++
+		}
+	}
+	parts = append(parts, fmt.Sprintf("user_login_ok=%d user_delete_ok=%d user_delete_err=%d user_accounts_scanned=%d", loginOK, deleteOK, deleteErr, cfg.UserCount))
+	if merchantToken != "" {
+		parts = append(parts, "delete_merchant="+okErr(deleteJSON(ctx, cfg, client, "/api/v1/users/me", merchantToken)))
+	}
+	return strings.Join(parts, " ")
+}
+
+func listBatchMerchantItems(ctx context.Context, cfg Config, client *http.Client, token string) ([]cleanupMerchantItem, error) {
+	var result struct {
+		List []cleanupMerchantItem `json:"list"`
+	}
+	path := "/api/v1/merchant/items?keyword=" + url.QueryEscape(cfg.BatchID) + "&page=1&page_size=100"
+	if err := getJSON(ctx, cfg, client, path, token, &result); err != nil {
+		return nil, err
+	}
+	return result.List, nil
+}
+
+func isBatchMerchantItem(batchID string, item cleanupMerchantItem) bool {
+	return strings.Contains(item.Title, batchID) && strings.HasPrefix(item.Title, "agent_perf_item_")
+}
+
+func batchPassword(batchID string) string {
+	return "PerfPass_" + compactBatch(batchID)
+}
+
+func merchantAccount(batchID string) string {
+	return compactBatch(batchID) + "_m"
+}
+
+func userAccount(batchID string, index int) string {
+	return fmt.Sprintf("%s_u%03d", compactBatch(batchID), index)
+}
+
 func postJSON(ctx context.Context, cfg Config, client *http.Client, path string, token string, body any, out any) error {
 	return doJSON(ctx, cfg, client, http.MethodPost, path, token, body, out)
+}
+
+func getJSON(ctx context.Context, cfg Config, client *http.Client, path string, token string, out any) error {
+	return doJSON(ctx, cfg, client, http.MethodGet, path, token, nil, out)
 }
 
 func putJSON(ctx context.Context, cfg Config, client *http.Client, path string, token string, body any, out any) error {
@@ -1327,6 +1509,18 @@ func envInt(key string, fallback int) int {
 		}
 	}
 	return fallback
+}
+
+func envBool(key string, fallback bool) bool {
+	val := strings.TrimSpace(strings.ToLower(os.Getenv(key)))
+	switch val {
+	case "1", "true", "yes", "y", "on":
+		return true
+	case "0", "false", "no", "n", "off":
+		return false
+	default:
+		return fallback
+	}
 }
 
 func stopRequested(path string) bool {

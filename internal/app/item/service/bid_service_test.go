@@ -12,6 +12,7 @@ import (
 	itemdto "github.com/zet-plane/live-auction-backend/internal/app/item/dto"
 	itemmodel "github.com/zet-plane/live-auction-backend/internal/app/item/model"
 	usermodel "github.com/zet-plane/live-auction-backend/internal/app/user/model"
+	"github.com/zet-plane/live-auction-backend/internal/core/observability"
 	"github.com/zet-plane/live-auction-backend/pkg/errorx"
 	"github.com/zet-plane/live-auction-backend/pkg/wsevent"
 )
@@ -536,6 +537,24 @@ func (f *fakeBroadcaster) resetUnicasts() {
 	f.unicasts = nil
 }
 
+type captureBidBroadcastRecorder struct {
+	observability.NoopRecorder
+	mu      sync.Mutex
+	metrics []observability.BidBroadcastMetric
+}
+
+func (r *captureBidBroadcastRecorder) BidBroadcast(_ context.Context, m observability.BidBroadcastMetric) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.metrics = append(r.metrics, m)
+}
+
+func (r *captureBidBroadcastRecorder) snapshot() []observability.BidBroadcastMetric {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]observability.BidBroadcastMetric(nil), r.metrics...)
+}
+
 func waitForBidFanouts(t *testing.T, fb *fakeBroadcaster, want int) []fakeFanout {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
@@ -664,5 +683,56 @@ func TestPlaceBidCoalescesBidSuccessFanout(t *testing.T) {
 	}
 	if payload.ServerTimeUnixMS != now.UnixMilli() || payload.EndTimeUnixMS != endTime.UnixMilli() {
 		t.Fatalf("expected clock fields server=%d end=%d, got %+v", now.UnixMilli(), endTime.UnixMilli(), payload)
+	}
+}
+
+func TestPlaceBidRecordsBidBroadcastCoalescingMetrics(t *testing.T) {
+	rec := &captureBidBroadcastRecorder{}
+	observability.SetDefaultRecorder(rec)
+	t.Cleanup(func() { observability.SetDefaultRecorder(nil) })
+
+	store := newFakeStore()
+	fc := newFakeCache()
+	fb := &fakeBroadcaster{}
+	svc := NewService(store, testPolicy, fc, nil, nil, fb)
+	svc.bidBroadcastDelay = 10 * time.Millisecond
+	now := time.Date(2026, 6, 4, 16, 0, 0, 0, time.UTC)
+	svc.now = func() time.Time { return now }
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 0, now.Add(5*time.Minute))
+
+	for i, price := range []int64{100, 200, 300} {
+		user := &usermodel.User{ID: fmt.Sprintf("metric_user_%d", i+1), Name: fmt.Sprintf("MetricUser%d", i+1), Identity: usermodel.IdentityUser}
+		_, err := svc.PlaceBid(context.Background(), user, itemID, itemdto.PlaceBidInput{
+			Price: price, IdempotencyKey: fmt.Sprintf("metric_coalesce_%d", i), UserName: user.Name,
+		})
+		if err != nil {
+			t.Fatalf("PlaceBid %d failed: %v", i, err)
+		}
+	}
+
+	waitForBidFanouts(t, fb, 1)
+	metrics := rec.snapshot()
+	if len(metrics) != 4 {
+		t.Fatalf("expected create, two updates, and flush metrics, got %d: %+v", len(metrics), metrics)
+	}
+	want := []struct {
+		action  string
+		result  string
+		bids    int64
+		pending int64
+	}{
+		{action: "enqueue_create", result: "success", bids: 1, pending: 1},
+		{action: "enqueue_update", result: "success", bids: 2, pending: 1},
+		{action: "enqueue_update", result: "success", bids: 3, pending: 1},
+		{action: "flush", result: "success", bids: 3, pending: 0},
+	}
+	for i, w := range want {
+		got := metrics[i]
+		if got.Action != w.action || got.Result != w.result || got.EventType != itemdto.EventBidSuccess || got.Bids != w.bids || got.Pending != w.pending {
+			t.Fatalf("metric %d = %+v, want action=%s result=%s bids=%d pending=%d", i, got, w.action, w.result, w.bids, w.pending)
+		}
+	}
+	if metrics[3].Duration <= 0 {
+		t.Fatalf("expected flush duration to record pending wait, got %s", metrics[3].Duration)
 	}
 }
