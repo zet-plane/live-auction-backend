@@ -191,6 +191,8 @@ func TestPlaceBidRebuildsHotStateWhenStatusMissing(t *testing.T) {
 	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 1000, 100, 0, endTime)
 
 	store.findItemWithRuleCalls = 0
+	fc.initCalls = 0
+	fc.hotFieldUpdates = 0
 	fc.states[itemID] = &itemcache.AuctionState{
 		RoomID:            "room_1",
 		CurrentPrice:      1000,
@@ -220,6 +222,12 @@ func TestPlaceBidRebuildsHotStateWhenStatusMissing(t *testing.T) {
 	if store.findItemWithRuleCalls != 1 {
 		t.Fatalf("expected one FindItemWithRule call for rebuild, got %d", store.findItemWithRuleCalls)
 	}
+	if fc.initCalls != 0 {
+		t.Fatalf("expected no full InitAuctionState call for existing missing-status repair, got %d", fc.initCalls)
+	}
+	if fc.hotFieldUpdates != 1 {
+		t.Fatalf("expected one hot field update for missing-status repair, got %d", fc.hotFieldUpdates)
+	}
 	if fc.states[itemID].Status != "ongoing" {
 		t.Fatalf("expected rebuilt hot state status ongoing, got %q", fc.states[itemID].Status)
 	}
@@ -233,6 +241,8 @@ func TestPlaceBidCompletesIncompleteHotStateWithoutResettingPrice(t *testing.T) 
 	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 1000, 100, 0, endTime)
 
 	store.findItemWithRuleCalls = 0
+	fc.initCalls = 0
+	fc.hotFieldUpdates = 0
 	fc.states[itemID] = &itemcache.AuctionState{
 		Status:            "ongoing",
 		CurrentPrice:      1500,
@@ -263,6 +273,12 @@ func TestPlaceBidCompletesIncompleteHotStateWithoutResettingPrice(t *testing.T) 
 	if store.findItemWithRuleCalls != 1 {
 		t.Fatalf("expected one FindItemWithRule call for repair, got %d", store.findItemWithRuleCalls)
 	}
+	if fc.initCalls != 0 {
+		t.Fatalf("expected no full InitAuctionState call for existing state repair, got %d", fc.initCalls)
+	}
+	if fc.hotFieldUpdates != 1 {
+		t.Fatalf("expected one hot field update for existing state repair, got %d", fc.hotFieldUpdates)
+	}
 	state := fc.states[itemID]
 	if state.CurrentPrice != 1500 || state.DealPrice != 1500 || state.LeaderUserID != "user_2" {
 		t.Fatalf("expected dynamic state preserved, got price/deal/leader %d/%d/%q", state.CurrentPrice, state.DealPrice, state.LeaderUserID)
@@ -280,6 +296,8 @@ func TestPlaceBidRepairsMissingPolicyHotFields(t *testing.T) {
 	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 1000, 100, 0, endTime)
 
 	store.findItemWithRuleCalls = 0
+	fc.initCalls = 0
+	fc.hotFieldUpdates = 0
 	fc.states[itemID] = &itemcache.AuctionState{
 		Status:        "ongoing",
 		RoomID:        "room_1",
@@ -300,6 +318,12 @@ func TestPlaceBidRepairsMissingPolicyHotFields(t *testing.T) {
 	}
 	if store.findItemWithRuleCalls != 1 {
 		t.Fatalf("expected one FindItemWithRule call for policy repair, got %d", store.findItemWithRuleCalls)
+	}
+	if fc.initCalls != 0 {
+		t.Fatalf("expected no full InitAuctionState call for policy repair, got %d", fc.initCalls)
+	}
+	if fc.hotFieldUpdates != 1 {
+		t.Fatalf("expected one hot field update for policy repair, got %d", fc.hotFieldUpdates)
 	}
 	if fc.lastBidLuaArgs == nil {
 		t.Fatal("expected PlaceBidLua to be called")

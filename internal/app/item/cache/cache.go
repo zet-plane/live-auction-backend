@@ -92,6 +92,7 @@ type Cache interface {
 	InitAuctionState(ctx context.Context, itemID string, state AuctionState) error
 	GetAuctionState(ctx context.Context, itemID string) (*AuctionState, bool, error)
 	GetAuctionHotConfig(ctx context.Context, itemID string) (*AuctionHotConfig, bool, error)
+	UpdateAuctionHotFields(ctx context.Context, itemID string, hot AuctionHotConfig) error
 	DeleteAuctionState(ctx context.Context, itemID string) error
 	ExpireAuctionState(ctx context.Context, itemID string, ttl time.Duration) error
 	ScheduleAuctionEnd(ctx context.Context, itemID string, endUnixMS int64) error
@@ -274,6 +275,24 @@ func (c *RedisCache) GetAuctionHotConfig(ctx context.Context, itemID string) (*A
 		MaxTotalExtendSec: state.MaxTotalExtendSec,
 		EndTimeUnixMS:     state.EndTimeUnixMS,
 	}, true, nil
+}
+
+func (c *RedisCache) UpdateAuctionHotFields(ctx context.Context, itemID string, hot AuctionHotConfig) error {
+	status := hot.Status
+	if status == "" {
+		status = "ongoing"
+	}
+	return c.client.HSet(ctx, itemStateKey(itemID),
+		"status", status,
+		"room_id", hot.RoomID,
+		"bid_increment", hot.BidIncrement,
+		"price_cap", hot.PriceCap,
+		"deposit_amount", hot.DepositAmount,
+		"extend_trigger_sec", hot.ExtendTriggerSec,
+		"auto_extend_sec", hot.AutoExtendSec,
+		"max_extend_count", hot.MaxExtendCount,
+		"max_total_extend_sec", hot.MaxTotalExtendSec,
+	).Err()
 }
 
 func (c *RedisCache) DeleteAuctionState(ctx context.Context, itemID string) error {

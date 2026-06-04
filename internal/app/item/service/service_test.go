@@ -329,6 +329,8 @@ type fakeCache struct {
 	bidLuaErr         error
 	bidLuaResult      *itemcache.BidLuaResult
 	lastBidLuaArgs    *itemcache.BidLuaArgs
+	initCalls         int
+	hotFieldUpdates   int
 	initErr           error
 	getStateErr       error
 	deleteErr         error
@@ -347,6 +349,7 @@ func newFakeCache() *fakeCache {
 }
 
 func (c *fakeCache) InitAuctionState(_ context.Context, itemID string, state itemcache.AuctionState) error {
+	c.initCalls++
 	if c.initErr != nil {
 		return c.initErr
 	}
@@ -404,6 +407,29 @@ func (c *fakeCache) GetAuctionHotConfig(ctx context.Context, itemID string) (*it
 		MaxTotalExtendSec: state.MaxTotalExtendSec,
 		EndTimeUnixMS:     state.EndTimeUnixMS,
 	}, true, nil
+}
+
+func (c *fakeCache) UpdateAuctionHotFields(_ context.Context, itemID string, hot itemcache.AuctionHotConfig) error {
+	c.hotFieldUpdates++
+	state, ok := c.states[itemID]
+	if !ok {
+		state = &itemcache.AuctionState{}
+		c.states[itemID] = state
+	}
+	status := hot.Status
+	if status == "" {
+		status = "ongoing"
+	}
+	state.Status = status
+	state.RoomID = hot.RoomID
+	state.BidIncrement = hot.BidIncrement
+	state.PriceCap = hot.PriceCap
+	state.DepositAmount = hot.DepositAmount
+	state.ExtendTriggerSec = hot.ExtendTriggerSec
+	state.AutoExtendSec = hot.AutoExtendSec
+	state.MaxExtendCount = hot.MaxExtendCount
+	state.MaxTotalExtendSec = hot.MaxTotalExtendSec
+	return nil
 }
 
 func (c *fakeCache) DeleteAuctionState(_ context.Context, itemID string) error {

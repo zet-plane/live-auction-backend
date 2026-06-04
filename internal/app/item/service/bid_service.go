@@ -287,6 +287,33 @@ func (s *Service) bidHotConfig(ctx context.Context, itemID string) (*itemcache.A
 	}
 
 	endTimeUnixMS := rule.EndTime.UnixMilli()
+	hot = &itemcache.AuctionHotConfig{
+		ItemID:            item.ID,
+		RoomID:            item.RoomID,
+		Status:            string(model.ItemOngoing),
+		BidIncrement:      rule.BidIncrement,
+		PriceCap:          rule.PriceCap,
+		DepositAmount:     rule.DepositAmount,
+		ExtendTriggerSec:  s.policy.ExtendTriggerSec,
+		AutoExtendSec:     s.policy.AutoExtendSec,
+		MaxExtendCount:    s.policy.MaxExtendCount,
+		MaxTotalExtendSec: s.policy.MaxTotalExtendSec,
+		EndTimeUnixMS:     endTimeUnixMS,
+	}
+	if existing != nil {
+		if existing.EndTimeUnixMS > 0 {
+			hot.EndTimeUnixMS = existing.EndTimeUnixMS
+			endTimeUnixMS = existing.EndTimeUnixMS
+		} else if !existing.EndTime.IsZero() {
+			hot.EndTimeUnixMS = existing.EndTime.UnixMilli()
+			endTimeUnixMS = hot.EndTimeUnixMS
+		}
+		if err := s.cache.UpdateAuctionHotFields(ctx, item.ID, *hot); err != nil {
+			return nil, err
+		}
+		return hot, nil
+	}
+
 	state := itemcache.AuctionState{
 		Status:            string(model.ItemOngoing),
 		RoomID:            item.RoomID,
@@ -302,56 +329,13 @@ func (s *Service) bidHotConfig(ctx context.Context, itemID string) (*itemcache.A
 		MaxExtendCount:    s.policy.MaxExtendCount,
 		MaxTotalExtendSec: s.policy.MaxTotalExtendSec,
 	}
-	if existing != nil {
-		preserveDynamicAuctionState(&state, existing)
-		endTimeUnixMS = state.EndTimeUnixMS
-	}
 	if err := s.cache.InitAuctionState(ctx, item.ID, state); err != nil {
 		return nil, err
 	}
 	if err := s.cache.ScheduleAuctionEnd(ctx, item.ID, endTimeUnixMS); err != nil {
 		return nil, err
 	}
-	return &itemcache.AuctionHotConfig{
-		ItemID:            item.ID,
-		RoomID:            item.RoomID,
-		Status:            string(model.ItemOngoing),
-		BidIncrement:      rule.BidIncrement,
-		PriceCap:          rule.PriceCap,
-		DepositAmount:     rule.DepositAmount,
-		ExtendTriggerSec:  s.policy.ExtendTriggerSec,
-		AutoExtendSec:     s.policy.AutoExtendSec,
-		MaxExtendCount:    s.policy.MaxExtendCount,
-		MaxTotalExtendSec: s.policy.MaxTotalExtendSec,
-		EndTimeUnixMS:     endTimeUnixMS,
-	}, nil
-}
-
-func preserveDynamicAuctionState(state, existing *itemcache.AuctionState) {
-	if existing.CurrentPrice > 0 {
-		state.CurrentPrice = existing.CurrentPrice
-	}
-	switch {
-	case existing.DealPrice > 0:
-		state.DealPrice = existing.DealPrice
-	case existing.CurrentPrice > 0:
-		state.DealPrice = existing.CurrentPrice
-	}
-	state.LeaderUserID = existing.LeaderUserID
-	if existing.EndTimeUnixMS > 0 {
-		state.EndTimeUnixMS = existing.EndTimeUnixMS
-		state.EndTime = time.UnixMilli(existing.EndTimeUnixMS)
-	} else if !existing.EndTime.IsZero() {
-		state.EndTime = existing.EndTime
-		state.EndTimeUnixMS = existing.EndTime.UnixMilli()
-	}
-	state.BidCount = existing.BidCount
-	state.ParticipantCount = existing.ParticipantCount
-	state.IsExtended = existing.IsExtended
-	state.ExtendCount = existing.ExtendCount
-	state.TotalExtendedSec = existing.TotalExtendedSec
-	state.EndedAtUnixMS = existing.EndedAtUnixMS
-	state.EndReason = existing.EndReason
+	return hot, nil
 }
 
 func bidEndTimeUnixMS(result *itemcache.BidLuaResult) int64 {
