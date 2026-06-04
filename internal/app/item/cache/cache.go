@@ -78,6 +78,15 @@ type BidLuaResult struct {
 	Status           string
 }
 
+type BidLogEvent struct {
+	BidID           string
+	ItemID          string
+	RoomID          string
+	UserID          string
+	Price           int64
+	CreatedAtUnixMS int64
+}
+
 type SettlementResult struct {
 	ItemID        string
 	LeaderUserID  string
@@ -106,6 +115,7 @@ type Cache interface {
 	GetRoomCurrentItem(ctx context.Context, roomID string) (string, bool, error)
 	ClearRoomCurrentItem(ctx context.Context, roomID, itemID string) error
 	PlaceBidLua(ctx context.Context, itemID string, args BidLuaArgs) (*BidLuaResult, error)
+	AppendBidLogEvent(ctx context.Context, event BidLogEvent) error
 	GetRanking(ctx context.Context, itemID string, offset, limit int) ([]dto.BidderPrice, error)
 }
 

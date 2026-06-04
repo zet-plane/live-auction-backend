@@ -140,6 +140,18 @@ func (s *Service) PlaceBid(ctx context.Context, current *usermodel.User, itemID 
 		bidReason = "db_error"
 		return nil, err
 	}
+	if err := s.cache.AppendBidLogEvent(ctx, itemcache.BidLogEvent{
+		BidID:           luaResult.BidID,
+		ItemID:          hot.ItemID,
+		RoomID:          hot.RoomID,
+		UserID:          current.ID,
+		Price:           input.Price,
+		CreatedAtUnixMS: now.UnixMilli(),
+	}); err != nil {
+		bidResult = "error"
+		bidReason = "bid_log_stream_error"
+		return nil, err
+	}
 
 	if s.broadcaster != nil {
 		endTime := bidEndTime(luaResult)

@@ -146,6 +146,110 @@ func TestPlaceBidUsesHotStateWithoutStoreLookup(t *testing.T) {
 	}
 }
 
+func TestPlaceBidSuccessfulBidAppendsBidLogEvent(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	now := time.Date(2026, 6, 1, 12, 0, 0, 123_000_000, time.UTC)
+	svc := NewService(store, testPolicy, fc, nil, nil, nil)
+	svc.now = func() time.Time { return now }
+	endTime := now.Add(5 * time.Minute)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 1000, 100, 0, endTime)
+
+	fc.states[itemID] = &itemcache.AuctionState{
+		Status:            "ongoing",
+		RoomID:            "room_1",
+		CurrentPrice:      1000,
+		DealPrice:         1000,
+		EndTime:           endTime,
+		EndTimeUnixMS:     endTime.UnixMilli(),
+		BidIncrement:      100,
+		PriceCap:          0,
+		DepositAmount:     0,
+		ExtendTriggerSec:  testPolicy.ExtendTriggerSec,
+		AutoExtendSec:     testPolicy.AutoExtendSec,
+		MaxExtendCount:    testPolicy.MaxExtendCount,
+		MaxTotalExtendSec: testPolicy.MaxTotalExtendSec,
+	}
+	fc.bidLuaResult = &itemcache.BidLuaResult{
+		Code:          0,
+		BidID:         "bid_stream",
+		CurrentPrice:  1200,
+		LeaderUserID:  "user_1",
+		EndTimeUnix:   endTime.Unix(),
+		EndTimeUnixMS: endTime.UnixMilli(),
+		Status:        "ongoing",
+	}
+
+	if _, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
+		Price:          1200,
+		IdempotencyKey: "stream_success",
+		UserName:       "Alice",
+	}); err != nil {
+		t.Fatalf("PlaceBid failed: %v", err)
+	}
+
+	if len(fc.bidLogEvents) != 1 {
+		t.Fatalf("expected 1 bid log event, got %d", len(fc.bidLogEvents))
+	}
+	event := fc.bidLogEvents[0]
+	if event.BidID != "bid_stream" ||
+		event.ItemID != itemID ||
+		event.RoomID != "room_1" ||
+		event.UserID != "user_1" ||
+		event.Price != 1200 {
+		t.Fatalf("unexpected bid log event: %+v", event)
+	}
+	if event.CreatedAtUnixMS != now.UnixMilli() {
+		t.Fatalf("expected created_at_unix_ms %d, got %d", now.UnixMilli(), event.CreatedAtUnixMS)
+	}
+}
+
+func TestPlaceBidIdempotentResultDoesNotAppendBidLogEvent(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	svc := NewService(store, testPolicy, fc, nil, nil, nil)
+	endTime := time.Now().Add(5 * time.Minute)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 1000, 100, 0, endTime)
+
+	fc.states[itemID] = &itemcache.AuctionState{
+		Status:            "ongoing",
+		RoomID:            "room_1",
+		CurrentPrice:      1200,
+		DealPrice:         1200,
+		LeaderUserID:      "user_1",
+		EndTime:           endTime,
+		EndTimeUnixMS:     endTime.UnixMilli(),
+		BidIncrement:      100,
+		PriceCap:          0,
+		DepositAmount:     0,
+		ExtendTriggerSec:  testPolicy.ExtendTriggerSec,
+		AutoExtendSec:     testPolicy.AutoExtendSec,
+		MaxExtendCount:    testPolicy.MaxExtendCount,
+		MaxTotalExtendSec: testPolicy.MaxTotalExtendSec,
+	}
+	fc.bidLuaResult = &itemcache.BidLuaResult{
+		Code:          1,
+		BidID:         "bid_existing",
+		CurrentPrice:  1200,
+		LeaderUserID:  "user_1",
+		EndTimeUnix:   endTime.Unix(),
+		EndTimeUnixMS: endTime.UnixMilli(),
+		Status:        "ongoing",
+	}
+
+	if _, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
+		Price:          1200,
+		IdempotencyKey: "stream_idempotent",
+		UserName:       "Alice",
+	}); err != nil {
+		t.Fatalf("PlaceBid failed: %v", err)
+	}
+
+	if len(fc.bidLogEvents) != 0 {
+		t.Fatalf("expected no bid log events, got %d: %+v", len(fc.bidLogEvents), fc.bidLogEvents)
+	}
+}
+
 func TestPlaceBidLowPriceRejectionDoesNotTouchStore(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()

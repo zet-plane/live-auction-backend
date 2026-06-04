@@ -329,6 +329,8 @@ type fakeCache struct {
 	bidLuaErr          error
 	bidLuaResult       *itemcache.BidLuaResult
 	lastBidLuaArgs     *itemcache.BidLuaArgs
+	bidLogEvents       []itemcache.BidLogEvent
+	appendBidLogErr    error
 	initCalls          int
 	hotFieldUpdates    int
 	endBeforeHotUpdate bool
@@ -673,6 +675,14 @@ func (c *fakeCache) PlaceBidLua(_ context.Context, itemID string, args itemcache
 		PrevLeaderUserID: prevLeader,
 		Status:           state.Status,
 	}, nil
+}
+
+func (c *fakeCache) AppendBidLogEvent(_ context.Context, event itemcache.BidLogEvent) error {
+	if c.appendBidLogErr != nil {
+		return c.appendBidLogErr
+	}
+	c.bidLogEvents = append(c.bidLogEvents, event)
+	return nil
 }
 
 func (c *fakeCache) GetRanking(_ context.Context, itemID string, offset, limit int) ([]itemdto.BidderPrice, error) {
