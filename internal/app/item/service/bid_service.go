@@ -71,6 +71,7 @@ func (s *Service) PlaceBid(ctx context.Context, current *usermodel.User, itemID 
 
 	bidID = "bid_" + snowflake.MakeUUID()
 	now := s.now()
+	streamStart := time.Now()
 	luaResult, err := s.cache.PlaceBidLua(ctx, hot.ItemID, itemcache.BidLuaArgs{
 		UserID:            current.ID,
 		UserName:          input.UserName,
@@ -89,6 +90,10 @@ func (s *Service) PlaceBid(ctx context.Context, current *usermodel.User, itemID 
 		IdempotencyTTL:    86400,
 	})
 	if err != nil {
+		observability.DefaultRecorder().BidLogStream(ctx, observability.BidLogStreamMetric{
+			Result:   "error",
+			Duration: time.Since(streamStart),
+		})
 		bidResult = "error"
 		bidReason = "redis_error"
 		return nil, err
@@ -128,6 +133,11 @@ func (s *Service) PlaceBid(ctx context.Context, current *usermodel.User, itemID 
 			return nil, errorx.ErrInternal
 		}
 	}
+
+	observability.DefaultRecorder().BidLogStream(ctx, observability.BidLogStreamMetric{
+		Result:   "success",
+		Duration: time.Since(streamStart),
+	})
 
 	if s.broadcaster != nil {
 		endTime := bidEndTime(luaResult)
@@ -245,22 +255,36 @@ func (s *Service) PlaceBid(ctx context.Context, current *usermodel.User, itemID 
 }
 
 func (s *Service) bidHotConfig(ctx context.Context, itemID string) (*itemcache.AuctionHotConfig, error) {
+	start := time.Now()
+	result := "miss"
+	defer func() {
+		observability.DefaultRecorder().BidHotState(ctx, observability.BidHotStateMetric{
+			Result:   result,
+			Duration: time.Since(start),
+		})
+	}()
+
 	hot, ok, err := s.cache.GetAuctionHotConfig(ctx, itemID)
 	if err != nil {
+		result = "error"
 		return nil, err
 	}
 	if ok && hot.Status == string(model.ItemOngoing) {
+		result = "hit"
 		return hot, nil
 	}
 	if ok {
+		result = "rejected"
 		return nil, errorx.ErrInvalidRequest
 	}
 
 	var existing *itemcache.AuctionState
 	if state, stateOK, stateErr := s.cache.GetAuctionState(ctx, itemID); stateErr != nil {
+		result = "error"
 		return nil, stateErr
 	} else if stateOK {
 		if state.Status != "" && state.Status != string(model.ItemOngoing) {
+			result = "rejected"
 			return nil, errorx.ErrInvalidRequest
 		}
 		existing = state
@@ -268,9 +292,11 @@ func (s *Service) bidHotConfig(ctx context.Context, itemID string) (*itemcache.A
 
 	item, rule, err := s.store.FindItemWithRule(itemID)
 	if err != nil {
+		result = "error"
 		return nil, err
 	}
 	if item.Status != model.ItemOngoing {
+		result = "rejected"
 		return nil, errorx.ErrInvalidRequest
 	}
 
@@ -297,8 +323,10 @@ func (s *Service) bidHotConfig(ctx context.Context, itemID string) (*itemcache.A
 			endTimeUnixMS = hot.EndTimeUnixMS
 		}
 		if err := s.cache.UpdateAuctionHotFields(ctx, item.ID, *hot); err != nil {
+			result = "error"
 			return nil, err
 		}
+		result = "rebuilt"
 		return hot, nil
 	}
 
@@ -318,11 +346,14 @@ func (s *Service) bidHotConfig(ctx context.Context, itemID string) (*itemcache.A
 		MaxTotalExtendSec: s.policy.MaxTotalExtendSec,
 	}
 	if err := s.cache.InitAuctionState(ctx, item.ID, state); err != nil {
+		result = "error"
 		return nil, err
 	}
 	if err := s.cache.ScheduleAuctionEnd(ctx, item.ID, endTimeUnixMS); err != nil {
+		result = "error"
 		return nil, err
 	}
+	result = "rebuilt"
 	return hot, nil
 }
 

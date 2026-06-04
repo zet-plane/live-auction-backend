@@ -12,6 +12,7 @@ import (
 	itemdto "github.com/zet-plane/live-auction-backend/internal/app/item/dto"
 	itemmodel "github.com/zet-plane/live-auction-backend/internal/app/item/model"
 	usermodel "github.com/zet-plane/live-auction-backend/internal/app/user/model"
+	"github.com/zet-plane/live-auction-backend/internal/core/observability"
 	"github.com/zet-plane/live-auction-backend/pkg/errorx"
 	"github.com/zet-plane/live-auction-backend/pkg/wsevent"
 )
@@ -377,6 +378,9 @@ func TestPlaceBidRejectsNonOngoingHotStateWithoutStoreLookup(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()
 	svc := NewService(store, testPolicy, fc, nil, nil, nil)
+	rec := &bidHotStateCaptureRecorder{}
+	observability.SetDefaultRecorder(rec)
+	t.Cleanup(func() { observability.SetDefaultRecorder(nil) })
 	endTime := time.Now().Add(5 * time.Minute)
 	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 1000, 100, 0, endTime)
 
@@ -407,6 +411,12 @@ func TestPlaceBidRejectsNonOngoingHotStateWithoutStoreLookup(t *testing.T) {
 	}
 	if store.findItemWithRuleCalls != 0 {
 		t.Fatalf("expected no FindItemWithRule calls, got %d", store.findItemWithRuleCalls)
+	}
+	if len(rec.metrics) == 0 {
+		t.Fatal("expected bid hot state metric")
+	}
+	if got := rec.metrics[len(rec.metrics)-1].Result; got != "rejected" {
+		t.Fatalf("expected rejected hot state metric, got %q", got)
 	}
 }
 
@@ -1171,4 +1181,13 @@ func TestPlaceBidCoalescesBidSuccessFanout(t *testing.T) {
 	if payload.ServerTimeUnixMS != now.UnixMilli() || payload.EndTimeUnixMS != endTime.UnixMilli() {
 		t.Fatalf("expected clock fields server=%d end=%d, got %+v", now.UnixMilli(), endTime.UnixMilli(), payload)
 	}
+}
+
+type bidHotStateCaptureRecorder struct {
+	observability.NoopRecorder
+	metrics []observability.BidHotStateMetric
+}
+
+func (r *bidHotStateCaptureRecorder) BidHotState(_ context.Context, metric observability.BidHotStateMetric) {
+	r.metrics = append(r.metrics, metric)
 }

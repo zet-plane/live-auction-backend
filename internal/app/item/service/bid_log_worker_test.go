@@ -9,6 +9,7 @@ import (
 
 	itemcache "github.com/zet-plane/live-auction-backend/internal/app/item/cache"
 	itemmodel "github.com/zet-plane/live-auction-backend/internal/app/item/model"
+	"github.com/zet-plane/live-auction-backend/internal/core/observability"
 )
 
 type fakeBidLogStreamReader struct {
@@ -16,6 +17,7 @@ type fakeBidLogStreamReader struct {
 	pendingMessages  []itemcache.BidLogStreamMessage
 	readErr          error
 	readPendingErr   error
+	ackErr           error
 	acks             []string
 	readCalls        int
 	readPendingCalls int
@@ -39,6 +41,9 @@ func (r *fakeBidLogStreamReader) ReadPending(_ context.Context, _ int) ([]itemca
 
 func (r *fakeBidLogStreamReader) Ack(_ context.Context, ids []string) error {
 	r.acks = append(r.acks, ids...)
+	if r.ackErr != nil {
+		return r.ackErr
+	}
 	return nil
 }
 
@@ -126,6 +131,42 @@ func TestBidLogWorkerDoesNotAckWhenPersistFails(t *testing.T) {
 	}
 }
 
+func TestBidLogWorkerRecordsErrorWhenAckFails(t *testing.T) {
+	ctx := context.Background()
+	reader := &fakeBidLogStreamReader{
+		ackErr: errors.New("ack unavailable"),
+		messages: []itemcache.BidLogStreamMessage{
+			{
+				ID: "stream-1",
+				Event: itemcache.BidLogEvent{
+					BidID:           "bid_1",
+					ItemID:          "item_1",
+					RoomID:          "room_1",
+					UserID:          "user_1",
+					Price:           1200,
+					CreatedAtUnixMS: time.Now().UnixMilli(),
+				},
+			},
+		},
+	}
+	store := &fakeBidLogBatchStore{}
+	rec := &bidLogWorkerCaptureRecorder{}
+	observability.SetDefaultRecorder(rec)
+	t.Cleanup(func() { observability.SetDefaultRecorder(nil) })
+	worker := newBidLogWorker(store, reader, bidLogWorkerConfig{})
+
+	err := worker.drainOnce(ctx)
+	if err == nil {
+		t.Fatal("expected ack error")
+	}
+	if len(rec.metrics) != 1 {
+		t.Fatalf("expected one worker metric, got %d", len(rec.metrics))
+	}
+	if rec.metrics[0].Result != "error" {
+		t.Fatalf("expected error worker metric, got %+v", rec.metrics[0])
+	}
+}
+
 func TestBidLogWorkerEmptyBatchDoesNotPersistOrAck(t *testing.T) {
 	ctx := context.Background()
 	reader := &fakeBidLogStreamReader{}
@@ -141,6 +182,15 @@ func TestBidLogWorkerEmptyBatchDoesNotPersistOrAck(t *testing.T) {
 	if len(reader.acks) != 0 {
 		t.Fatalf("expected no ack for empty batch, got %#v", reader.acks)
 	}
+}
+
+type bidLogWorkerCaptureRecorder struct {
+	observability.NoopRecorder
+	metrics []observability.BidLogWorkerMetric
+}
+
+func (r *bidLogWorkerCaptureRecorder) BidLogWorker(_ context.Context, metric observability.BidLogWorkerMetric) {
+	r.metrics = append(r.metrics, metric)
 }
 
 func TestBidLogWorkerDrainsPendingBeforeNewMessages(t *testing.T) {

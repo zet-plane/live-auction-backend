@@ -6,6 +6,7 @@ import (
 
 	itemcache "github.com/zet-plane/live-auction-backend/internal/app/item/cache"
 	itemmodel "github.com/zet-plane/live-auction-backend/internal/app/item/model"
+	"github.com/zet-plane/live-auction-backend/internal/core/observability"
 	"github.com/zet-plane/live-auction-backend/pkg/logx"
 )
 
@@ -92,8 +93,27 @@ func (w *bidLogWorker) drainOnce(ctx context.Context) error {
 		ids = append(ids, message.ID)
 	}
 
+	persistStart := time.Now()
 	if err := w.store.CreateBidLogs(logs); err != nil {
+		observability.DefaultRecorder().BidLogWorker(ctx, observability.BidLogWorkerMetric{
+			Result:    "error",
+			BatchSize: int64(len(logs)),
+			Duration:  time.Since(persistStart),
+		})
 		return err
 	}
-	return w.reader.Ack(ctx, ids)
+	if err := w.reader.Ack(ctx, ids); err != nil {
+		observability.DefaultRecorder().BidLogWorker(ctx, observability.BidLogWorkerMetric{
+			Result:    "error",
+			BatchSize: int64(len(logs)),
+			Duration:  time.Since(persistStart),
+		})
+		return err
+	}
+	observability.DefaultRecorder().BidLogWorker(ctx, observability.BidLogWorkerMetric{
+		Result:    "success",
+		BatchSize: int64(len(logs)),
+		Duration:  time.Since(persistStart),
+	})
+	return nil
 }
