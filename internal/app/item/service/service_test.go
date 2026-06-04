@@ -68,6 +68,24 @@ func (s *fakeStore) FindItemWithRule(itemID string) (*itemmodel.AuctionItem, *it
 	return &itemCopy, &ruleCopy, nil
 }
 
+func (s *fakeStore) ListItemsByIDs(itemIDs []string) ([]itemmodel.ItemWithRule, error) {
+	result := make([]itemmodel.ItemWithRule, 0, len(itemIDs))
+	for _, itemID := range itemIDs {
+		item, ok := s.items[itemID]
+		if !ok {
+			continue
+		}
+		rule, ok := s.rules[item.RuleID]
+		if !ok {
+			continue
+		}
+		itemCopy := *item
+		ruleCopy := *rule
+		result = append(result, itemmodel.ItemWithRule{Item: &itemCopy, Rule: &ruleCopy})
+	}
+	return result, nil
+}
+
 func (s *fakeStore) UpdateItemWithRule(item *itemmodel.AuctionItem, rule *itemmodel.AuctionRule) error {
 	if s.updateErr != nil {
 		return s.updateErr
@@ -224,6 +242,26 @@ func (s *fakeStore) ListBidRanking(itemID string, limit int) ([]itemdto.BidderPr
 		entries = entries[:limit]
 	}
 	return entries, nil
+}
+
+func (s *fakeStore) GetUserRanking(itemID, userID string) (*itemdto.CurrentUserRanking, error) {
+	entries, err := s.ListBidRanking(itemID, len(s.bidLogs))
+	if err != nil {
+		return nil, err
+	}
+	for i, entry := range entries {
+		if entry.UserID == userID {
+			rank := i + 1
+			return &itemdto.CurrentUserRanking{
+				UserID:   userID,
+				Rank:     rank,
+				Price:    entry.Price,
+				IsLeader: rank == 1,
+				HasBid:   true,
+			}, nil
+		}
+	}
+	return nil, nil
 }
 
 func TestCreateItemRequiresMerchantAndCreatesDraftItemWithRule(t *testing.T) {
@@ -764,6 +802,26 @@ func (c *fakeCache) GetRanking(_ context.Context, itemID string, offset, limit i
 		entries = entries[:limit]
 	}
 	return entries, nil
+}
+
+func (c *fakeCache) GetUserRanking(_ context.Context, itemID, userID string) (*itemdto.CurrentUserRanking, error) {
+	entries, err := c.GetRanking(context.Background(), itemID, 0, len(c.ranking[itemID]))
+	if err != nil {
+		return nil, err
+	}
+	for i, entry := range entries {
+		if entry.UserID == userID {
+			rank := i + 1
+			return &itemdto.CurrentUserRanking{
+				UserID:   userID,
+				Rank:     rank,
+				Price:    entry.Price,
+				IsLeader: rank == 1,
+				HasBid:   true,
+			}, nil
+		}
+	}
+	return nil, nil
 }
 
 func TestCreateItemStoresRoomID(t *testing.T) {

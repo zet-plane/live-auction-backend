@@ -46,7 +46,16 @@ type RankingEntry struct {
 }
 
 type RankingResult struct {
-	List     []RankingEntry `json:"list"`
-	Page     int            `json:"page"`
-	PageSize int            `json:"page_size"`
+	List        []RankingEntry      `json:"list"`
+	Page        int                 `json:"page"`
+	PageSize    int                 `json:"page_size"`
+	CurrentUser *CurrentUserRanking `json:"current_user,omitempty"`
+}
+
+type CurrentUserRanking struct {
+	UserID   string `json:"user_id"`
+	Rank     int    `json:"rank"`
+	Price    int64  `json:"price"`
+	IsLeader bool   `json:"is_leader"`
+	HasBid   bool   `json:"has_bid"`
 }

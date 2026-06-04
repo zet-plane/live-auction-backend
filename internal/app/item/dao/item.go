@@ -17,6 +17,7 @@ type Store interface {
 	AutoMigrate() error
 	CreateItemWithRule(item *model.AuctionItem, rule *model.AuctionRule) error
 	FindItemWithRule(itemID string) (*model.AuctionItem, *model.AuctionRule, error)
+	ListItemsByIDs(itemIDs []string) ([]model.ItemWithRule, error)
 	UpdateItemWithRule(item *model.AuctionItem, rule *model.AuctionRule) error
 	SetRoomCurrentItem(roomID, itemID string) error
 	GetRoomCurrentItem(roomID string) (string, bool, error)
@@ -28,6 +29,7 @@ type Store interface {
 	CreateBidLog(log *model.BidLog) error
 	CreateBidLogs(logs []*model.BidLog) error
 	ListBidRanking(itemID string, limit int) ([]dto.BidderPrice, error)
+	GetUserRanking(itemID, userID string) (*dto.CurrentUserRanking, error)
 }
 
 type GormStore struct {
@@ -67,6 +69,50 @@ func (s *GormStore) FindItemWithRule(itemID string) (*model.AuctionItem, *model.
 		return nil, nil, err
 	}
 	return &item, &rule, nil
+}
+
+func (s *GormStore) ListItemsByIDs(itemIDs []string) ([]model.ItemWithRule, error) {
+	if len(itemIDs) == 0 {
+		return []model.ItemWithRule{}, nil
+	}
+	var items []model.AuctionItem
+	if err := s.db.Where("id IN ?", itemIDs).Find(&items).Error; err != nil {
+		return nil, err
+	}
+	if len(items) == 0 {
+		return []model.ItemWithRule{}, nil
+	}
+
+	ruleIDs := make([]string, 0, len(items))
+	for _, item := range items {
+		ruleIDs = append(ruleIDs, item.RuleID)
+	}
+	var rules []model.AuctionRule
+	if err := s.db.Where("id IN ?", ruleIDs).Find(&rules).Error; err != nil {
+		return nil, err
+	}
+	ruleByID := make(map[string]*model.AuctionRule, len(rules))
+	for i := range rules {
+		ruleByID[rules[i].ID] = &rules[i]
+	}
+	itemByID := make(map[string]*model.AuctionItem, len(items))
+	for i := range items {
+		itemByID[items[i].ID] = &items[i]
+	}
+
+	result := make([]model.ItemWithRule, 0, len(items))
+	for _, itemID := range itemIDs {
+		item := itemByID[itemID]
+		if item == nil {
+			continue
+		}
+		rule := ruleByID[item.RuleID]
+		if rule == nil {
+			continue
+		}
+		result = append(result, model.ItemWithRule{Item: item, Rule: rule})
+	}
+	return result, nil
 }
 
 func (s *GormStore) UpdateItemWithRule(item *model.AuctionItem, rule *model.AuctionRule) error {

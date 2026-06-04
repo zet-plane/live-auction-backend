@@ -1,6 +1,8 @@
 package dao
 
 import (
+	"database/sql"
+
 	"github.com/zet-plane/live-auction-backend/internal/app/item/dto"
 	"github.com/zet-plane/live-auction-backend/internal/app/item/model"
 	"gorm.io/gorm/clause"
@@ -47,4 +49,37 @@ func (s *GormStore) ListBidRanking(itemID string, limit int) ([]dto.BidderPrice,
 		}
 	}
 	return entries, nil
+}
+
+func (s *GormStore) GetUserRanking(itemID, userID string) (*dto.CurrentUserRanking, error) {
+	var best sql.NullInt64
+	if err := s.db.Model(&model.BidLog{}).
+		Select("MAX(price)").
+		Where("item_id = ? AND user_id = ?", itemID, userID).
+		Scan(&best).Error; err != nil {
+		return nil, err
+	}
+	if !best.Valid {
+		return nil, nil
+	}
+
+	var higher int64
+	subquery := s.db.Model(&model.BidLog{}).
+		Select("user_id, MAX(price) as price").
+		Where("item_id = ?", itemID).
+		Group("user_id")
+	if err := s.db.Table("(?) as bidder_best", subquery).
+		Where("price > ?", best.Int64).
+		Count(&higher).Error; err != nil {
+		return nil, err
+	}
+
+	rank := int(higher) + 1
+	return &dto.CurrentUserRanking{
+		UserID:   userID,
+		Rank:     rank,
+		Price:    best.Int64,
+		IsLeader: rank == 1,
+		HasBid:   true,
+	}, nil
 }

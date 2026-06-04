@@ -124,6 +124,7 @@ type Cache interface {
 	PlaceBidLua(ctx context.Context, itemID string, args BidLuaArgs) (*BidLuaResult, error)
 	AppendBidLogEvent(ctx context.Context, event BidLogEvent) error
 	GetRanking(ctx context.Context, itemID string, offset, limit int) ([]dto.BidderPrice, error)
+	GetUserRanking(ctx context.Context, itemID, userID string) (*dto.CurrentUserRanking, error)
 }
 
 type RedisCache struct {

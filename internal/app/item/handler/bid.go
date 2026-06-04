@@ -2,10 +2,12 @@ package handler
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/flamego/binding"
 	"github.com/flamego/flamego"
 	"github.com/zet-plane/live-auction-backend/internal/app/item/dto"
+	userhandler "github.com/zet-plane/live-auction-backend/internal/app/user/handler"
 	usermodel "github.com/zet-plane/live-auction-backend/internal/app/user/model"
 	"github.com/zet-plane/live-auction-backend/internal/middleware/response"
 	"github.com/zet-plane/live-auction-backend/internal/middleware/web"
@@ -61,11 +63,36 @@ func GetRanking(r flamego.Render, req *http.Request, c flamego.Context) {
 		response.Error(r, errorx.ErrInternal)
 		return
 	}
-	result, err := svc.GetRanking(req.Context(), c.Param("item_id"), queryInt(c, "page"), queryInt(c, "page_size"))
+	current, err := optionalCurrentUser(req)
+	if err != nil {
+		response.Error(r, err)
+		return
+	}
+	result, err := svc.GetRanking(req.Context(), c.Param("item_id"), queryInt(c, "page"), queryInt(c, "page_size"), current)
 	if err != nil {
 		logx.Warnw("GetRanking failed", "item_id", c.Param("item_id"), "err", err)
 		response.Error(r, err)
 		return
 	}
 	response.OK(r, result)
+}
+
+func optionalCurrentUser(req *http.Request) (*usermodel.User, error) {
+	header := req.Header.Get("Authorization")
+	if strings.TrimSpace(header) == "" {
+		return nil, nil
+	}
+	token := strings.TrimSpace(strings.TrimPrefix(header, "Bearer "))
+	if token == "" || token == header {
+		return nil, errorx.ErrUnauthorized
+	}
+	u, err := userhandler.AuthenticateToken(req.Context(), token)
+	if err != nil {
+		return nil, err
+	}
+	current, ok := u.(*usermodel.User)
+	if !ok {
+		return nil, errorx.ErrInternal
+	}
+	return current, nil
 }

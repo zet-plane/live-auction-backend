@@ -383,7 +383,7 @@ func bidStatus(result *itemcache.BidLuaResult, fallback string) string {
 	return fallback
 }
 
-func (s *Service) GetRanking(ctx context.Context, itemID string, page, pageSize int) (result *dto.RankingResult, err error) {
+func (s *Service) GetRanking(ctx context.Context, itemID string, page, pageSize int, currentUsers ...*usermodel.User) (result *dto.RankingResult, err error) {
 	itemID = strings.TrimSpace(itemID)
 	if page <= 0 {
 		page = 1
@@ -431,5 +431,39 @@ func (s *Service) GetRanking(ctx context.Context, itemID string, page, pageSize 
 			Price:    e.Price,
 		}
 	}
-	return &dto.RankingResult{List: list, Page: page, PageSize: pageSize}, nil
+	ranking := &dto.RankingResult{List: list, Page: page, PageSize: pageSize}
+	if current := firstCurrentUser(currentUsers); current != nil && current.ID != "" {
+		ranking.CurrentUser, err = s.currentUserRanking(ctx, itemID, current.ID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return ranking, nil
+}
+
+func firstCurrentUser(users []*usermodel.User) *usermodel.User {
+	if len(users) == 0 {
+		return nil
+	}
+	return users[0]
+}
+
+func (s *Service) currentUserRanking(ctx context.Context, itemID, userID string) (*dto.CurrentUserRanking, error) {
+	if s.cache != nil {
+		result, err := s.cache.GetUserRanking(ctx, itemID, userID)
+		if err != nil {
+			return nil, err
+		}
+		if result != nil {
+			return result, nil
+		}
+	}
+	result, err := s.store.GetUserRanking(itemID, userID)
+	if err != nil {
+		return nil, err
+	}
+	if result != nil {
+		return result, nil
+	}
+	return &dto.CurrentUserRanking{UserID: userID}, nil
 }

@@ -159,6 +159,43 @@ func (s *Service) ListItems(ctx context.Context, query dto.ListItemsInput) (resu
 	}, nil
 }
 
+func (s *Service) ListItemsByIDs(ctx context.Context, itemIDs []string) (result []dto.ItemListDTO, err error) {
+	ids := make([]string, 0, len(itemIDs))
+	seen := map[string]struct{}{}
+	for _, itemID := range itemIDs {
+		itemID = strings.TrimSpace(itemID)
+		if itemID == "" {
+			continue
+		}
+		if _, ok := seen[itemID]; ok {
+			continue
+		}
+		seen[itemID] = struct{}{}
+		ids = append(ids, itemID)
+	}
+	if len(ids) == 0 {
+		return []dto.ItemListDTO{}, nil
+	}
+	defer observability.Track(ctx, "item.list_by_ids", "count", len(ids))(&err)
+
+	items, err := s.store.ListItemsByIDs(ids)
+	if err != nil {
+		return nil, err
+	}
+	list := make([]dto.ItemListDTO, 0, len(items))
+	now := s.now()
+	for _, iwr := range items {
+		d := dto.NewItemListDTO(iwr.Item, iwr.Rule, s.policy, now)
+		if iwr.Item.Status == model.ItemOngoing && s.cache != nil {
+			if state, ok, _ := s.cache.GetAuctionState(ctx, iwr.Item.ID); ok {
+				applyStateToList(&d, state, now)
+			}
+		}
+		list = append(list, d)
+	}
+	return list, nil
+}
+
 func (s *Service) ListMerchantItems(ctx context.Context, current *usermodel.User, query dto.ListItemsInput) (result *dto.MerchantItemListResult, err error) {
 	finish := observability.Track(ctx, "item.list_merchant",
 		"merchant_id", userID(current),

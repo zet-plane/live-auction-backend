@@ -994,6 +994,74 @@ func TestGetRankingFromCache(t *testing.T) {
 	}
 }
 
+func TestGetRankingReturnsCurrentUserRankFromCache(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	svc := NewService(store, testPolicy, fc, nil, nil, nil)
+	endTime := time.Now().Add(5 * time.Minute)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 0, endTime)
+
+	users := []struct {
+		user  *usermodel.User
+		price int64
+		idem  string
+	}{
+		{&usermodel.User{ID: "u1", Name: "Alice"}, 300, "rank_cache_1"},
+		{&usermodel.User{ID: "u3", Name: "Carol"}, 400, "rank_cache_3"},
+		{&usermodel.User{ID: "u2", Name: "Bob"}, 500, "rank_cache_2"},
+	}
+	for _, u := range users {
+		if _, err := svc.PlaceBid(context.Background(), u.user, itemID, itemdto.PlaceBidInput{
+			Price: u.price, IdempotencyKey: u.idem, UserName: u.user.Name,
+		}); err != nil {
+			t.Fatalf("PlaceBid for %s failed: %v", u.user.ID, err)
+		}
+	}
+
+	result, err := svc.GetRanking(context.Background(), itemID, 1, 2, &usermodel.User{ID: "u3"})
+	if err != nil {
+		t.Fatalf("GetRanking failed: %v", err)
+	}
+	if result.CurrentUser == nil {
+		t.Fatal("expected current_user ranking")
+	}
+	if result.CurrentUser.UserID != "u3" || result.CurrentUser.Rank != 2 || result.CurrentUser.Price != 400 {
+		t.Fatalf("unexpected current_user ranking: %+v", result.CurrentUser)
+	}
+	if !result.CurrentUser.HasBid {
+		t.Fatalf("expected current_user has_bid=true, got %+v", result.CurrentUser)
+	}
+	if result.CurrentUser.IsLeader {
+		t.Fatalf("expected current_user is_leader=false, got %+v", result.CurrentUser)
+	}
+}
+
+func TestGetRankingReturnsCurrentUserNoBid(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	svc := NewService(store, testPolicy, fc, nil, nil, nil)
+	endTime := time.Now().Add(5 * time.Minute)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 0, endTime)
+
+	_, err := svc.PlaceBid(context.Background(), &usermodel.User{ID: "u1", Name: "Alice"}, itemID, itemdto.PlaceBidInput{
+		Price: 100, IdempotencyKey: "rank_no_bid_1", UserName: "Alice",
+	})
+	if err != nil {
+		t.Fatalf("PlaceBid failed: %v", err)
+	}
+
+	result, err := svc.GetRanking(context.Background(), itemID, 1, 10, &usermodel.User{ID: "u_missing"})
+	if err != nil {
+		t.Fatalf("GetRanking failed: %v", err)
+	}
+	if result.CurrentUser == nil {
+		t.Fatal("expected current_user for authenticated user")
+	}
+	if result.CurrentUser.HasBid || result.CurrentUser.Rank != 0 || result.CurrentUser.Price != 0 {
+		t.Fatalf("expected no-bid current_user, got %+v", result.CurrentUser)
+	}
+}
+
 func TestGetRankingFallsBackToMySQL(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()

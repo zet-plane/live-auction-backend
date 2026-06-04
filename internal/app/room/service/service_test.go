@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
+	itemdto "github.com/zet-plane/live-auction-backend/internal/app/item/dto"
+	itemmodel "github.com/zet-plane/live-auction-backend/internal/app/item/model"
 	roomcache "github.com/zet-plane/live-auction-backend/internal/app/room/cache"
 	"github.com/zet-plane/live-auction-backend/internal/app/room/dto"
 	"github.com/zet-plane/live-auction-backend/internal/app/room/model"
@@ -138,6 +141,20 @@ func (c *fakeCache) GetItemQueue(_ context.Context, roomID string) ([]string, er
 		return []string{}, nil
 	}
 	return q, nil
+}
+
+type fakeItemReader struct {
+	items map[string]itemdto.ItemListDTO
+}
+
+func (r *fakeItemReader) ListItemsByIDs(_ context.Context, itemIDs []string) ([]itemdto.ItemListDTO, error) {
+	result := make([]itemdto.ItemListDTO, 0, len(itemIDs))
+	for _, itemID := range itemIDs {
+		if item, ok := r.items[itemID]; ok {
+			result = append(result, item)
+		}
+	}
+	return result, nil
 }
 
 // ─── tests ────────────────────────────────────────────────────────────────────
@@ -333,6 +350,36 @@ func TestGetRoomReturnsItemQueue(t *testing.T) {
 	}
 	if len(result.ItemQueue) != 2 || result.ItemQueue[0] != "item_1" {
 		t.Fatalf("expected item_queue [item_1 item_2], got %v", result.ItemQueue)
+	}
+}
+
+func TestGetRoomReturnsFullItemsInQueueOrder(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	reader := &fakeItemReader{items: map[string]itemdto.ItemListDTO{
+		"item_1": {ID: "item_1", RoomID: "room_1", Title: "First", Status: itemmodel.ItemPublished, CurrentPrice: 1000},
+		"item_2": {ID: "item_2", RoomID: "room_1", Title: "Second", Status: itemmodel.ItemOngoing, CurrentPrice: 1500},
+	}}
+	svc := NewService(store, fc, reader)
+	m := merchant()
+
+	r, _ := svc.ActivateRoom(context.Background(), m, dto.CreateRoomInput{Title: "My Room"})
+	fc.queues[r.ID] = []string{"item_2", "item_1"}
+	reader.items["item_1"] = itemdto.ItemListDTO{ID: "item_1", RoomID: r.ID, Title: "First", Status: itemmodel.ItemPublished, CurrentPrice: 1000, EndTime: time.Now().Add(time.Minute)}
+	reader.items["item_2"] = itemdto.ItemListDTO{ID: "item_2", RoomID: r.ID, Title: "Second", Status: itemmodel.ItemOngoing, CurrentPrice: 1500, EndTime: time.Now().Add(time.Minute)}
+
+	result, err := svc.GetRoom(context.Background(), r.ID)
+	if err != nil {
+		t.Fatalf("GetRoom: %v", err)
+	}
+	if len(result.Item) != 2 {
+		t.Fatalf("expected 2 full items, got %d", len(result.Item))
+	}
+	if result.Item[0].ID != "item_2" || result.Item[1].ID != "item_1" {
+		t.Fatalf("expected item order [item_2 item_1], got [%s %s]", result.Item[0].ID, result.Item[1].ID)
+	}
+	if result.Item[0].Title != "Second" || result.Item[0].CurrentPrice != 1500 {
+		t.Fatalf("expected full item detail for item_2, got %+v", result.Item[0])
 	}
 }
 

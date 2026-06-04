@@ -257,3 +257,28 @@ func (c *RedisCache) GetRanking(ctx context.Context, itemID string, offset, limi
 	}
 	return entries, nil
 }
+
+func (c *RedisCache) GetUserRanking(ctx context.Context, itemID, userID string) (*dto.CurrentUserRanking, error) {
+	rank, err := c.client.ZRevRank(ctx, rankingKey(itemID), userID).Result()
+	if err == redis.Nil {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	score, err := c.client.ZScore(ctx, rankingKey(itemID), userID).Result()
+	if err == redis.Nil {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	oneBasedRank := int(rank) + 1
+	return &dto.CurrentUserRanking{
+		UserID:   userID,
+		Rank:     oneBasedRank,
+		Price:    int64(score),
+		IsLeader: oneBasedRank == 1,
+		HasBid:   true,
+	}, nil
+}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 
+	itemdto "github.com/zet-plane/live-auction-backend/internal/app/item/dto"
 	roomcache "github.com/zet-plane/live-auction-backend/internal/app/room/cache"
 	"github.com/zet-plane/live-auction-backend/internal/app/room/dao"
 	"github.com/zet-plane/live-auction-backend/internal/app/room/dto"
@@ -16,12 +17,21 @@ import (
 )
 
 type Service struct {
-	store dao.Store
-	cache roomcache.Cache
+	store      dao.Store
+	cache      roomcache.Cache
+	itemReader ItemReader
 }
 
-func NewService(store dao.Store, cache roomcache.Cache) *Service {
-	return &Service{store: store, cache: cache}
+type ItemReader interface {
+	ListItemsByIDs(ctx context.Context, itemIDs []string) ([]itemdto.ItemListDTO, error)
+}
+
+func NewService(store dao.Store, cache roomcache.Cache, readers ...ItemReader) *Service {
+	var reader ItemReader
+	if len(readers) > 0 {
+		reader = readers[0]
+	}
+	return &Service{store: store, cache: cache, itemReader: reader}
 }
 
 func (s *Service) ActivateRoom(ctx context.Context, current *usermodel.User, input dto.CreateRoomInput) (result *dto.MerchantRoomDTO, err error) {
@@ -146,7 +156,8 @@ func (s *Service) GetRoom(ctx context.Context, roomID string) (result *dto.RoomD
 		onlineCount = state.OnlineCount
 	}
 	itemQueue, _ := s.cache.GetItemQueue(ctx, room.ID)
-	detail := dto.NewRoomDetailDTO(room, onlineCount, itemQueue)
+	items := s.roomItems(ctx, itemQueue)
+	detail := dto.NewRoomDetailDTO(room, onlineCount, itemQueue, items)
 	return &detail, nil
 }
 
@@ -167,10 +178,21 @@ func (s *Service) ListRooms(ctx context.Context, statusFilter model.RoomStatus) 
 			onlineCount = state.OnlineCount
 		}
 		itemQueue, _ := s.cache.GetItemQueue(ctx, room.ID)
-		d := dto.NewRoomDetailDTO(room, onlineCount, itemQueue)
+		d := dto.NewRoomDetailDTO(room, onlineCount, itemQueue, nil)
 		result = append(result, &d)
 	}
 	return result, nil
+}
+
+func (s *Service) roomItems(ctx context.Context, itemQueue []string) []itemdto.ItemListDTO {
+	if s.itemReader == nil || len(itemQueue) == 0 {
+		return []itemdto.ItemListDTO{}
+	}
+	items, err := s.itemReader.ListItemsByIDs(ctx, itemQueue)
+	if err != nil {
+		return []itemdto.ItemListDTO{}
+	}
+	return items
 }
 
 func (s *Service) findMerchantRoom(current *usermodel.User, roomID string) (*model.LiveRoom, error) {

@@ -3,6 +3,7 @@ package dto
 import (
 	"time"
 
+	itemdto "github.com/zet-plane/live-auction-backend/internal/app/item/dto"
 	"github.com/zet-plane/live-auction-backend/internal/app/room/model"
 )
 
@@ -19,15 +20,16 @@ func (r CreateRoomRequest) Input() CreateRoomInput {
 }
 
 type RoomDetailDTO struct {
-	ID            string           `json:"id"`
-	MerchantID    string           `json:"merchant_id"`
-	Title         string           `json:"title"`
-	Status        model.RoomStatus `json:"status"`
-	CurrentItemID string           `json:"current_item_id"`
-	OnlineCount   int              `json:"online_count"`
-	ItemQueue     []string         `json:"item_queue"`
-	CreatedAt     time.Time        `json:"created_at"`
-	UpdatedAt     time.Time        `json:"updated_at"`
+	ID            string                `json:"id"`
+	MerchantID    string                `json:"merchant_id"`
+	Title         string                `json:"title"`
+	Status        model.RoomStatus      `json:"status"`
+	CurrentItemID string                `json:"current_item_id"`
+	OnlineCount   int                   `json:"online_count"`
+	ItemQueue     []string              `json:"item_queue"`
+	Item          []itemdto.ItemListDTO `json:"item"`
+	CreatedAt     time.Time             `json:"created_at"`
+	UpdatedAt     time.Time             `json:"updated_at"`
 }
 
 type MerchantRoomDTO struct {
@@ -49,9 +51,12 @@ type RoomActionsDTO struct {
 	CanEnd   bool `json:"can_end"`
 }
 
-func NewRoomDetailDTO(room *model.LiveRoom, onlineCount int, itemQueue []string) RoomDetailDTO {
+func NewRoomDetailDTO(room *model.LiveRoom, onlineCount int, itemQueue []string, items []itemdto.ItemListDTO) RoomDetailDTO {
 	if itemQueue == nil {
 		itemQueue = []string{}
+	}
+	if items == nil {
+		items = []itemdto.ItemListDTO{}
 	}
 	return RoomDetailDTO{
 		ID:            room.ID,
@@ -61,6 +66,7 @@ func NewRoomDetailDTO(room *model.LiveRoom, onlineCount int, itemQueue []string)
 		CurrentItemID: room.CurrentItemID,
 		OnlineCount:   onlineCount,
 		ItemQueue:     itemQueue,
+		Item:          items,
 		CreatedAt:     room.CreatedAt,
 		UpdatedAt:     room.UpdatedAt,
 	}
