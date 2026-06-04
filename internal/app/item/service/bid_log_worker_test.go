@@ -12,16 +12,29 @@ import (
 )
 
 type fakeBidLogStreamReader struct {
-	messages []itemcache.BidLogStreamMessage
-	readErr  error
-	acks     []string
+	messages         []itemcache.BidLogStreamMessage
+	pendingMessages  []itemcache.BidLogStreamMessage
+	readErr          error
+	readPendingErr   error
+	acks             []string
+	readCalls        int
+	readPendingCalls int
 }
 
 func (r *fakeBidLogStreamReader) Read(_ context.Context, _ int) ([]itemcache.BidLogStreamMessage, error) {
+	r.readCalls++
 	if r.readErr != nil {
 		return nil, r.readErr
 	}
 	return r.messages, nil
+}
+
+func (r *fakeBidLogStreamReader) ReadPending(_ context.Context, _ int) ([]itemcache.BidLogStreamMessage, error) {
+	r.readPendingCalls++
+	if r.readPendingErr != nil {
+		return nil, r.readPendingErr
+	}
+	return r.pendingMessages, nil
 }
 
 func (r *fakeBidLogStreamReader) Ack(_ context.Context, ids []string) error {
@@ -127,5 +140,57 @@ func TestBidLogWorkerEmptyBatchDoesNotPersistOrAck(t *testing.T) {
 	}
 	if len(reader.acks) != 0 {
 		t.Fatalf("expected no ack for empty batch, got %#v", reader.acks)
+	}
+}
+
+func TestBidLogWorkerDrainsPendingBeforeNewMessages(t *testing.T) {
+	ctx := context.Background()
+	createdAt := time.Date(2026, 6, 4, 12, 30, 0, 0, time.UTC)
+	reader := &fakeBidLogStreamReader{
+		pendingMessages: []itemcache.BidLogStreamMessage{
+			{
+				ID: "pending-1",
+				Event: itemcache.BidLogEvent{
+					BidID:           "bid_pending",
+					ItemID:          "item_1",
+					RoomID:          "room_1",
+					UserID:          "user_1",
+					Price:           1300,
+					CreatedAtUnixMS: createdAt.UnixMilli(),
+				},
+			},
+		},
+		messages: []itemcache.BidLogStreamMessage{
+			{
+				ID: "new-1",
+				Event: itemcache.BidLogEvent{
+					BidID:           "bid_new",
+					ItemID:          "item_1",
+					RoomID:          "room_1",
+					UserID:          "user_2",
+					Price:           1400,
+					CreatedAtUnixMS: createdAt.UnixMilli(),
+				},
+			},
+		},
+	}
+	store := &fakeBidLogBatchStore{}
+	worker := newBidLogWorker(store, reader, bidLogWorkerConfig{})
+
+	if err := worker.drainOnce(ctx); err != nil {
+		t.Fatalf("drainOnce returned error: %v", err)
+	}
+
+	if reader.readPendingCalls != 1 {
+		t.Fatalf("expected pending read before new read, got %d calls", reader.readPendingCalls)
+	}
+	if reader.readCalls != 0 {
+		t.Fatalf("expected no new read when pending batch exists, got %d calls", reader.readCalls)
+	}
+	if len(store.logs) != 1 || store.logs[0].ID != "bid_pending" {
+		t.Fatalf("expected pending bid log to be persisted first, got %#v", store.logs)
+	}
+	if !reflect.DeepEqual(reader.acks, []string{"pending-1"}) {
+		t.Fatalf("expected pending message ack, got %#v", reader.acks)
 	}
 }

@@ -10,6 +10,7 @@ import (
 )
 
 type bidLogStreamReader interface {
+	ReadPending(ctx context.Context, count int) ([]itemcache.BidLogStreamMessage, error)
 	Read(ctx context.Context, count int) ([]itemcache.BidLogStreamMessage, error)
 	Ack(ctx context.Context, ids []string) error
 }
@@ -62,9 +63,15 @@ func (w *bidLogWorker) Run(ctx context.Context) {
 }
 
 func (w *bidLogWorker) drainOnce(ctx context.Context) error {
-	messages, err := w.reader.Read(ctx, w.batchSize)
+	messages, err := w.reader.ReadPending(ctx, w.batchSize)
 	if err != nil {
 		return err
+	}
+	if len(messages) == 0 {
+		messages, err = w.reader.Read(ctx, w.batchSize)
+		if err != nil {
+			return err
+		}
 	}
 	if len(messages) == 0 {
 		return nil

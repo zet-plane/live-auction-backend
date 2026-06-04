@@ -13,10 +13,19 @@ import (
 const BidLogStreamName = "auction:bid_log:stream"
 const BidLogDeadStreamName = "auction:bid_log:dead"
 const BidLogConsumerGroup = "bid-log-writers"
+const BidLogStreamMaxLen = 100000
+
+const bidLogPendingMinIdle = 30 * time.Second
 
 func (c *RedisCache) AppendBidLogEvent(ctx context.Context, event BidLogEvent) error {
-	return c.client.XAdd(ctx, &redis.XAddArgs{
+	return c.client.XAdd(ctx, newBidLogXAddArgs(event)).Err()
+}
+
+func newBidLogXAddArgs(event BidLogEvent) *redis.XAddArgs {
+	return &redis.XAddArgs{
 		Stream: BidLogStreamName,
+		MaxLen: BidLogStreamMaxLen,
+		Approx: true,
 		Values: map[string]any{
 			"bid_id":             event.BidID,
 			"item_id":            event.ItemID,
@@ -25,7 +34,7 @@ func (c *RedisCache) AppendBidLogEvent(ctx context.Context, event BidLogEvent) e
 			"price":              strconv.FormatInt(event.Price, 10),
 			"created_at_unix_ms": strconv.FormatInt(event.CreatedAtUnixMS, 10),
 		},
-	}).Err()
+	}
 }
 
 type BidLogStreamReader struct {
@@ -66,17 +75,42 @@ func (r *BidLogStreamReader) Read(ctx context.Context, count int) ([]BidLogStrea
 		return nil, err
 	}
 
-	messages := make([]BidLogStreamMessage, 0)
-	for _, stream := range streams {
-		for _, message := range stream.Messages {
-			event, err := bidLogEventFromStreamValues(message.Values)
-			if err != nil {
-				return nil, fmt.Errorf("parse bid log stream message %s: %w", message.ID, err)
-			}
-			messages = append(messages, BidLogStreamMessage{ID: message.ID, Event: event})
-		}
+	return r.parseRedisMessages(ctx, redisStreamMessages(streams))
+}
+
+func (r *BidLogStreamReader) ReadPending(ctx context.Context, count int) ([]BidLogStreamMessage, error) {
+	if count <= 0 {
+		count = 1
 	}
-	return messages, nil
+	messages, _, err := r.client.XAutoClaim(ctx, &redis.XAutoClaimArgs{
+		Stream:   BidLogStreamName,
+		Group:    BidLogConsumerGroup,
+		Consumer: r.consumer,
+		MinIdle:  bidLogPendingMinIdle,
+		Start:    "0-0",
+		Count:    int64(count),
+	}).Result()
+	if err != nil {
+		if err == redis.Nil {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return r.parseRedisMessages(ctx, messages)
+}
+
+func (r *BidLogStreamReader) parseRedisMessages(ctx context.Context, messages []redis.XMessage) ([]BidLogStreamMessage, error) {
+	return parseBidLogStreamMessages(messages, func(message redis.XMessage, parseErr error) error {
+		return r.deadLetterAndAck(ctx, message, parseErr)
+	})
+}
+
+func redisStreamMessages(streams []redis.XStream) []redis.XMessage {
+	messages := make([]redis.XMessage, 0)
+	for _, stream := range streams {
+		messages = append(messages, stream.Messages...)
+	}
+	return messages
 }
 
 func (r *BidLogStreamReader) Ack(ctx context.Context, ids []string) error {
@@ -84,6 +118,44 @@ func (r *BidLogStreamReader) Ack(ctx context.Context, ids []string) error {
 		return nil
 	}
 	return r.client.XAck(ctx, BidLogStreamName, BidLogConsumerGroup, ids...).Err()
+}
+
+func (r *BidLogStreamReader) deadLetterAndAck(ctx context.Context, message redis.XMessage, parseErr error) error {
+	values := map[string]any{
+		"stream_id": message.ID,
+		"error":     parseErr.Error(),
+	}
+	for key, value := range message.Values {
+		values["source_"+key] = fmt.Sprint(value)
+	}
+	if err := r.client.XAdd(ctx, &redis.XAddArgs{
+		Stream: BidLogDeadStreamName,
+		MaxLen: BidLogStreamMaxLen,
+		Approx: true,
+		Values: values,
+	}).Err(); err != nil {
+		return err
+	}
+	return r.Ack(ctx, []string{message.ID})
+}
+
+func parseBidLogStreamMessages(messages []redis.XMessage, deadLetter func(redis.XMessage, error) error) ([]BidLogStreamMessage, error) {
+	result := make([]BidLogStreamMessage, 0, len(messages))
+	for _, message := range messages {
+		event, err := bidLogEventFromStreamValues(message.Values)
+		if err != nil {
+			parseErr := fmt.Errorf("parse bid log stream message %s: %w", message.ID, err)
+			if deadLetter == nil {
+				return nil, parseErr
+			}
+			if deadLetterErr := deadLetter(message, parseErr); deadLetterErr != nil {
+				return nil, fmt.Errorf("dead-letter bid log stream message %s: %w", message.ID, deadLetterErr)
+			}
+			continue
+		}
+		result = append(result, BidLogStreamMessage{ID: message.ID, Event: event})
+	}
+	return result, nil
 }
 
 func bidLogEventFromStreamValues(values map[string]any) (BidLogEvent, error) {

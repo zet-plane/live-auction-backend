@@ -3,6 +3,8 @@ package item
 import (
 	"context"
 	"errors"
+	"os"
+	"strings"
 	"sync"
 
 	"github.com/zet-plane/live-auction-backend/internal/app"
@@ -75,13 +77,21 @@ func (i *Item) Load(engine *kernel.Engine) error {
 	engine.Cron.AddFunc("@every 1s", observability.WrapCron("item.broadcast_time_sync", svc.BroadcastTimeSync))
 	engine.Cron.AddFunc("@every 1m", observability.WrapCron("item.end_expired_auctions_fallback", svc.EndExpiredAuctions))
 	if engine.Cache != nil {
-		reader := cache.NewBidLogStreamReader(engine.Cache, "backend-1")
+		reader := cache.NewBidLogStreamReader(engine.Cache, bidLogConsumerName(os.Hostname))
 		if err := reader.EnsureGroup(engine.Context); err != nil {
 			return err
 		}
 		svc.StartBidLogWorker(engine.Context, reader)
 	}
 	return nil
+}
+
+func bidLogConsumerName(hostname func() (string, error)) string {
+	name, err := hostname()
+	if err != nil || strings.TrimSpace(name) == "" {
+		return "backend-1"
+	}
+	return "backend-" + strings.TrimSpace(name)
 }
 
 func (i *Item) Stop(wg *sync.WaitGroup, _ context.Context) error {
