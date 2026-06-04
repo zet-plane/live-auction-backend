@@ -12,19 +12,27 @@ import (
 )
 
 type AuctionState struct {
-	Status           string
-	CurrentPrice     int64
-	DealPrice        int64
-	LeaderUserID     string
-	EndTime          time.Time
-	EndTimeUnixMS    int64
-	EndedAtUnixMS    int64
-	BidCount         int
-	ParticipantCount int
-	IsExtended       bool
-	ExtendCount      int
-	TotalExtendedSec int
-	EndReason        string
+	Status            string
+	RoomID            string
+	CurrentPrice      int64
+	DealPrice         int64
+	LeaderUserID      string
+	EndTime           time.Time
+	EndTimeUnixMS     int64
+	EndedAtUnixMS     int64
+	BidIncrement      int64
+	PriceCap          int64
+	DepositAmount     int64
+	BidCount          int
+	ParticipantCount  int
+	IsExtended        bool
+	ExtendCount       int
+	TotalExtendedSec  int
+	ExtendTriggerSec  int
+	AutoExtendSec     int
+	MaxExtendCount    int
+	MaxTotalExtendSec int
+	EndReason         string
 }
 
 type BidLuaArgs struct {
@@ -159,17 +167,25 @@ func (c *RedisCache) InitAuctionState(ctx context.Context, itemID string, state 
 	}
 	return c.client.HSet(ctx, itemStateKey(itemID),
 		"status", status,
+		"room_id", state.RoomID,
 		"current_price", state.CurrentPrice,
 		"deal_price", dealPrice,
 		"leader_user_id", state.LeaderUserID,
 		"end_time_unix", state.EndTime.Unix(),
 		"end_time_unix_ms", endUnixMS,
 		"ended_at_unix_ms", state.EndedAtUnixMS,
+		"bid_increment", state.BidIncrement,
+		"price_cap", state.PriceCap,
+		"deposit_amount", state.DepositAmount,
 		"bid_count", state.BidCount,
 		"participant_count", state.ParticipantCount,
 		"is_extended", boolToStr(state.IsExtended),
 		"extend_count", state.ExtendCount,
 		"total_extended_sec", state.TotalExtendedSec,
+		"extend_trigger_sec", state.ExtendTriggerSec,
+		"auto_extend_sec", state.AutoExtendSec,
+		"max_extend_count", state.MaxExtendCount,
+		"max_total_extend_sec", state.MaxTotalExtendSec,
 		"end_reason", state.EndReason,
 	).Err()
 }
@@ -191,19 +207,27 @@ func (c *RedisCache) GetAuctionState(ctx context.Context, itemID string) (*Aucti
 		endMS = parseInt64(vals["end_time_unix"]) * 1000
 	}
 	return &AuctionState{
-		Status:           vals["status"],
-		CurrentPrice:     parseInt64(vals["current_price"]),
-		DealPrice:        dealPrice,
-		LeaderUserID:     vals["leader_user_id"],
-		EndTime:          time.UnixMilli(endMS),
-		EndTimeUnixMS:    endMS,
-		EndedAtUnixMS:    parseInt64(vals["ended_at_unix_ms"]),
-		BidCount:         parseInt(vals["bid_count"]),
-		ParticipantCount: parseInt(vals["participant_count"]),
-		IsExtended:       vals["is_extended"] == "1",
-		ExtendCount:      parseInt(vals["extend_count"]),
-		TotalExtendedSec: parseInt(vals["total_extended_sec"]),
-		EndReason:        vals["end_reason"],
+		Status:            vals["status"],
+		RoomID:            vals["room_id"],
+		CurrentPrice:      parseInt64(vals["current_price"]),
+		DealPrice:         dealPrice,
+		LeaderUserID:      vals["leader_user_id"],
+		EndTime:           time.UnixMilli(endMS),
+		EndTimeUnixMS:     endMS,
+		EndedAtUnixMS:     parseInt64(vals["ended_at_unix_ms"]),
+		BidIncrement:      parseInt64(vals["bid_increment"]),
+		PriceCap:          parseInt64(vals["price_cap"]),
+		DepositAmount:     parseInt64(vals["deposit_amount"]),
+		BidCount:          parseInt(vals["bid_count"]),
+		ParticipantCount:  parseInt(vals["participant_count"]),
+		IsExtended:        vals["is_extended"] == "1",
+		ExtendCount:       parseInt(vals["extend_count"]),
+		TotalExtendedSec:  parseInt(vals["total_extended_sec"]),
+		ExtendTriggerSec:  parseInt(vals["extend_trigger_sec"]),
+		AutoExtendSec:     parseInt(vals["auto_extend_sec"]),
+		MaxExtendCount:    parseInt(vals["max_extend_count"]),
+		MaxTotalExtendSec: parseInt(vals["max_total_extend_sec"]),
+		EndReason:         vals["end_reason"],
 	}, true, nil
 }
 

@@ -764,6 +764,50 @@ func TestStartItemInitializesRedisState(t *testing.T) {
 	}
 }
 
+func TestStartItemInitializesHotBidFields(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	policy := itemdto.AuctionPolicy{
+		ExtendTriggerSec:  30,
+		AutoExtendSec:     20,
+		MaxExtendCount:    3,
+		MaxTotalExtendSec: 60,
+	}
+	svc := NewService(store, policy, fc, nil, nil, nil)
+	itemID := seedPublishedItem(t, svc, "merchant_1", "room_1")
+	rule := store.rules[store.items[itemID].RuleID]
+	rule.PriceCap = 5000
+
+	if err := svc.StartItem(context.Background(), &usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}, itemID); err != nil {
+		t.Fatalf("StartItem failed: %v", err)
+	}
+	state, ok := fc.states[itemID]
+	if !ok {
+		t.Fatal("expected auction state in cache after StartItem")
+	}
+	if state.RoomID != "room_1" {
+		t.Fatalf("expected room_id room_1, got %q", state.RoomID)
+	}
+	if state.BidIncrement != 100 {
+		t.Fatalf("expected bid_increment 100, got %d", state.BidIncrement)
+	}
+	if state.PriceCap != 5000 {
+		t.Fatalf("expected price_cap 5000, got %d", state.PriceCap)
+	}
+	if state.ExtendTriggerSec != 30 {
+		t.Fatalf("expected extend_trigger_sec 30, got %d", state.ExtendTriggerSec)
+	}
+	if state.AutoExtendSec != 20 {
+		t.Fatalf("expected auto_extend_sec 20, got %d", state.AutoExtendSec)
+	}
+	if state.MaxExtendCount != 3 {
+		t.Fatalf("expected max_extend_count 3, got %d", state.MaxExtendCount)
+	}
+	if state.MaxTotalExtendSec != 60 {
+		t.Fatalf("expected max_total_extend_sec 60, got %d", state.MaxTotalExtendSec)
+	}
+}
+
 func TestStartItemSetsRoomCurrentItem(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()

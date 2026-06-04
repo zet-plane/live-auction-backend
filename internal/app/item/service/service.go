@@ -257,8 +257,16 @@ func (s *Service) StartItem(ctx context.Context, current *usermodel.User, itemID
 	}
 	if s.cache != nil {
 		state := itemcache.AuctionState{
-			CurrentPrice: rule.StartPrice,
-			EndTime:      rule.EndTime,
+			RoomID:            item.RoomID,
+			CurrentPrice:      rule.StartPrice,
+			EndTime:           rule.EndTime,
+			BidIncrement:      rule.BidIncrement,
+			PriceCap:          rule.PriceCap,
+			DepositAmount:     rule.DepositAmount,
+			ExtendTriggerSec:  s.policy.ExtendTriggerSec,
+			AutoExtendSec:     s.policy.AutoExtendSec,
+			MaxExtendCount:    s.policy.MaxExtendCount,
+			MaxTotalExtendSec: s.policy.MaxTotalExtendSec,
 		}
 		if err := s.cache.InitAuctionState(ctx, item.ID, state); err != nil {
 			return err
