@@ -53,6 +53,7 @@ type BidLuaArgs struct {
 	UserID            string
 	UserName          string
 	BidID             string
+	RoomID            string
 	Price             int64
 	BidIncrement      int64
 	PriceCap          int64
@@ -61,6 +62,7 @@ type BidLuaArgs struct {
 	MaxExtendCount    int
 	MaxTotalExtendSec int
 	NowUnix           int64
+	CreatedAtUnixMS   int64
 	IdempotencyKey    string
 	IdempotencyTTL    int
 }

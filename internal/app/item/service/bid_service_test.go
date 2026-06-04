@@ -260,6 +260,32 @@ func TestPlaceBidSuccessfulBidDoesNotSynchronouslyCreateBidLog(t *testing.T) {
 	}
 }
 
+func TestPlaceBidSuccessfulBidDoesNotCallSeparateBidLogAppend(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	fc.appendBidLogErr = errors.New("separate append should not run")
+	now := time.Date(2026, 6, 1, 13, 30, 0, 0, time.UTC)
+	svc := NewService(store, testPolicy, fc, nil, nil, nil)
+	svc.now = func() time.Time { return now }
+	endTime := now.Add(5 * time.Minute)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 1000, 100, 0, endTime)
+
+	result, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
+		Price:          1100,
+		IdempotencyKey: "lua_appended",
+		UserName:       "Alice",
+	})
+	if err != nil {
+		t.Fatalf("PlaceBid failed: %v", err)
+	}
+	if result.CurrentPrice != 1100 {
+		t.Fatalf("expected current price 1100, got %d", result.CurrentPrice)
+	}
+	if len(fc.bidLogEvents) != 1 {
+		t.Fatalf("expected 1 atomically appended bid log event, got %d", len(fc.bidLogEvents))
+	}
+}
+
 func TestPlaceBidIdempotentResultDoesNotAppendBidLogEvent(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()

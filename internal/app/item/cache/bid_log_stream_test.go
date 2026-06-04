@@ -3,12 +3,13 @@ package cache
 import (
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/redis/go-redis/v9"
 )
 
-func TestNewBidLogXAddArgsUsesApproximateMaxLen(t *testing.T) {
+func TestNewBidLogXAddArgsDoesNotTrimAcceptedBidEvents(t *testing.T) {
 	args := newBidLogXAddArgs(BidLogEvent{
 		BidID:           "bid_1",
 		ItemID:          "item_1",
@@ -21,8 +22,25 @@ func TestNewBidLogXAddArgsUsesApproximateMaxLen(t *testing.T) {
 	if args.Stream != BidLogStreamName {
 		t.Fatalf("expected stream %q, got %q", BidLogStreamName, args.Stream)
 	}
-	if args.MaxLen != BidLogStreamMaxLen || !args.Approx {
-		t.Fatalf("expected approximate maxlen %d, got maxlen=%d approx=%v", BidLogStreamMaxLen, args.MaxLen, args.Approx)
+	if args.MaxLen != 0 || args.Approx {
+		t.Fatalf("expected no stream trimming, got maxlen=%d approx=%v", args.MaxLen, args.Approx)
+	}
+}
+
+func TestBidLuaScriptAppendsAcceptedBidLogWithoutTrimming(t *testing.T) {
+	if !strings.Contains(bidLuaScript, "XADD") || !strings.Contains(bidLuaScript, BidLogStreamName) {
+		t.Fatalf("expected bid lua script to append to %q", BidLogStreamName)
+	}
+	if !strings.Contains(bidLuaScript, bidLogFieldCreatedAtUnixMS) {
+		t.Fatalf("expected bid lua script to include %q", bidLogFieldCreatedAtUnixMS)
+	}
+	if strings.Contains(bidLuaScript, "MAXLEN") {
+		t.Fatal("expected bid lua accepted-event append not to use stream trimming")
+	}
+	xaddIndex := strings.Index(bidLuaScript, "XADD")
+	setIndex := strings.Index(bidLuaScript, "SET', idem_key")
+	if xaddIndex < 0 || setIndex < 0 || xaddIndex > setIndex {
+		t.Fatal("expected bid lua script to append bid log before recording idempotency")
 	}
 }
 

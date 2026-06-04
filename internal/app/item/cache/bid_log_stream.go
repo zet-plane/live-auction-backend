@@ -13,7 +13,16 @@ import (
 const BidLogStreamName = "auction:bid_log:stream"
 const BidLogDeadStreamName = "auction:bid_log:dead"
 const BidLogConsumerGroup = "bid-log-writers"
-const BidLogStreamMaxLen = 100000
+const BidLogDeadStreamMaxLen = 100000
+
+const (
+	bidLogFieldBidID           = "bid_id"
+	bidLogFieldItemID          = "item_id"
+	bidLogFieldRoomID          = "room_id"
+	bidLogFieldUserID          = "user_id"
+	bidLogFieldPrice           = "price"
+	bidLogFieldCreatedAtUnixMS = "created_at_unix_ms"
+)
 
 const bidLogPendingMinIdle = 30 * time.Second
 
@@ -24,16 +33,18 @@ func (c *RedisCache) AppendBidLogEvent(ctx context.Context, event BidLogEvent) e
 func newBidLogXAddArgs(event BidLogEvent) *redis.XAddArgs {
 	return &redis.XAddArgs{
 		Stream: BidLogStreamName,
-		MaxLen: BidLogStreamMaxLen,
-		Approx: true,
-		Values: map[string]any{
-			"bid_id":             event.BidID,
-			"item_id":            event.ItemID,
-			"room_id":            event.RoomID,
-			"user_id":            event.UserID,
-			"price":              strconv.FormatInt(event.Price, 10),
-			"created_at_unix_ms": strconv.FormatInt(event.CreatedAtUnixMS, 10),
-		},
+		Values: bidLogStreamValues(event),
+	}
+}
+
+func bidLogStreamValues(event BidLogEvent) map[string]any {
+	return map[string]any{
+		bidLogFieldBidID:           event.BidID,
+		bidLogFieldItemID:          event.ItemID,
+		bidLogFieldRoomID:          event.RoomID,
+		bidLogFieldUserID:          event.UserID,
+		bidLogFieldPrice:           strconv.FormatInt(event.Price, 10),
+		bidLogFieldCreatedAtUnixMS: strconv.FormatInt(event.CreatedAtUnixMS, 10),
 	}
 }
 
@@ -130,7 +141,7 @@ func (r *BidLogStreamReader) deadLetterAndAck(ctx context.Context, message redis
 	}
 	if err := r.client.XAdd(ctx, &redis.XAddArgs{
 		Stream: BidLogDeadStreamName,
-		MaxLen: BidLogStreamMaxLen,
+		MaxLen: BidLogDeadStreamMaxLen,
 		Approx: true,
 		Values: values,
 	}).Err(); err != nil {
@@ -159,27 +170,27 @@ func parseBidLogStreamMessages(messages []redis.XMessage, deadLetter func(redis.
 }
 
 func bidLogEventFromStreamValues(values map[string]any) (BidLogEvent, error) {
-	price, err := requiredStreamInt64(values, "price")
+	price, err := requiredStreamInt64(values, bidLogFieldPrice)
 	if err != nil {
 		return BidLogEvent{}, err
 	}
-	createdAtUnixMS, err := requiredStreamInt64(values, "created_at_unix_ms")
+	createdAtUnixMS, err := requiredStreamInt64(values, bidLogFieldCreatedAtUnixMS)
 	if err != nil {
 		return BidLogEvent{}, err
 	}
-	bidID, err := requiredStreamString(values, "bid_id")
+	bidID, err := requiredStreamString(values, bidLogFieldBidID)
 	if err != nil {
 		return BidLogEvent{}, err
 	}
-	itemID, err := requiredStreamString(values, "item_id")
+	itemID, err := requiredStreamString(values, bidLogFieldItemID)
 	if err != nil {
 		return BidLogEvent{}, err
 	}
-	roomID, err := requiredStreamString(values, "room_id")
+	roomID, err := requiredStreamString(values, bidLogFieldRoomID)
 	if err != nil {
 		return BidLogEvent{}, err
 	}
-	userID, err := requiredStreamString(values, "user_id")
+	userID, err := requiredStreamString(values, bidLogFieldUserID)
 	if err != nil {
 		return BidLogEvent{}, err
 	}

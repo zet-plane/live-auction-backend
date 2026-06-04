@@ -75,6 +75,7 @@ func (s *Service) PlaceBid(ctx context.Context, current *usermodel.User, itemID 
 		UserID:            current.ID,
 		UserName:          input.UserName,
 		BidID:             bidID,
+		RoomID:            hot.RoomID,
 		Price:             input.Price,
 		BidIncrement:      hot.BidIncrement,
 		PriceCap:          hot.PriceCap,
@@ -83,6 +84,7 @@ func (s *Service) PlaceBid(ctx context.Context, current *usermodel.User, itemID 
 		MaxExtendCount:    hot.MaxExtendCount,
 		MaxTotalExtendSec: hot.MaxTotalExtendSec,
 		NowUnix:           now.Unix(),
+		CreatedAtUnixMS:   now.UnixMilli(),
 		IdempotencyKey:    input.IdempotencyKey,
 		IdempotencyTTL:    86400,
 	})
@@ -125,19 +127,6 @@ func (s *Service) PlaceBid(ctx context.Context, current *usermodel.User, itemID 
 			bidReason = "internal"
 			return nil, errorx.ErrInternal
 		}
-	}
-
-	if err := s.cache.AppendBidLogEvent(ctx, itemcache.BidLogEvent{
-		BidID:           luaResult.BidID,
-		ItemID:          hot.ItemID,
-		RoomID:          hot.RoomID,
-		UserID:          current.ID,
-		Price:           input.Price,
-		CreatedAtUnixMS: now.UnixMilli(),
-	}); err != nil {
-		bidResult = "error"
-		bidReason = "bid_log_stream_error"
-		return nil, err
 	}
 
 	if s.broadcaster != nil {

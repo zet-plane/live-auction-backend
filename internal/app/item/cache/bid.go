@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -14,7 +15,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 )
 
-const bidLuaScript = `
+const bidLuaScriptTemplate = `
 local state_key   = KEYS[1]
 local ranking_key = KEYS[2]
 local names_key   = KEYS[3]
@@ -34,6 +35,8 @@ local max_ext_tot = tonumber(ARGV[10])
 local now_unix    = tonumber(ARGV[11])
 local idem_ttl    = tonumber(ARGV[12])
 local item_id     = ARGV[13]
+local room_id     = ARGV[14]
+local created_ms  = ARGV[15]
 local now_ms      = now_unix * 1000
 
 local existing = redis.call('GET', idem_key)
@@ -73,6 +76,14 @@ if end_unix == 0 and end_ms > 0 then end_unix = math.floor(end_ms / 1000) end
 if now_ms >= end_ms then return {2,'',0,'',0,0,0,0,'',''} end
 if price <= cur_price   then return {3,'',0,'',0,0,0,0,'',''} end
 if (price - cur_price) % bid_incr ~= 0 then return {4,'',0,'',0,0,0,0,'',''} end
+
+redis.call('XADD', '{{BID_LOG_STREAM_NAME}}', '*',
+  '{{BID_LOG_FIELD_BID_ID}}', bid_id,
+  '{{BID_LOG_FIELD_ITEM_ID}}', item_id,
+  '{{BID_LOG_FIELD_ROOM_ID}}', room_id,
+  '{{BID_LOG_FIELD_USER_ID}}', user_id,
+  '{{BID_LOG_FIELD_PRICE}}', price,
+  '{{BID_LOG_FIELD_CREATED_AT_UNIX_MS}}', created_ms)
 
 local prev_score = redis.call('ZSCORE', ranking_key, user_id)
 if not prev_score then part_cnt = part_cnt + 1 end
@@ -122,6 +133,16 @@ end
 return {0, bid_id, price, user_id, end_unix, end_ms, is_extended, is_capped, prev_leader, result_status}
 `
 
+var bidLuaScript = strings.NewReplacer(
+	"{{BID_LOG_STREAM_NAME}}", BidLogStreamName,
+	"{{BID_LOG_FIELD_BID_ID}}", bidLogFieldBidID,
+	"{{BID_LOG_FIELD_ITEM_ID}}", bidLogFieldItemID,
+	"{{BID_LOG_FIELD_ROOM_ID}}", bidLogFieldRoomID,
+	"{{BID_LOG_FIELD_USER_ID}}", bidLogFieldUserID,
+	"{{BID_LOG_FIELD_PRICE}}", bidLogFieldPrice,
+	"{{BID_LOG_FIELD_CREATED_AT_UNIX_MS}}", bidLogFieldCreatedAtUnixMS,
+).Replace(bidLuaScriptTemplate)
+
 var bidScript = redis.NewScript(bidLuaScript)
 
 func rankingKey(itemID string) string {
@@ -162,6 +183,8 @@ func (c *RedisCache) PlaceBidLua(ctx context.Context, itemID string, args BidLua
 		strconv.FormatInt(args.NowUnix, 10),
 		strconv.Itoa(args.IdempotencyTTL),
 		itemID,
+		args.RoomID,
+		strconv.FormatInt(args.CreatedAtUnixMS, 10),
 	}
 
 	res, err := bidScript.Run(ctx, c.client, keys, argv...).Slice()

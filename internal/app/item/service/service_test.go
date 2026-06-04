@@ -625,6 +625,9 @@ func (c *fakeCache) PlaceBidLua(_ context.Context, itemID string, args itemcache
 	c.lastBidLuaArgs = &argsCopy
 	if c.bidLuaResult != nil {
 		result := *c.bidLuaResult
+		if result.Code == 0 {
+			c.appendBidLogEventFromLua(itemID, args, result.BidID)
+		}
 		return &result, nil
 	}
 	if c.bidLuaCode != 0 {
@@ -699,6 +702,7 @@ func (c *fakeCache) PlaceBidLua(_ context.Context, itemID string, args itemcache
 	state.IsExtended = isExtended
 
 	isCapped := args.PriceCap > 0 && args.Price >= args.PriceCap
+	c.appendBidLogEventFromLua(itemID, args, args.BidID)
 	if isCapped {
 		state.Status = "ended"
 		state.EndedAtUnixMS = time.Unix(args.NowUnix, 0).UnixMilli()
@@ -717,6 +721,17 @@ func (c *fakeCache) PlaceBidLua(_ context.Context, itemID string, args itemcache
 		PrevLeaderUserID: prevLeader,
 		Status:           state.Status,
 	}, nil
+}
+
+func (c *fakeCache) appendBidLogEventFromLua(itemID string, args itemcache.BidLuaArgs, bidID string) {
+	c.bidLogEvents = append(c.bidLogEvents, itemcache.BidLogEvent{
+		BidID:           bidID,
+		ItemID:          itemID,
+		RoomID:          args.RoomID,
+		UserID:          args.UserID,
+		Price:           args.Price,
+		CreatedAtUnixMS: args.CreatedAtUnixMS,
+	})
 }
 
 func (c *fakeCache) AppendBidLogEvent(_ context.Context, event itemcache.BidLogEvent) error {
