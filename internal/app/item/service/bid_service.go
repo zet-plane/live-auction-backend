@@ -261,8 +261,11 @@ func (s *Service) bidHotConfig(ctx context.Context, itemID string) (*itemcache.A
 	if err != nil {
 		return nil, err
 	}
-	if ok {
+	if ok && hot.Status == string(model.ItemOngoing) {
 		return hot, nil
+	}
+	if ok {
+		return nil, errorx.ErrInvalidRequest
 	}
 
 	item, rule, err := s.store.FindItemWithRule(itemID)

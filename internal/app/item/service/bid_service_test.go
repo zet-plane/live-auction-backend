@@ -146,6 +146,43 @@ func TestPlaceBidUsesHotStateWithoutStoreLookup(t *testing.T) {
 	}
 }
 
+func TestPlaceBidRejectsNonOngoingHotStateWithoutStoreLookup(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	svc := NewService(store, testPolicy, fc, nil, nil, nil)
+	endTime := time.Now().Add(5 * time.Minute)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 1000, 100, 0, endTime)
+
+	store.findItemWithRuleCalls = 0
+	fc.states[itemID] = &itemcache.AuctionState{
+		Status:            "ended",
+		RoomID:            "room_1",
+		CurrentPrice:      1000,
+		DealPrice:         1000,
+		EndTime:           endTime,
+		EndTimeUnixMS:     endTime.UnixMilli(),
+		BidIncrement:      100,
+		PriceCap:          0,
+		DepositAmount:     0,
+		ExtendTriggerSec:  testPolicy.ExtendTriggerSec,
+		AutoExtendSec:     testPolicy.AutoExtendSec,
+		MaxExtendCount:    testPolicy.MaxExtendCount,
+		MaxTotalExtendSec: testPolicy.MaxTotalExtendSec,
+	}
+
+	_, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
+		Price:          1100,
+		IdempotencyKey: "ended_hot_state",
+		UserName:       "Alice",
+	})
+	if !errors.Is(err, errorx.ErrInvalidRequest) {
+		t.Fatalf("expected invalid request for non-ongoing hot state, got %v", err)
+	}
+	if store.findItemWithRuleCalls != 0 {
+		t.Fatalf("expected no FindItemWithRule calls, got %d", store.findItemWithRuleCalls)
+	}
+}
+
 func TestPlaceBidRejectsNonOngoingItem(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()
@@ -243,7 +280,7 @@ func TestPlaceBidIdempotent(t *testing.T) {
 	}
 }
 
-func TestPlaceBidIdempotentReturnsEndedSnapshot(t *testing.T) {
+func TestPlaceBidIdempotentRejectsEndedHotState(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()
 	now := time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC)
@@ -263,20 +300,11 @@ func TestPlaceBidIdempotentReturnsEndedSnapshot(t *testing.T) {
 	fc.states[itemID].EndReason = "time_expired"
 
 	fc.bidLuaCode = 1
-	result, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
+	_, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
 		Price: 100, IdempotencyKey: "idem_ended", UserName: "Alice",
 	})
-	if err != nil {
-		t.Fatalf("idempotent bid should not fail: %v", err)
-	}
-	if result.Status != "ended" {
-		t.Fatalf("expected status ended from idempotent Redis snapshot, got %q", result.Status)
-	}
-	if result.DealPrice != 100 {
-		t.Fatalf("expected deal_price 100, got %d", result.DealPrice)
-	}
-	if result.EndTimeUnixMS != endTime.UnixMilli() {
-		t.Fatalf("expected end_time_unix_ms %d, got %d", endTime.UnixMilli(), result.EndTimeUnixMS)
+	if !errors.Is(err, errorx.ErrInvalidRequest) {
+		t.Fatalf("expected invalid request for ended hot state, got %v", err)
 	}
 }
 
