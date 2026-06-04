@@ -11,6 +11,9 @@ import (
 	itemcache "github.com/zet-plane/live-auction-backend/internal/app/item/cache"
 	itemdto "github.com/zet-plane/live-auction-backend/internal/app/item/dto"
 	itemmodel "github.com/zet-plane/live-auction-backend/internal/app/item/model"
+	orderdto "github.com/zet-plane/live-auction-backend/internal/app/order/dto"
+	ordermodel "github.com/zet-plane/live-auction-backend/internal/app/order/model"
+	orderservice "github.com/zet-plane/live-auction-backend/internal/app/order/service"
 	usermodel "github.com/zet-plane/live-auction-backend/internal/app/user/model"
 	"github.com/zet-plane/live-auction-backend/internal/core/observability"
 	"github.com/zet-plane/live-auction-backend/pkg/errorx"
@@ -90,11 +93,530 @@ func TestPlaceBidSucceeds(t *testing.T) {
 	if result.Status != "ongoing" {
 		t.Fatalf("expected status ongoing, got %q", result.Status)
 	}
-	if len(store.bidLogs) != 1 {
-		t.Fatalf("expected 1 bid log, got %d", len(store.bidLogs))
+	if len(store.bidLogs) != 0 {
+		t.Fatalf("expected no synchronous bid logs, got %d", len(store.bidLogs))
 	}
-	if store.bidLogs[0].RoomID != "room_1" {
-		t.Fatalf("expected room_id room_1, got %q", store.bidLogs[0].RoomID)
+	if len(fc.bidLogEvents) != 1 {
+		t.Fatalf("expected 1 bid log event, got %d", len(fc.bidLogEvents))
+	}
+	if fc.bidLogEvents[0].RoomID != "room_1" {
+		t.Fatalf("expected room_id room_1, got %q", fc.bidLogEvents[0].RoomID)
+	}
+}
+
+func TestPlaceBidUsesHotStateWithoutStoreLookup(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	svc := NewService(store, testPolicy, fc, nil, nil, nil)
+	endTime := time.Now().Add(5 * time.Minute)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 1000, 100, 0, endTime)
+
+	store.findItemWithRuleCalls = 0
+	fc.states[itemID] = &itemcache.AuctionState{
+		Status:            "ongoing",
+		RoomID:            "room_1",
+		CurrentPrice:      1000,
+		DealPrice:         1000,
+		EndTime:           endTime,
+		EndTimeUnixMS:     endTime.UnixMilli(),
+		BidIncrement:      100,
+		PriceCap:          0,
+		DepositAmount:     0,
+		ExtendTriggerSec:  testPolicy.ExtendTriggerSec,
+		AutoExtendSec:     testPolicy.AutoExtendSec,
+		MaxExtendCount:    testPolicy.MaxExtendCount,
+		MaxTotalExtendSec: testPolicy.MaxTotalExtendSec,
+	}
+	fc.bidLuaResult = &itemcache.BidLuaResult{
+		Code:          0,
+		BidID:         "bid_hot",
+		CurrentPrice:  1100,
+		LeaderUserID:  "user_1",
+		EndTimeUnix:   endTime.Unix(),
+		EndTimeUnixMS: endTime.UnixMilli(),
+		Status:        "ongoing",
+	}
+
+	result, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
+		Price:          1100,
+		IdempotencyKey: "hot_state",
+		UserName:       "Alice",
+	})
+	if err != nil {
+		t.Fatalf("PlaceBid failed: %v", err)
+	}
+	if result.BidID != "bid_hot" {
+		t.Fatalf("expected bid_id bid_hot, got %q", result.BidID)
+	}
+	if store.findItemWithRuleCalls != 0 {
+		t.Fatalf("expected no FindItemWithRule calls, got %d", store.findItemWithRuleCalls)
+	}
+}
+
+func TestPlaceBidSuccessfulBidAppendsBidLogEvent(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	now := time.Date(2026, 6, 1, 12, 0, 0, 123_000_000, time.UTC)
+	svc := NewService(store, testPolicy, fc, nil, nil, nil)
+	svc.now = func() time.Time { return now }
+	endTime := now.Add(5 * time.Minute)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 1000, 100, 0, endTime)
+
+	fc.states[itemID] = &itemcache.AuctionState{
+		Status:            "ongoing",
+		RoomID:            "room_1",
+		CurrentPrice:      1000,
+		DealPrice:         1000,
+		EndTime:           endTime,
+		EndTimeUnixMS:     endTime.UnixMilli(),
+		BidIncrement:      100,
+		PriceCap:          0,
+		DepositAmount:     0,
+		ExtendTriggerSec:  testPolicy.ExtendTriggerSec,
+		AutoExtendSec:     testPolicy.AutoExtendSec,
+		MaxExtendCount:    testPolicy.MaxExtendCount,
+		MaxTotalExtendSec: testPolicy.MaxTotalExtendSec,
+	}
+	fc.bidLuaResult = &itemcache.BidLuaResult{
+		Code:          0,
+		BidID:         "bid_stream",
+		CurrentPrice:  1200,
+		LeaderUserID:  "user_1",
+		EndTimeUnix:   endTime.Unix(),
+		EndTimeUnixMS: endTime.UnixMilli(),
+		Status:        "ongoing",
+	}
+
+	if _, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
+		Price:          1200,
+		IdempotencyKey: "stream_success",
+		UserName:       "Alice",
+	}); err != nil {
+		t.Fatalf("PlaceBid failed: %v", err)
+	}
+
+	if len(fc.bidLogEvents) != 1 {
+		t.Fatalf("expected 1 bid log event, got %d", len(fc.bidLogEvents))
+	}
+	event := fc.bidLogEvents[0]
+	if event.BidID != "bid_stream" ||
+		event.ItemID != itemID ||
+		event.RoomID != "room_1" ||
+		event.UserID != "user_1" ||
+		event.Price != 1200 {
+		t.Fatalf("unexpected bid log event: %+v", event)
+	}
+	if event.CreatedAtUnixMS != now.UnixMilli() {
+		t.Fatalf("expected created_at_unix_ms %d, got %d", now.UnixMilli(), event.CreatedAtUnixMS)
+	}
+}
+
+func TestPlaceBidSuccessfulBidDoesNotSynchronouslyCreateBidLog(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	now := time.Date(2026, 6, 1, 13, 0, 0, 0, time.UTC)
+	svc := NewService(store, testPolicy, fc, nil, nil, nil)
+	svc.now = func() time.Time { return now }
+	endTime := now.Add(5 * time.Minute)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 1000, 100, 0, endTime)
+
+	fc.states[itemID] = &itemcache.AuctionState{
+		Status:            "ongoing",
+		RoomID:            "room_1",
+		CurrentPrice:      1000,
+		DealPrice:         1000,
+		EndTime:           endTime,
+		EndTimeUnixMS:     endTime.UnixMilli(),
+		BidIncrement:      100,
+		PriceCap:          0,
+		DepositAmount:     0,
+		ExtendTriggerSec:  testPolicy.ExtendTriggerSec,
+		AutoExtendSec:     testPolicy.AutoExtendSec,
+		MaxExtendCount:    testPolicy.MaxExtendCount,
+		MaxTotalExtendSec: testPolicy.MaxTotalExtendSec,
+	}
+	fc.bidLuaResult = &itemcache.BidLuaResult{
+		Code:          0,
+		BidID:         "bid_async",
+		CurrentPrice:  1300,
+		LeaderUserID:  "user_1",
+		EndTimeUnix:   endTime.Unix(),
+		EndTimeUnixMS: endTime.UnixMilli(),
+		Status:        "ongoing",
+	}
+
+	result, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
+		Price:          1300,
+		IdempotencyKey: "async_bid_log",
+		UserName:       "Alice",
+	})
+	if err != nil {
+		t.Fatalf("PlaceBid failed: %v", err)
+	}
+	if result.BidID != "bid_async" {
+		t.Fatalf("expected bid_id bid_async, got %q", result.BidID)
+	}
+	if len(store.bidLogs) != 0 {
+		t.Fatalf("expected no synchronous bid logs, got %d", len(store.bidLogs))
+	}
+	if len(fc.bidLogEvents) != 1 {
+		t.Fatalf("expected 1 bid log event, got %d", len(fc.bidLogEvents))
+	}
+}
+
+func TestPlaceBidSuccessfulBidDoesNotCallSeparateBidLogAppend(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	fc.appendBidLogErr = errors.New("separate append should not run")
+	now := time.Date(2026, 6, 1, 13, 30, 0, 0, time.UTC)
+	svc := NewService(store, testPolicy, fc, nil, nil, nil)
+	svc.now = func() time.Time { return now }
+	endTime := now.Add(5 * time.Minute)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 1000, 100, 0, endTime)
+
+	result, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
+		Price:          1100,
+		IdempotencyKey: "lua_appended",
+		UserName:       "Alice",
+	})
+	if err != nil {
+		t.Fatalf("PlaceBid failed: %v", err)
+	}
+	if result.CurrentPrice != 1100 {
+		t.Fatalf("expected current price 1100, got %d", result.CurrentPrice)
+	}
+	if len(fc.bidLogEvents) != 1 {
+		t.Fatalf("expected 1 atomically appended bid log event, got %d", len(fc.bidLogEvents))
+	}
+}
+
+func TestPlaceBidIdempotentResultDoesNotAppendBidLogEvent(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	svc := NewService(store, testPolicy, fc, nil, nil, nil)
+	endTime := time.Now().Add(5 * time.Minute)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 1000, 100, 0, endTime)
+
+	fc.states[itemID] = &itemcache.AuctionState{
+		Status:            "ongoing",
+		RoomID:            "room_1",
+		CurrentPrice:      1200,
+		DealPrice:         1200,
+		LeaderUserID:      "user_1",
+		EndTime:           endTime,
+		EndTimeUnixMS:     endTime.UnixMilli(),
+		BidIncrement:      100,
+		PriceCap:          0,
+		DepositAmount:     0,
+		ExtendTriggerSec:  testPolicy.ExtendTriggerSec,
+		AutoExtendSec:     testPolicy.AutoExtendSec,
+		MaxExtendCount:    testPolicy.MaxExtendCount,
+		MaxTotalExtendSec: testPolicy.MaxTotalExtendSec,
+	}
+	fc.bidLuaResult = &itemcache.BidLuaResult{
+		Code:          1,
+		BidID:         "bid_existing",
+		CurrentPrice:  1200,
+		LeaderUserID:  "user_1",
+		EndTimeUnix:   endTime.Unix(),
+		EndTimeUnixMS: endTime.UnixMilli(),
+		Status:        "ongoing",
+	}
+
+	if _, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
+		Price:          1200,
+		IdempotencyKey: "stream_idempotent",
+		UserName:       "Alice",
+	}); err != nil {
+		t.Fatalf("PlaceBid failed: %v", err)
+	}
+
+	if len(fc.bidLogEvents) != 0 {
+		t.Fatalf("expected no bid log events, got %d: %+v", len(fc.bidLogEvents), fc.bidLogEvents)
+	}
+}
+
+func TestPlaceBidLowPriceRejectionDoesNotTouchStore(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	svc := NewService(store, testPolicy, fc, nil, nil, nil)
+	endTime := time.Now().Add(5 * time.Minute)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 1000, 100, 0, endTime)
+
+	store.findItemWithRuleCalls = 0
+	fc.states[itemID] = &itemcache.AuctionState{
+		Status:            "ongoing",
+		RoomID:            "room_1",
+		CurrentPrice:      1000,
+		DealPrice:         1000,
+		EndTime:           endTime,
+		EndTimeUnixMS:     endTime.UnixMilli(),
+		BidIncrement:      100,
+		PriceCap:          0,
+		DepositAmount:     0,
+		ExtendTriggerSec:  testPolicy.ExtendTriggerSec,
+		AutoExtendSec:     testPolicy.AutoExtendSec,
+		MaxExtendCount:    testPolicy.MaxExtendCount,
+		MaxTotalExtendSec: testPolicy.MaxTotalExtendSec,
+	}
+	fc.bidLuaResult = &itemcache.BidLuaResult{Code: 3}
+
+	_, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
+		Price:          1000,
+		IdempotencyKey: "low_price_hot_state",
+		UserName:       "Alice",
+	})
+	if err == nil {
+		t.Fatal("expected error for price too low")
+	}
+	if store.findItemWithRuleCalls != 0 {
+		t.Fatalf("expected no FindItemWithRule calls, got %d", store.findItemWithRuleCalls)
+	}
+	if len(store.bidLogs) != 0 {
+		t.Fatalf("expected no bid logs, got %d", len(store.bidLogs))
+	}
+}
+
+func TestPlaceBidRejectsNonOngoingHotStateWithoutStoreLookup(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	svc := NewService(store, testPolicy, fc, nil, nil, nil)
+	rec := &bidHotStateCaptureRecorder{}
+	observability.SetDefaultRecorder(rec)
+	t.Cleanup(func() { observability.SetDefaultRecorder(nil) })
+	endTime := time.Now().Add(5 * time.Minute)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 1000, 100, 0, endTime)
+
+	store.findItemWithRuleCalls = 0
+	fc.states[itemID] = &itemcache.AuctionState{
+		Status:            "ended",
+		RoomID:            "room_1",
+		CurrentPrice:      1000,
+		DealPrice:         1000,
+		EndTime:           endTime,
+		EndTimeUnixMS:     endTime.UnixMilli(),
+		BidIncrement:      100,
+		PriceCap:          0,
+		DepositAmount:     0,
+		ExtendTriggerSec:  testPolicy.ExtendTriggerSec,
+		AutoExtendSec:     testPolicy.AutoExtendSec,
+		MaxExtendCount:    testPolicy.MaxExtendCount,
+		MaxTotalExtendSec: testPolicy.MaxTotalExtendSec,
+	}
+
+	_, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
+		Price:          1100,
+		IdempotencyKey: "ended_hot_state",
+		UserName:       "Alice",
+	})
+	if !errors.Is(err, errorx.ErrInvalidRequest) {
+		t.Fatalf("expected invalid request for non-ongoing hot state, got %v", err)
+	}
+	if store.findItemWithRuleCalls != 0 {
+		t.Fatalf("expected no FindItemWithRule calls, got %d", store.findItemWithRuleCalls)
+	}
+	if len(rec.metrics) == 0 {
+		t.Fatal("expected bid hot state metric")
+	}
+	if got := rec.metrics[len(rec.metrics)-1].Result; got != "rejected" {
+		t.Fatalf("expected rejected hot state metric, got %q", got)
+	}
+}
+
+func TestPlaceBidRebuildsHotStateWhenStatusMissing(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	svc := NewService(store, testPolicy, fc, nil, nil, nil)
+	endTime := time.Now().Add(5 * time.Minute)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 1000, 100, 0, endTime)
+
+	store.findItemWithRuleCalls = 0
+	fc.initCalls = 0
+	fc.hotFieldUpdates = 0
+	fc.states[itemID] = &itemcache.AuctionState{
+		RoomID:            "room_1",
+		CurrentPrice:      1000,
+		DealPrice:         1000,
+		EndTime:           endTime,
+		EndTimeUnixMS:     endTime.UnixMilli(),
+		BidIncrement:      100,
+		PriceCap:          0,
+		DepositAmount:     0,
+		ExtendTriggerSec:  testPolicy.ExtendTriggerSec,
+		AutoExtendSec:     testPolicy.AutoExtendSec,
+		MaxExtendCount:    testPolicy.MaxExtendCount,
+		MaxTotalExtendSec: testPolicy.MaxTotalExtendSec,
+	}
+
+	result, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
+		Price:          1100,
+		IdempotencyKey: "missing_status_hot_state",
+		UserName:       "Alice",
+	})
+	if err != nil {
+		t.Fatalf("PlaceBid failed after hot state rebuild: %v", err)
+	}
+	if result.CurrentPrice != 1100 {
+		t.Fatalf("expected current_price 1100, got %d", result.CurrentPrice)
+	}
+	if store.findItemWithRuleCalls != 1 {
+		t.Fatalf("expected one FindItemWithRule call for rebuild, got %d", store.findItemWithRuleCalls)
+	}
+	if fc.initCalls != 0 {
+		t.Fatalf("expected no full InitAuctionState call for existing missing-status repair, got %d", fc.initCalls)
+	}
+	if fc.hotFieldUpdates != 1 {
+		t.Fatalf("expected one hot field update for missing-status repair, got %d", fc.hotFieldUpdates)
+	}
+	if fc.states[itemID].Status != "" {
+		t.Fatalf("expected missing status to remain untouched during hot repair, got %q", fc.states[itemID].Status)
+	}
+}
+
+func TestPlaceBidHotFieldRepairDoesNotOverwriteEndedStatus(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	svc := NewService(store, testPolicy, fc, nil, nil, nil)
+	endTime := time.Now().Add(5 * time.Minute)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 1000, 100, 0, endTime)
+
+	store.findItemWithRuleCalls = 0
+	fc.initCalls = 0
+	fc.hotFieldUpdates = 0
+	fc.endBeforeHotUpdate = true
+	fc.states[itemID] = &itemcache.AuctionState{
+		Status:        "ongoing",
+		RoomID:        "room_1",
+		CurrentPrice:  1000,
+		DealPrice:     1000,
+		EndTime:       endTime,
+		EndTimeUnixMS: endTime.UnixMilli(),
+		BidIncrement:  100,
+	}
+
+	_, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
+		Price:          1100,
+		IdempotencyKey: "ended_during_hot_repair",
+		UserName:       "Alice",
+	})
+	var ce *errorx.CodeError
+	if !errors.As(err, &ce) || ce.Code != 40002 {
+		t.Fatalf("expected auction ended after concurrent status change, got %v", err)
+	}
+	if store.findItemWithRuleCalls != 1 {
+		t.Fatalf("expected one FindItemWithRule call for repair, got %d", store.findItemWithRuleCalls)
+	}
+	if fc.initCalls != 0 {
+		t.Fatalf("expected no full InitAuctionState call for hot repair, got %d", fc.initCalls)
+	}
+	if fc.hotFieldUpdates != 1 {
+		t.Fatalf("expected one hot field update, got %d", fc.hotFieldUpdates)
+	}
+	if fc.states[itemID].Status != "ended" {
+		t.Fatalf("expected repair to preserve ended status, got %q", fc.states[itemID].Status)
+	}
+}
+
+func TestPlaceBidCompletesIncompleteHotStateWithoutResettingPrice(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	svc := NewService(store, testPolicy, fc, nil, nil, nil)
+	endTime := time.Now().Add(5 * time.Minute)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 1000, 100, 0, endTime)
+
+	store.findItemWithRuleCalls = 0
+	fc.initCalls = 0
+	fc.hotFieldUpdates = 0
+	fc.states[itemID] = &itemcache.AuctionState{
+		Status:            "ongoing",
+		CurrentPrice:      1500,
+		DealPrice:         1500,
+		LeaderUserID:      "user_2",
+		EndTime:           endTime,
+		EndTimeUnixMS:     endTime.UnixMilli(),
+		BidCount:          3,
+		ParticipantCount:  2,
+		ExtendCount:       1,
+		TotalExtendedSec:  10,
+		IsExtended:        true,
+		ExtendTriggerSec:  testPolicy.ExtendTriggerSec,
+		AutoExtendSec:     testPolicy.AutoExtendSec,
+		MaxExtendCount:    testPolicy.MaxExtendCount,
+		MaxTotalExtendSec: testPolicy.MaxTotalExtendSec,
+	}
+
+	_, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
+		Price:          1100,
+		IdempotencyKey: "preserve_dynamic_state",
+		UserName:       "Alice",
+	})
+	var ce *errorx.CodeError
+	if !errors.As(err, &ce) || ce.Code != 40003 {
+		t.Fatalf("expected price too low after preserving current price, got %v", err)
+	}
+	if store.findItemWithRuleCalls != 1 {
+		t.Fatalf("expected one FindItemWithRule call for repair, got %d", store.findItemWithRuleCalls)
+	}
+	if fc.initCalls != 0 {
+		t.Fatalf("expected no full InitAuctionState call for existing state repair, got %d", fc.initCalls)
+	}
+	if fc.hotFieldUpdates != 1 {
+		t.Fatalf("expected one hot field update for existing state repair, got %d", fc.hotFieldUpdates)
+	}
+	state := fc.states[itemID]
+	if state.CurrentPrice != 1500 || state.DealPrice != 1500 || state.LeaderUserID != "user_2" {
+		t.Fatalf("expected dynamic state preserved, got price/deal/leader %d/%d/%q", state.CurrentPrice, state.DealPrice, state.LeaderUserID)
+	}
+	if state.RoomID != "room_1" || state.BidIncrement != 100 {
+		t.Fatalf("expected hot fields completed from DB, got room=%q increment=%d", state.RoomID, state.BidIncrement)
+	}
+}
+
+func TestPlaceBidRepairsMissingPolicyHotFields(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	svc := NewService(store, testPolicy, fc, nil, nil, nil)
+	endTime := time.Now().Add(5 * time.Minute)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 1000, 100, 0, endTime)
+
+	store.findItemWithRuleCalls = 0
+	fc.initCalls = 0
+	fc.hotFieldUpdates = 0
+	fc.states[itemID] = &itemcache.AuctionState{
+		Status:        "ongoing",
+		RoomID:        "room_1",
+		CurrentPrice:  1000,
+		DealPrice:     1000,
+		EndTime:       endTime,
+		EndTimeUnixMS: endTime.UnixMilli(),
+		BidIncrement:  100,
+	}
+
+	_, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
+		Price:          1100,
+		IdempotencyKey: "repair_policy_fields",
+		UserName:       "Alice",
+	})
+	if err != nil {
+		t.Fatalf("PlaceBid failed after policy repair: %v", err)
+	}
+	if store.findItemWithRuleCalls != 1 {
+		t.Fatalf("expected one FindItemWithRule call for policy repair, got %d", store.findItemWithRuleCalls)
+	}
+	if fc.initCalls != 0 {
+		t.Fatalf("expected no full InitAuctionState call for policy repair, got %d", fc.initCalls)
+	}
+	if fc.hotFieldUpdates != 1 {
+		t.Fatalf("expected one hot field update for policy repair, got %d", fc.hotFieldUpdates)
+	}
+	if fc.lastBidLuaArgs == nil {
+		t.Fatal("expected PlaceBidLua to be called")
+	}
+	if fc.lastBidLuaArgs.ExtendTriggerSec != testPolicy.ExtendTriggerSec ||
+		fc.lastBidLuaArgs.AutoExtendSec != testPolicy.AutoExtendSec ||
+		fc.lastBidLuaArgs.MaxExtendCount != testPolicy.MaxExtendCount ||
+		fc.lastBidLuaArgs.MaxTotalExtendSec != testPolicy.MaxTotalExtendSec {
+		t.Fatalf("expected repaired policy args %+v, got %+v", testPolicy, fc.lastBidLuaArgs)
 	}
 }
 
@@ -183,19 +705,19 @@ func TestPlaceBidIdempotent(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("idempotent bid should not fail: %v", err)
 	}
-	// BidLog must not be written a second time
+	// BidLog event must not be appended a second time.
 	count := 0
-	for _, l := range store.bidLogs {
-		if l.ItemID == itemID {
+	for _, event := range fc.bidLogEvents {
+		if event.ItemID == itemID {
 			count++
 		}
 	}
 	if count != 1 {
-		t.Fatalf("expected 1 bid log after idempotent retry, got %d", count)
+		t.Fatalf("expected 1 bid log event after idempotent retry, got %d", count)
 	}
 }
 
-func TestPlaceBidIdempotentReturnsEndedSnapshot(t *testing.T) {
+func TestPlaceBidIdempotentRejectsEndedHotState(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()
 	now := time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC)
@@ -215,20 +737,11 @@ func TestPlaceBidIdempotentReturnsEndedSnapshot(t *testing.T) {
 	fc.states[itemID].EndReason = "time_expired"
 
 	fc.bidLuaCode = 1
-	result, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
+	_, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
 		Price: 100, IdempotencyKey: "idem_ended", UserName: "Alice",
 	})
-	if err != nil {
-		t.Fatalf("idempotent bid should not fail: %v", err)
-	}
-	if result.Status != "ended" {
-		t.Fatalf("expected status ended from idempotent Redis snapshot, got %q", result.Status)
-	}
-	if result.DealPrice != 100 {
-		t.Fatalf("expected deal_price 100, got %d", result.DealPrice)
-	}
-	if result.EndTimeUnixMS != endTime.UnixMilli() {
-		t.Fatalf("expected end_time_unix_ms %d, got %d", endTime.UnixMilli(), result.EndTimeUnixMS)
+	if !errors.Is(err, errorx.ErrInvalidRequest) {
+		t.Fatalf("expected invalid request for ended hot state, got %v", err)
 	}
 }
 
@@ -288,6 +801,58 @@ func TestPlaceBidPriceCapEndsAuction(t *testing.T) {
 	}
 }
 
+func TestPlaceBidPriceCapEmitsSingleOrderCreatedToWinner(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	fb := &fakeBroadcaster{}
+	orderSvc := orderservice.NewService(newFakeOrderStore(), 30*time.Minute)
+	svc := NewService(store, testPolicy, fc, orderSvc, nil, fb)
+	endTime := time.Now().Add(5 * time.Minute)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 500, endTime)
+
+	result, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
+		Price:          500,
+		IdempotencyKey: "idem_cap_order",
+		UserName:       "Alice",
+	})
+	if err != nil {
+		t.Fatalf("PlaceBid failed: %v", err)
+	}
+	if result.Status != "ended" {
+		t.Fatalf("expected status ended when price cap reached, got %q", result.Status)
+	}
+
+	var fanoutOrderCreated []fakeFanout
+	for _, f := range fb.fanoutSnapshot() {
+		if f.event.Type == itemdto.EventOrderCreated {
+			fanoutOrderCreated = append(fanoutOrderCreated, f)
+		}
+	}
+	if len(fanoutOrderCreated) != 0 {
+		t.Fatalf("expected no room fanout order_created events, got %d", len(fanoutOrderCreated))
+	}
+
+	var winnerOrderCreated []fakeUnicast
+	for _, u := range fb.unicastSnapshot() {
+		if u.event.Type == itemdto.EventOrderCreated {
+			winnerOrderCreated = append(winnerOrderCreated, u)
+		}
+	}
+	if len(winnerOrderCreated) != 1 {
+		t.Fatalf("expected exactly one unicast order_created event, got %d", len(winnerOrderCreated))
+	}
+	if winnerOrderCreated[0].addr != wsevent.UserAddr("user_1") {
+		t.Fatalf("expected order_created unicast to winner user_1, got %q", winnerOrderCreated[0].addr)
+	}
+	payload, ok := winnerOrderCreated[0].event.Payload.(itemdto.OrderCreatedPayload)
+	if !ok {
+		t.Fatalf("expected OrderCreatedPayload, got %T", winnerOrderCreated[0].event.Payload)
+	}
+	if payload.ItemID != itemID || payload.WinnerID != "user_1" || payload.DealPrice != 500 || payload.OrderID == "" {
+		t.Fatalf("unexpected order_created payload: %+v", payload)
+	}
+}
+
 type fakeDepositChecker struct {
 	paid  bool
 	err   error
@@ -330,6 +895,7 @@ func TestPlaceBidRejectsMissingDepositBeforeRedis(t *testing.T) {
 	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 0, endTime)
 	rule := store.rules[store.items[itemID].RuleID]
 	rule.DepositAmount = 5000
+	fc.states[itemID].DepositAmount = 5000
 
 	_, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
 		Price: 100, IdempotencyKey: "missing_deposit", UserName: "Alice",
@@ -361,6 +927,7 @@ func TestPlaceBidAllowsPaidDeposit(t *testing.T) {
 	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 0, endTime)
 	rule := store.rules[store.items[itemID].RuleID]
 	rule.DepositAmount = 5000
+	fc.states[itemID].DepositAmount = 5000
 
 	result, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
 		Price: 100, IdempotencyKey: "paid_deposit", UserName: "Alice",
@@ -374,8 +941,11 @@ func TestPlaceBidAllowsPaidDeposit(t *testing.T) {
 	if deposits.calls != 1 {
 		t.Fatalf("expected one deposit checker call, got %d", deposits.calls)
 	}
-	if len(store.bidLogs) != 1 {
-		t.Fatalf("expected one bid log, got %d", len(store.bidLogs))
+	if len(store.bidLogs) != 0 {
+		t.Fatalf("expected no synchronous bid logs, got %d", len(store.bidLogs))
+	}
+	if len(fc.bidLogEvents) != 1 {
+		t.Fatalf("expected one bid log event, got %d", len(fc.bidLogEvents))
 	}
 }
 
@@ -553,6 +1123,85 @@ func (r *captureBidBroadcastRecorder) snapshot() []observability.BidBroadcastMet
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]observability.BidBroadcastMetric(nil), r.metrics...)
+}
+
+type fakeOrderStore struct {
+	mu             sync.Mutex
+	ordersByID     map[string]*ordermodel.Order
+	ordersByItemID map[string]*ordermodel.Order
+}
+
+func newFakeOrderStore() *fakeOrderStore {
+	return &fakeOrderStore{
+		ordersByID:     make(map[string]*ordermodel.Order),
+		ordersByItemID: make(map[string]*ordermodel.Order),
+	}
+}
+
+func (s *fakeOrderStore) AutoMigrate() error { return nil }
+
+func (s *fakeOrderStore) CreateOrder(order *ordermodel.Order) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	copy := *order
+	s.ordersByID[order.ID] = &copy
+	s.ordersByItemID[order.ItemID] = &copy
+	return nil
+}
+
+func (s *fakeOrderStore) FindOrder(orderID string) (*ordermodel.Order, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	order, ok := s.ordersByID[orderID]
+	if !ok {
+		return nil, errorx.ErrNotFound
+	}
+	copy := *order
+	return &copy, nil
+}
+
+func (s *fakeOrderStore) FindOrderByItemID(itemID string) (*ordermodel.Order, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	order, ok := s.ordersByItemID[itemID]
+	if !ok {
+		return nil, errorx.ErrNotFound
+	}
+	copy := *order
+	return &copy, nil
+}
+
+func (s *fakeOrderStore) FindOrderDetail(orderID string) (*orderdto.OrderDetail, error) {
+	return nil, errorx.ErrNotFound
+}
+
+func (s *fakeOrderStore) UpdateOrderStatus(orderID string, from, to ordermodel.OrderStatus) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	order, ok := s.ordersByID[orderID]
+	if !ok {
+		return false, errorx.ErrNotFound
+	}
+	if order.Status != from {
+		return false, nil
+	}
+	copy := *order
+	copy.Status = to
+	s.ordersByID[orderID] = &copy
+	s.ordersByItemID[order.ItemID] = &copy
+	return true, nil
+}
+
+func (s *fakeOrderStore) ListOrders(input orderdto.ListOrdersInput) ([]orderdto.OrderWithTitle, int64, error) {
+	return nil, 0, nil
+}
+
+func (s *fakeOrderStore) ListExpiredPendingOrders(before time.Time, limit int) ([]ordermodel.Order, error) {
+	return nil, nil
+}
+
+func (s *fakeOrderStore) ListEndedItemsWithoutOrder(limit int) ([]orderdto.EndedItemSummary, error) {
+	return nil, nil
 }
 
 func waitForBidFanouts(t *testing.T, fb *fakeBroadcaster, want int) []fakeFanout {
@@ -735,4 +1384,13 @@ func TestPlaceBidRecordsBidBroadcastCoalescingMetrics(t *testing.T) {
 	if metrics[3].Duration <= 0 {
 		t.Fatalf("expected flush duration to record pending wait, got %s", metrics[3].Duration)
 	}
+}
+
+type bidHotStateCaptureRecorder struct {
+	observability.NoopRecorder
+	metrics []observability.BidHotStateMetric
+}
+
+func (r *bidHotStateCaptureRecorder) BidHotState(_ context.Context, metric observability.BidHotStateMetric) {
+	r.metrics = append(r.metrics, metric)
 }

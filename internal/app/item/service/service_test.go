@@ -18,15 +18,16 @@ import (
 )
 
 type fakeStore struct {
-	items               map[string]*itemmodel.AuctionItem
-	rules               map[string]*itemmodel.AuctionRule
-	roomCurrentItems    map[string]string
-	updateErr           error
-	setRoomCurrentErr   error
-	clearRoomCurrentErr error
-	bidLogs             []*itemmodel.BidLog
-	findMu              sync.Mutex
-	findItemCalls       map[string]int
+	items                 map[string]*itemmodel.AuctionItem
+	rules                 map[string]*itemmodel.AuctionRule
+	roomCurrentItems      map[string]string
+	updateErr             error
+	setRoomCurrentErr     error
+	clearRoomCurrentErr   error
+	bidLogs               []*itemmodel.BidLog
+	findMu                sync.Mutex
+	findItemCalls         map[string]int
+	findItemWithRuleCalls int
 }
 
 func newFakeStore() *fakeStore {
@@ -50,6 +51,7 @@ func (s *fakeStore) CreateItemWithRule(item *itemmodel.AuctionItem, rule *itemmo
 
 func (s *fakeStore) FindItemWithRule(itemID string) (*itemmodel.AuctionItem, *itemmodel.AuctionRule, error) {
 	s.findMu.Lock()
+	s.findItemWithRuleCalls++
 	s.findItemCalls[itemID]++
 	s.findMu.Unlock()
 
@@ -159,6 +161,48 @@ func (s *fakeStore) CreateBidLog(log *itemmodel.BidLog) error {
 	cp := *log
 	s.bidLogs = append(s.bidLogs, &cp)
 	return nil
+}
+
+func (s *fakeStore) CreateBidLogs(logs []*itemmodel.BidLog) error {
+	seen := make(map[string]bool, len(s.bidLogs)+len(logs))
+	for _, existing := range s.bidLogs {
+		seen[existing.ID] = true
+	}
+	for _, log := range logs {
+		if seen[log.ID] {
+			continue
+		}
+		cp := *log
+		s.bidLogs = append(s.bidLogs, &cp)
+		seen[log.ID] = true
+	}
+	return nil
+}
+
+func TestFakeStoreCreateBidLogsSkipsDuplicateIDs(t *testing.T) {
+	store := newFakeStore()
+
+	err := store.CreateBidLogs([]*itemmodel.BidLog{
+		{ID: "bid_1", ItemID: "item_1", RoomID: "room_1", UserID: "user_1", Price: 100},
+		{ID: "bid_2", ItemID: "item_1", RoomID: "room_1", UserID: "user_2", Price: 200},
+	})
+	if err != nil {
+		t.Fatalf("CreateBidLogs returned error: %v", err)
+	}
+	err = store.CreateBidLogs([]*itemmodel.BidLog{
+		{ID: "bid_2", ItemID: "item_1", RoomID: "room_1", UserID: "user_2", Price: 200},
+		{ID: "bid_3", ItemID: "item_1", RoomID: "room_1", UserID: "user_3", Price: 300},
+	})
+	if err != nil {
+		t.Fatalf("CreateBidLogs returned error on duplicate batch: %v", err)
+	}
+
+	if len(store.bidLogs) != 3 {
+		t.Fatalf("expected 3 unique bid logs, got %d", len(store.bidLogs))
+	}
+	if store.bidLogs[2].ID != "bid_3" {
+		t.Fatalf("expected bid_3 to be appended, got %q", store.bidLogs[2].ID)
+	}
 }
 
 func (s *fakeStore) ListBidRanking(itemID string, limit int) ([]itemdto.BidderPrice, error) {
@@ -313,21 +357,28 @@ func TestPublishStartAndCancelValidateOwnerAndStatus(t *testing.T) {
 }
 
 type fakeCache struct {
-	states            map[string]*itemcache.AuctionState
-	stateTTLs         map[string]time.Duration
-	ending            map[string]int64
-	queues            map[string][]string
-	roomCurrent       map[string]string
-	ranking           map[string]map[string]int64
-	bidderNames       map[string]map[string]string
-	listActiveCalls   atomic.Int32
-	listActiveStarted chan struct{}
-	listActiveRelease chan struct{}
-	bidLuaCode        int
-	bidLuaErr         error
-	initErr           error
-	getStateErr       error
-	deleteErr         error
+	states             map[string]*itemcache.AuctionState
+	stateTTLs          map[string]time.Duration
+	ending             map[string]int64
+	queues             map[string][]string
+	roomCurrent        map[string]string
+	ranking            map[string]map[string]int64
+	bidderNames        map[string]map[string]string
+	listActiveCalls    atomic.Int32
+	listActiveStarted  chan struct{}
+	listActiveRelease  chan struct{}
+	bidLuaCode         int
+	bidLuaErr          error
+	bidLuaResult       *itemcache.BidLuaResult
+	lastBidLuaArgs     *itemcache.BidLuaArgs
+	bidLogEvents       []itemcache.BidLogEvent
+	appendBidLogErr    error
+	initCalls          int
+	hotFieldUpdates    int
+	endBeforeHotUpdate bool
+	initErr            error
+	getStateErr        error
+	deleteErr          error
 }
 
 func newFakeCache() *fakeCache {
@@ -343,6 +394,7 @@ func newFakeCache() *fakeCache {
 }
 
 func (c *fakeCache) InitAuctionState(_ context.Context, itemID string, state itemcache.AuctionState) error {
+	c.initCalls++
 	if c.initErr != nil {
 		return c.initErr
 	}
@@ -370,6 +422,57 @@ func (c *fakeCache) GetAuctionState(_ context.Context, itemID string) (*itemcach
 	}
 	cp := *s
 	return &cp, true, nil
+}
+
+func (c *fakeCache) GetAuctionHotConfig(ctx context.Context, itemID string) (*itemcache.AuctionHotConfig, bool, error) {
+	state, ok, err := c.GetAuctionState(ctx, itemID)
+	if err != nil || !ok {
+		return nil, ok, err
+	}
+	if state.Status == "" ||
+		state.RoomID == "" ||
+		state.BidIncrement <= 0 ||
+		state.EndTimeUnixMS <= 0 ||
+		state.ExtendTriggerSec <= 0 ||
+		state.AutoExtendSec <= 0 ||
+		state.MaxExtendCount <= 0 ||
+		state.MaxTotalExtendSec <= 0 {
+		return nil, false, nil
+	}
+	return &itemcache.AuctionHotConfig{
+		ItemID:            itemID,
+		RoomID:            state.RoomID,
+		Status:            state.Status,
+		BidIncrement:      state.BidIncrement,
+		PriceCap:          state.PriceCap,
+		DepositAmount:     state.DepositAmount,
+		ExtendTriggerSec:  state.ExtendTriggerSec,
+		AutoExtendSec:     state.AutoExtendSec,
+		MaxExtendCount:    state.MaxExtendCount,
+		MaxTotalExtendSec: state.MaxTotalExtendSec,
+		EndTimeUnixMS:     state.EndTimeUnixMS,
+	}, true, nil
+}
+
+func (c *fakeCache) UpdateAuctionHotFields(_ context.Context, itemID string, hot itemcache.AuctionHotConfig) error {
+	c.hotFieldUpdates++
+	state, ok := c.states[itemID]
+	if !ok {
+		state = &itemcache.AuctionState{}
+		c.states[itemID] = state
+	}
+	if c.endBeforeHotUpdate {
+		state.Status = "ended"
+	}
+	state.RoomID = hot.RoomID
+	state.BidIncrement = hot.BidIncrement
+	state.PriceCap = hot.PriceCap
+	state.DepositAmount = hot.DepositAmount
+	state.ExtendTriggerSec = hot.ExtendTriggerSec
+	state.AutoExtendSec = hot.AutoExtendSec
+	state.MaxExtendCount = hot.MaxExtendCount
+	state.MaxTotalExtendSec = hot.MaxTotalExtendSec
+	return nil
 }
 
 func (c *fakeCache) DeleteAuctionState(_ context.Context, itemID string) error {
@@ -518,6 +621,15 @@ func (c *fakeCache) PlaceBidLua(_ context.Context, itemID string, args itemcache
 	if c.bidLuaErr != nil {
 		return nil, c.bidLuaErr
 	}
+	argsCopy := args
+	c.lastBidLuaArgs = &argsCopy
+	if c.bidLuaResult != nil {
+		result := *c.bidLuaResult
+		if result.Code == 0 {
+			c.appendBidLogEventFromLua(itemID, args, result.BidID)
+		}
+		return &result, nil
+	}
 	if c.bidLuaCode != 0 {
 		result := &itemcache.BidLuaResult{Code: c.bidLuaCode}
 		if c.bidLuaCode == 1 {
@@ -590,6 +702,7 @@ func (c *fakeCache) PlaceBidLua(_ context.Context, itemID string, args itemcache
 	state.IsExtended = isExtended
 
 	isCapped := args.PriceCap > 0 && args.Price >= args.PriceCap
+	c.appendBidLogEventFromLua(itemID, args, args.BidID)
 	if isCapped {
 		state.Status = "ended"
 		state.EndedAtUnixMS = time.Unix(args.NowUnix, 0).UnixMilli()
@@ -608,6 +721,25 @@ func (c *fakeCache) PlaceBidLua(_ context.Context, itemID string, args itemcache
 		PrevLeaderUserID: prevLeader,
 		Status:           state.Status,
 	}, nil
+}
+
+func (c *fakeCache) appendBidLogEventFromLua(itemID string, args itemcache.BidLuaArgs, bidID string) {
+	c.bidLogEvents = append(c.bidLogEvents, itemcache.BidLogEvent{
+		BidID:           bidID,
+		ItemID:          itemID,
+		RoomID:          args.RoomID,
+		UserID:          args.UserID,
+		Price:           args.Price,
+		CreatedAtUnixMS: args.CreatedAtUnixMS,
+	})
+}
+
+func (c *fakeCache) AppendBidLogEvent(_ context.Context, event itemcache.BidLogEvent) error {
+	if c.appendBidLogErr != nil {
+		return c.appendBidLogErr
+	}
+	c.bidLogEvents = append(c.bidLogEvents, event)
+	return nil
 }
 
 func (c *fakeCache) GetRanking(_ context.Context, itemID string, offset, limit int) ([]itemdto.BidderPrice, error) {
@@ -761,6 +893,54 @@ func TestStartItemInitializesRedisState(t *testing.T) {
 	}
 	if state.EndTime.IsZero() {
 		t.Fatal("expected non-zero end_time")
+	}
+}
+
+func TestStartItemInitializesHotBidFields(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	policy := itemdto.AuctionPolicy{
+		ExtendTriggerSec:  30,
+		AutoExtendSec:     20,
+		MaxExtendCount:    3,
+		MaxTotalExtendSec: 60,
+	}
+	svc := NewService(store, policy, fc, nil, nil, nil)
+	itemID := seedPublishedItem(t, svc, "merchant_1", "room_1")
+	rule := store.rules[store.items[itemID].RuleID]
+	rule.PriceCap = 5000
+	rule.DepositAmount = 800
+
+	if err := svc.StartItem(context.Background(), &usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}, itemID); err != nil {
+		t.Fatalf("StartItem failed: %v", err)
+	}
+	state, ok := fc.states[itemID]
+	if !ok {
+		t.Fatal("expected auction state in cache after StartItem")
+	}
+	if state.RoomID != "room_1" {
+		t.Fatalf("expected room_id room_1, got %q", state.RoomID)
+	}
+	if state.BidIncrement != 100 {
+		t.Fatalf("expected bid_increment 100, got %d", state.BidIncrement)
+	}
+	if state.PriceCap != 5000 {
+		t.Fatalf("expected price_cap 5000, got %d", state.PriceCap)
+	}
+	if state.DepositAmount != 800 {
+		t.Fatalf("expected deposit_amount 800, got %d", state.DepositAmount)
+	}
+	if state.ExtendTriggerSec != 30 {
+		t.Fatalf("expected extend_trigger_sec 30, got %d", state.ExtendTriggerSec)
+	}
+	if state.AutoExtendSec != 20 {
+		t.Fatalf("expected auto_extend_sec 20, got %d", state.AutoExtendSec)
+	}
+	if state.MaxExtendCount != 3 {
+		t.Fatalf("expected max_extend_count 3, got %d", state.MaxExtendCount)
+	}
+	if state.MaxTotalExtendSec != 60 {
+		t.Fatalf("expected max_total_extend_sec 60, got %d", state.MaxTotalExtendSec)
 	}
 }
 

@@ -12,25 +12,48 @@ import (
 )
 
 type AuctionState struct {
-	Status           string
-	CurrentPrice     int64
-	DealPrice        int64
-	LeaderUserID     string
-	EndTime          time.Time
-	EndTimeUnixMS    int64
-	EndedAtUnixMS    int64
-	BidCount         int
-	ParticipantCount int
-	IsExtended       bool
-	ExtendCount      int
-	TotalExtendedSec int
-	EndReason        string
+	Status            string
+	RoomID            string
+	CurrentPrice      int64
+	DealPrice         int64
+	LeaderUserID      string
+	EndTime           time.Time
+	EndTimeUnixMS     int64
+	EndedAtUnixMS     int64
+	BidIncrement      int64
+	PriceCap          int64
+	DepositAmount     int64
+	BidCount          int
+	ParticipantCount  int
+	IsExtended        bool
+	ExtendCount       int
+	TotalExtendedSec  int
+	ExtendTriggerSec  int
+	AutoExtendSec     int
+	MaxExtendCount    int
+	MaxTotalExtendSec int
+	EndReason         string
+}
+
+type AuctionHotConfig struct {
+	ItemID            string
+	RoomID            string
+	Status            string
+	BidIncrement      int64
+	PriceCap          int64
+	DepositAmount     int64
+	ExtendTriggerSec  int
+	AutoExtendSec     int
+	MaxExtendCount    int
+	MaxTotalExtendSec int
+	EndTimeUnixMS     int64
 }
 
 type BidLuaArgs struct {
 	UserID            string
 	UserName          string
 	BidID             string
+	RoomID            string
 	Price             int64
 	BidIncrement      int64
 	PriceCap          int64
@@ -39,6 +62,7 @@ type BidLuaArgs struct {
 	MaxExtendCount    int
 	MaxTotalExtendSec int
 	NowUnix           int64
+	CreatedAtUnixMS   int64
 	IdempotencyKey    string
 	IdempotencyTTL    int
 }
@@ -56,6 +80,20 @@ type BidLuaResult struct {
 	Status           string
 }
 
+type BidLogEvent struct {
+	BidID           string
+	ItemID          string
+	RoomID          string
+	UserID          string
+	Price           int64
+	CreatedAtUnixMS int64
+}
+
+type BidLogStreamMessage struct {
+	ID    string
+	Event BidLogEvent
+}
+
 type SettlementResult struct {
 	ItemID        string
 	LeaderUserID  string
@@ -69,6 +107,8 @@ const FinalSnapshotTTL = 24 * time.Hour
 type Cache interface {
 	InitAuctionState(ctx context.Context, itemID string, state AuctionState) error
 	GetAuctionState(ctx context.Context, itemID string) (*AuctionState, bool, error)
+	GetAuctionHotConfig(ctx context.Context, itemID string) (*AuctionHotConfig, bool, error)
+	UpdateAuctionHotFields(ctx context.Context, itemID string, hot AuctionHotConfig) error
 	DeleteAuctionState(ctx context.Context, itemID string) error
 	ExpireAuctionState(ctx context.Context, itemID string, ttl time.Duration) error
 	ScheduleAuctionEnd(ctx context.Context, itemID string, endUnixMS int64) error
@@ -82,6 +122,7 @@ type Cache interface {
 	GetRoomCurrentItem(ctx context.Context, roomID string) (string, bool, error)
 	ClearRoomCurrentItem(ctx context.Context, roomID, itemID string) error
 	PlaceBidLua(ctx context.Context, itemID string, args BidLuaArgs) (*BidLuaResult, error)
+	AppendBidLogEvent(ctx context.Context, event BidLogEvent) error
 	GetRanking(ctx context.Context, itemID string, offset, limit int) ([]dto.BidderPrice, error)
 }
 
@@ -159,17 +200,25 @@ func (c *RedisCache) InitAuctionState(ctx context.Context, itemID string, state 
 	}
 	return c.client.HSet(ctx, itemStateKey(itemID),
 		"status", status,
+		"room_id", state.RoomID,
 		"current_price", state.CurrentPrice,
 		"deal_price", dealPrice,
 		"leader_user_id", state.LeaderUserID,
 		"end_time_unix", state.EndTime.Unix(),
 		"end_time_unix_ms", endUnixMS,
 		"ended_at_unix_ms", state.EndedAtUnixMS,
+		"bid_increment", state.BidIncrement,
+		"price_cap", state.PriceCap,
+		"deposit_amount", state.DepositAmount,
 		"bid_count", state.BidCount,
 		"participant_count", state.ParticipantCount,
 		"is_extended", boolToStr(state.IsExtended),
 		"extend_count", state.ExtendCount,
 		"total_extended_sec", state.TotalExtendedSec,
+		"extend_trigger_sec", state.ExtendTriggerSec,
+		"auto_extend_sec", state.AutoExtendSec,
+		"max_extend_count", state.MaxExtendCount,
+		"max_total_extend_sec", state.MaxTotalExtendSec,
 		"end_reason", state.EndReason,
 	).Err()
 }
@@ -191,20 +240,71 @@ func (c *RedisCache) GetAuctionState(ctx context.Context, itemID string) (*Aucti
 		endMS = parseInt64(vals["end_time_unix"]) * 1000
 	}
 	return &AuctionState{
-		Status:           vals["status"],
-		CurrentPrice:     parseInt64(vals["current_price"]),
-		DealPrice:        dealPrice,
-		LeaderUserID:     vals["leader_user_id"],
-		EndTime:          time.UnixMilli(endMS),
-		EndTimeUnixMS:    endMS,
-		EndedAtUnixMS:    parseInt64(vals["ended_at_unix_ms"]),
-		BidCount:         parseInt(vals["bid_count"]),
-		ParticipantCount: parseInt(vals["participant_count"]),
-		IsExtended:       vals["is_extended"] == "1",
-		ExtendCount:      parseInt(vals["extend_count"]),
-		TotalExtendedSec: parseInt(vals["total_extended_sec"]),
-		EndReason:        vals["end_reason"],
+		Status:            vals["status"],
+		RoomID:            vals["room_id"],
+		CurrentPrice:      parseInt64(vals["current_price"]),
+		DealPrice:         dealPrice,
+		LeaderUserID:      vals["leader_user_id"],
+		EndTime:           time.UnixMilli(endMS),
+		EndTimeUnixMS:     endMS,
+		EndedAtUnixMS:     parseInt64(vals["ended_at_unix_ms"]),
+		BidIncrement:      parseInt64(vals["bid_increment"]),
+		PriceCap:          parseInt64(vals["price_cap"]),
+		DepositAmount:     parseInt64(vals["deposit_amount"]),
+		BidCount:          parseInt(vals["bid_count"]),
+		ParticipantCount:  parseInt(vals["participant_count"]),
+		IsExtended:        vals["is_extended"] == "1",
+		ExtendCount:       parseInt(vals["extend_count"]),
+		TotalExtendedSec:  parseInt(vals["total_extended_sec"]),
+		ExtendTriggerSec:  parseInt(vals["extend_trigger_sec"]),
+		AutoExtendSec:     parseInt(vals["auto_extend_sec"]),
+		MaxExtendCount:    parseInt(vals["max_extend_count"]),
+		MaxTotalExtendSec: parseInt(vals["max_total_extend_sec"]),
+		EndReason:         vals["end_reason"],
 	}, true, nil
+}
+
+func (c *RedisCache) GetAuctionHotConfig(ctx context.Context, itemID string) (*AuctionHotConfig, bool, error) {
+	state, ok, err := c.GetAuctionState(ctx, itemID)
+	if err != nil || !ok {
+		return nil, ok, err
+	}
+	if state.Status == "" ||
+		state.RoomID == "" ||
+		state.BidIncrement <= 0 ||
+		state.EndTimeUnixMS <= 0 ||
+		state.ExtendTriggerSec <= 0 ||
+		state.AutoExtendSec <= 0 ||
+		state.MaxExtendCount <= 0 ||
+		state.MaxTotalExtendSec <= 0 {
+		return nil, false, nil
+	}
+	return &AuctionHotConfig{
+		ItemID:            itemID,
+		RoomID:            state.RoomID,
+		Status:            state.Status,
+		BidIncrement:      state.BidIncrement,
+		PriceCap:          state.PriceCap,
+		DepositAmount:     state.DepositAmount,
+		ExtendTriggerSec:  state.ExtendTriggerSec,
+		AutoExtendSec:     state.AutoExtendSec,
+		MaxExtendCount:    state.MaxExtendCount,
+		MaxTotalExtendSec: state.MaxTotalExtendSec,
+		EndTimeUnixMS:     state.EndTimeUnixMS,
+	}, true, nil
+}
+
+func (c *RedisCache) UpdateAuctionHotFields(ctx context.Context, itemID string, hot AuctionHotConfig) error {
+	return c.client.HSet(ctx, itemStateKey(itemID),
+		"room_id", hot.RoomID,
+		"bid_increment", hot.BidIncrement,
+		"price_cap", hot.PriceCap,
+		"deposit_amount", hot.DepositAmount,
+		"extend_trigger_sec", hot.ExtendTriggerSec,
+		"auto_extend_sec", hot.AutoExtendSec,
+		"max_extend_count", hot.MaxExtendCount,
+		"max_total_extend_sec", hot.MaxTotalExtendSec,
+	).Err()
 }
 
 func (c *RedisCache) DeleteAuctionState(ctx context.Context, itemID string) error {

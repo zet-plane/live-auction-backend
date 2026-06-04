@@ -16,6 +16,9 @@ type Recorder interface {
 	Cron(context.Context, CronMetric)
 	Bid(context.Context, BidMetric)
 	BidBroadcast(context.Context, BidBroadcastMetric)
+	BidHotState(context.Context, BidHotStateMetric)
+	BidLogStream(context.Context, BidLogStreamMetric)
+	BidLogWorker(context.Context, BidLogWorkerMetric)
 	WSConnection(context.Context, WSConnectionMetric)
 	WSBroadcast(context.Context, WSBroadcastMetric)
 	WSDelivery(context.Context, WSDeliveryMetric)
@@ -65,6 +68,22 @@ type BidBroadcastMetric struct {
 	Duration  time.Duration
 }
 
+type BidHotStateMetric struct {
+	Result   string
+	Duration time.Duration
+}
+
+type BidLogStreamMetric struct {
+	Result   string
+	Duration time.Duration
+}
+
+type BidLogWorkerMetric struct {
+	Result    string
+	BatchSize int64
+	Duration  time.Duration
+}
+
 type WSConnectionMetric struct {
 	Action      string
 	Result      string
@@ -110,6 +129,9 @@ func (NoopRecorder) DBQuery(context.Context, DBQueryMetric)           {}
 func (NoopRecorder) Cron(context.Context, CronMetric)                 {}
 func (NoopRecorder) Bid(context.Context, BidMetric)                   {}
 func (NoopRecorder) BidBroadcast(context.Context, BidBroadcastMetric) {}
+func (NoopRecorder) BidHotState(context.Context, BidHotStateMetric)   {}
+func (NoopRecorder) BidLogStream(context.Context, BidLogStreamMetric) {}
+func (NoopRecorder) BidLogWorker(context.Context, BidLogWorkerMetric) {}
 func (NoopRecorder) WSConnection(context.Context, WSConnectionMetric) {}
 func (NoopRecorder) WSBroadcast(context.Context, WSBroadcastMetric)   {}
 func (NoopRecorder) WSDelivery(context.Context, WSDeliveryMetric)     {}
@@ -131,32 +153,39 @@ func DefaultRecorder() Recorder {
 }
 
 type OTelRecorder struct {
-	httpCount            metric.Int64Counter
-	httpDuration         metric.Float64Histogram
-	redisLuaCount        metric.Int64Counter
-	redisLuaDuration     metric.Float64Histogram
-	dbCount              metric.Int64Counter
-	dbDuration           metric.Float64Histogram
-	cronCount            metric.Int64Counter
-	cronDuration         metric.Float64Histogram
-	bidCount             metric.Int64Counter
-	bidAmount            metric.Int64Histogram
-	bidDuration          metric.Float64Histogram
-	bidBroadcastCount    metric.Int64Counter
-	bidBroadcastBids     metric.Int64Histogram
-	bidBroadcastPending  metric.Int64Histogram
-	bidBroadcastDuration metric.Float64Histogram
-	wsConnectionCount    metric.Int64Counter
-	wsConnectionActive   metric.Int64UpDownCounter
-	wsBroadcastCount     metric.Int64Counter
-	wsBroadcastTargets   metric.Int64Histogram
-	wsBroadcastDuration  metric.Float64Histogram
-	wsDeliveryCount      metric.Int64Counter
-	wsDeliveryDuration   metric.Float64Histogram
-	wsWriteCount         metric.Int64Counter
-	wsWriteDuration      metric.Float64Histogram
-	wsSendQueueDepth     metric.Int64Histogram
-	orderCount           metric.Int64Counter
+	httpCount             metric.Int64Counter
+	httpDuration          metric.Float64Histogram
+	redisLuaCount         metric.Int64Counter
+	redisLuaDuration      metric.Float64Histogram
+	dbCount               metric.Int64Counter
+	dbDuration            metric.Float64Histogram
+	cronCount             metric.Int64Counter
+	cronDuration          metric.Float64Histogram
+	bidCount              metric.Int64Counter
+	bidAmount             metric.Int64Histogram
+	bidDuration           metric.Float64Histogram
+	bidBroadcastCount     metric.Int64Counter
+	bidBroadcastBids      metric.Int64Histogram
+	bidBroadcastPending   metric.Int64Histogram
+	bidBroadcastDuration  metric.Float64Histogram
+	bidHotStateCount      metric.Int64Counter
+	bidHotStateDuration   metric.Float64Histogram
+	bidLogStreamCount     metric.Int64Counter
+	bidLogStreamDuration  metric.Float64Histogram
+	bidLogWorkerCount     metric.Int64Counter
+	bidLogWorkerBatchSize metric.Int64Histogram
+	bidLogWorkerDuration  metric.Float64Histogram
+	wsConnectionCount     metric.Int64Counter
+	wsConnectionActive    metric.Int64UpDownCounter
+	wsBroadcastCount      metric.Int64Counter
+	wsBroadcastTargets    metric.Int64Histogram
+	wsBroadcastDuration   metric.Float64Histogram
+	wsDeliveryCount       metric.Int64Counter
+	wsDeliveryDuration    metric.Float64Histogram
+	wsWriteCount          metric.Int64Counter
+	wsWriteDuration       metric.Float64Histogram
+	wsSendQueueDepth      metric.Int64Histogram
+	orderCount            metric.Int64Counter
 }
 
 func NewRecorder() (*OTelRecorder, error) {
@@ -221,6 +250,34 @@ func NewRecorder() (*OTelRecorder, error) {
 	if err != nil {
 		return nil, err
 	}
+	bidHotStateCount, err := meter.Int64Counter("auction.hot_state.lookup.count")
+	if err != nil {
+		return nil, err
+	}
+	bidHotStateDuration, err := meter.Float64Histogram("auction.hot_state.lookup.duration")
+	if err != nil {
+		return nil, err
+	}
+	bidLogStreamCount, err := meter.Int64Counter("auction.bid_log.stream.append.count")
+	if err != nil {
+		return nil, err
+	}
+	bidLogStreamDuration, err := meter.Float64Histogram("auction.bid_log.stream.append.duration")
+	if err != nil {
+		return nil, err
+	}
+	bidLogWorkerCount, err := meter.Int64Counter("auction.bid_log.worker.batch.count")
+	if err != nil {
+		return nil, err
+	}
+	bidLogWorkerBatchSize, err := meter.Int64Histogram("auction.bid_log.worker.batch.size")
+	if err != nil {
+		return nil, err
+	}
+	bidLogWorkerDuration, err := meter.Float64Histogram("auction.bid_log.worker.persist.duration")
+	if err != nil {
+		return nil, err
+	}
 	wsConnectionCount, err := meter.Int64Counter("ws.connection.count")
 	if err != nil {
 		return nil, err
@@ -266,32 +323,39 @@ func NewRecorder() (*OTelRecorder, error) {
 		return nil, err
 	}
 	return &OTelRecorder{
-		httpCount:            httpCount,
-		httpDuration:         httpDuration,
-		redisLuaCount:        redisLuaCount,
-		redisLuaDuration:     redisLuaDuration,
-		dbCount:              dbCount,
-		dbDuration:           dbDuration,
-		cronCount:            cronCount,
-		cronDuration:         cronDuration,
-		bidCount:             bidCount,
-		bidAmount:            bidAmount,
-		bidDuration:          bidDuration,
-		bidBroadcastCount:    bidBroadcastCount,
-		bidBroadcastBids:     bidBroadcastBids,
-		bidBroadcastPending:  bidBroadcastPending,
-		bidBroadcastDuration: bidBroadcastDuration,
-		wsConnectionCount:    wsConnectionCount,
-		wsConnectionActive:   wsConnectionActive,
-		wsBroadcastCount:     wsBroadcastCount,
-		wsBroadcastTargets:   wsBroadcastTargets,
-		wsBroadcastDuration:  wsBroadcastDuration,
-		wsDeliveryCount:      wsDeliveryCount,
-		wsDeliveryDuration:   wsDeliveryDuration,
-		wsWriteCount:         wsWriteCount,
-		wsWriteDuration:      wsWriteDuration,
-		wsSendQueueDepth:     wsSendQueueDepth,
-		orderCount:           orderCount,
+		httpCount:             httpCount,
+		httpDuration:          httpDuration,
+		redisLuaCount:         redisLuaCount,
+		redisLuaDuration:      redisLuaDuration,
+		dbCount:               dbCount,
+		dbDuration:            dbDuration,
+		cronCount:             cronCount,
+		cronDuration:          cronDuration,
+		bidCount:              bidCount,
+		bidAmount:             bidAmount,
+		bidDuration:           bidDuration,
+		bidBroadcastCount:     bidBroadcastCount,
+		bidBroadcastBids:      bidBroadcastBids,
+		bidBroadcastPending:   bidBroadcastPending,
+		bidBroadcastDuration:  bidBroadcastDuration,
+		bidHotStateCount:      bidHotStateCount,
+		bidHotStateDuration:   bidHotStateDuration,
+		bidLogStreamCount:     bidLogStreamCount,
+		bidLogStreamDuration:  bidLogStreamDuration,
+		bidLogWorkerCount:     bidLogWorkerCount,
+		bidLogWorkerBatchSize: bidLogWorkerBatchSize,
+		bidLogWorkerDuration:  bidLogWorkerDuration,
+		wsConnectionCount:     wsConnectionCount,
+		wsConnectionActive:    wsConnectionActive,
+		wsBroadcastCount:      wsBroadcastCount,
+		wsBroadcastTargets:    wsBroadcastTargets,
+		wsBroadcastDuration:   wsBroadcastDuration,
+		wsDeliveryCount:       wsDeliveryCount,
+		wsDeliveryDuration:    wsDeliveryDuration,
+		wsWriteCount:          wsWriteCount,
+		wsWriteDuration:       wsWriteDuration,
+		wsSendQueueDepth:      wsSendQueueDepth,
+		orderCount:            orderCount,
 	}, nil
 }
 
@@ -345,6 +409,25 @@ func (r *OTelRecorder) BidBroadcast(ctx context.Context, m BidBroadcastMetric) {
 	r.bidBroadcastBids.Record(ctx, m.Bids, opts)
 	r.bidBroadcastPending.Record(ctx, m.Pending, opts)
 	r.bidBroadcastDuration.Record(ctx, m.Duration.Seconds(), opts)
+}
+
+func (r *OTelRecorder) BidHotState(ctx context.Context, m BidHotStateMetric) {
+	opts := metric.WithAttributes(attribute.String("result", SafeReason(m.Result)))
+	r.bidHotStateCount.Add(ctx, 1, opts)
+	r.bidHotStateDuration.Record(ctx, m.Duration.Seconds(), opts)
+}
+
+func (r *OTelRecorder) BidLogStream(ctx context.Context, m BidLogStreamMetric) {
+	opts := metric.WithAttributes(attribute.String("result", SafeReason(m.Result)))
+	r.bidLogStreamCount.Add(ctx, 1, opts)
+	r.bidLogStreamDuration.Record(ctx, m.Duration.Seconds(), opts)
+}
+
+func (r *OTelRecorder) BidLogWorker(ctx context.Context, m BidLogWorkerMetric) {
+	opts := metric.WithAttributes(attribute.String("result", SafeReason(m.Result)))
+	r.bidLogWorkerCount.Add(ctx, 1, opts)
+	r.bidLogWorkerBatchSize.Record(ctx, m.BatchSize, opts)
+	r.bidLogWorkerDuration.Record(ctx, m.Duration.Seconds(), opts)
 }
 
 func (r *OTelRecorder) WSConnection(ctx context.Context, m WSConnectionMetric) {

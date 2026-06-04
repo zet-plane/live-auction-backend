@@ -26,6 +26,7 @@ type Store interface {
 	ListOngoingItemsPastEndTime(before time.Time, limit int) ([]model.ItemWithRule, error)
 	AutoMigrateBidLog() error
 	CreateBidLog(log *model.BidLog) error
+	CreateBidLogs(logs []*model.BidLog) error
 	ListBidRanking(itemID string, limit int) ([]dto.BidderPrice, error)
 }
 

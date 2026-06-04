@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -33,24 +34,29 @@ func (s *Service) PlaceBid(ctx context.Context, current *usermodel.User, itemID 
 		finish(&err, "bid_id", bidID, "status", status, "result", bidResult, "reason", bidReason)
 	}()
 
-	item, rule, err := s.store.FindItemWithRule(itemID)
-	if err != nil {
+	if s.cache == nil {
 		bidResult = "error"
-		bidReason = "db_error"
+		bidReason = "internal"
+		return nil, errorx.ErrInternal
+	}
+	hot, err := s.bidHotConfig(ctx, itemID)
+	if err != nil {
+		if errors.Is(err, errorx.ErrInvalidRequest) {
+			bidResult = "rejected"
+			bidReason = "item_not_ongoing"
+		} else {
+			bidResult = "error"
+			bidReason = "db_error"
+		}
 		return nil, err
 	}
-	if item.Status != model.ItemOngoing {
-		bidResult = "rejected"
-		bidReason = "item_not_ongoing"
-		return nil, errorx.ErrInvalidRequest
-	}
-	if rule.DepositAmount > 0 {
+	if hot.DepositAmount > 0 {
 		if s.depositSvc == nil {
 			bidResult = "error"
 			bidReason = "internal"
 			return nil, errorx.ErrInternal
 		}
-		ok, err := s.depositSvc.HasPaidDeposit(ctx, item.ID, current.ID, rule.DepositAmount)
+		ok, err := s.depositSvc.HasPaidDeposit(ctx, hot.ItemID, current.ID, hot.DepositAmount)
 		if err != nil {
 			bidResult = "error"
 			bidReason = "db_error"
@@ -62,30 +68,32 @@ func (s *Service) PlaceBid(ctx context.Context, current *usermodel.User, itemID 
 			return nil, ErrDepositRequired
 		}
 	}
-	if s.cache == nil {
-		bidResult = "error"
-		bidReason = "internal"
-		return nil, errorx.ErrInternal
-	}
 
 	bidID = "bid_" + snowflake.MakeUUID()
 	now := s.now()
-	luaResult, err := s.cache.PlaceBidLua(ctx, item.ID, itemcache.BidLuaArgs{
+	streamStart := time.Now()
+	luaResult, err := s.cache.PlaceBidLua(ctx, hot.ItemID, itemcache.BidLuaArgs{
 		UserID:            current.ID,
 		UserName:          input.UserName,
 		BidID:             bidID,
+		RoomID:            hot.RoomID,
 		Price:             input.Price,
-		BidIncrement:      rule.BidIncrement,
-		PriceCap:          rule.PriceCap,
-		ExtendTriggerSec:  s.policy.ExtendTriggerSec,
-		AutoExtendSec:     s.policy.AutoExtendSec,
-		MaxExtendCount:    s.policy.MaxExtendCount,
-		MaxTotalExtendSec: s.policy.MaxTotalExtendSec,
+		BidIncrement:      hot.BidIncrement,
+		PriceCap:          hot.PriceCap,
+		ExtendTriggerSec:  hot.ExtendTriggerSec,
+		AutoExtendSec:     hot.AutoExtendSec,
+		MaxExtendCount:    hot.MaxExtendCount,
+		MaxTotalExtendSec: hot.MaxTotalExtendSec,
 		NowUnix:           now.Unix(),
+		CreatedAtUnixMS:   now.UnixMilli(),
 		IdempotencyKey:    input.IdempotencyKey,
 		IdempotencyTTL:    86400,
 	})
 	if err != nil {
+		observability.DefaultRecorder().BidLogStream(ctx, observability.BidLogStreamMetric{
+			Result:   "error",
+			Duration: time.Since(streamStart),
+		})
 		bidResult = "error"
 		bidReason = "redis_error"
 		return nil, err
@@ -126,25 +134,16 @@ func (s *Service) PlaceBid(ctx context.Context, current *usermodel.User, itemID 
 		}
 	}
 
-	// TODO: 高并发场景下改为异步落库（写入 Redis LIST，worker 批量消费）
-	bidLog := &model.BidLog{
-		ID:     luaResult.BidID,
-		ItemID: item.ID,
-		RoomID: item.RoomID,
-		UserID: current.ID,
-		Price:  input.Price,
-	}
-	if err := s.store.CreateBidLog(bidLog); err != nil {
-		bidResult = "error"
-		bidReason = "db_error"
-		return nil, err
-	}
+	observability.DefaultRecorder().BidLogStream(ctx, observability.BidLogStreamMetric{
+		Result:   "success",
+		Duration: time.Since(streamStart),
+	})
 
 	if s.broadcaster != nil {
 		endTime := bidEndTime(luaResult)
 		endTimeUnixMS := bidEndTimeUnixMS(luaResult)
-		s.enqueueBidSuccess(item.RoomID, dto.BidSuccessPayload{
-			ItemID:           item.ID,
+		s.enqueueBidSuccess(hot.RoomID, dto.BidSuccessPayload{
+			ItemID:           hot.ItemID,
 			UserID:           current.ID,
 			Price:            input.Price,
 			CurrentPrice:     luaResult.CurrentPrice,
@@ -157,7 +156,7 @@ func (s *Service) PlaceBid(ctx context.Context, current *usermodel.User, itemID 
 			_ = s.broadcaster.Unicast(wsevent.UserAddr(luaResult.PrevLeaderUserID), wsevent.Event{
 				Type: dto.EventUserOutbid,
 				Payload: dto.UserOutbidPayload{
-					ItemID:           item.ID,
+					ItemID:           hot.ItemID,
 					NewLeaderID:      luaResult.LeaderUserID,
 					CurrentPrice:     luaResult.CurrentPrice,
 					ServerTimeUnixMS: now.UnixMilli(),
@@ -166,12 +165,12 @@ func (s *Service) PlaceBid(ctx context.Context, current *usermodel.User, itemID 
 			})
 		}
 		if luaResult.IsExtended {
-			_ = s.broadcaster.Fanout(wsevent.RoomTopic(item.RoomID), wsevent.Event{
+			_ = s.broadcaster.Fanout(wsevent.RoomTopic(hot.RoomID), wsevent.Event{
 				Type: dto.EventAuctionExtended,
 				Payload: dto.AuctionExtendedPayload{
-					ItemID:           item.ID,
+					ItemID:           hot.ItemID,
 					NewEndTime:       endTime,
-					ExtendSeconds:    s.policy.AutoExtendSec,
+					ExtendSeconds:    hot.AutoExtendSec,
 					ServerTimeUnixMS: now.UnixMilli(),
 					NewEndTimeUnixMS: endTimeUnixMS,
 				},
@@ -181,6 +180,12 @@ func (s *Service) PlaceBid(ctx context.Context, current *usermodel.User, itemID 
 
 	status = bidStatus(luaResult, "ongoing")
 	if luaResult.IsCapped {
+		item, rule, err := s.store.FindItemWithRule(hot.ItemID)
+		if err != nil {
+			bidResult = "error"
+			bidReason = "db_error"
+			return nil, err
+		}
 		item.Status = model.ItemEnded
 		item.WinnerID = current.ID
 		item.DealPrice = input.Price
@@ -232,7 +237,6 @@ func (s *Service) PlaceBid(ctx context.Context, current *usermodel.User, itemID 
 						DealPrice: input.Price,
 					},
 				}
-				_ = s.broadcaster.Fanout(wsevent.RoomTopic(item.RoomID), orderEvt)
 				_ = s.broadcaster.Unicast(wsevent.UserAddr(current.ID), orderEvt)
 			}
 		}
@@ -247,6 +251,109 @@ func (s *Service) PlaceBid(ctx context.Context, current *usermodel.User, itemID 
 		EndTimeUnixMS: bidEndTimeUnixMS(luaResult),
 		Status:        status,
 	}, nil
+}
+
+func (s *Service) bidHotConfig(ctx context.Context, itemID string) (*itemcache.AuctionHotConfig, error) {
+	start := time.Now()
+	result := "miss"
+	defer func() {
+		observability.DefaultRecorder().BidHotState(ctx, observability.BidHotStateMetric{
+			Result:   result,
+			Duration: time.Since(start),
+		})
+	}()
+
+	hot, ok, err := s.cache.GetAuctionHotConfig(ctx, itemID)
+	if err != nil {
+		result = "error"
+		return nil, err
+	}
+	if ok && hot.Status == string(model.ItemOngoing) {
+		result = "hit"
+		return hot, nil
+	}
+	if ok {
+		result = "rejected"
+		return nil, errorx.ErrInvalidRequest
+	}
+
+	var existing *itemcache.AuctionState
+	if state, stateOK, stateErr := s.cache.GetAuctionState(ctx, itemID); stateErr != nil {
+		result = "error"
+		return nil, stateErr
+	} else if stateOK {
+		if state.Status != "" && state.Status != string(model.ItemOngoing) {
+			result = "rejected"
+			return nil, errorx.ErrInvalidRequest
+		}
+		existing = state
+	}
+
+	item, rule, err := s.store.FindItemWithRule(itemID)
+	if err != nil {
+		result = "error"
+		return nil, err
+	}
+	if item.Status != model.ItemOngoing {
+		result = "rejected"
+		return nil, errorx.ErrInvalidRequest
+	}
+
+	endTimeUnixMS := rule.EndTime.UnixMilli()
+	hot = &itemcache.AuctionHotConfig{
+		ItemID:            item.ID,
+		RoomID:            item.RoomID,
+		Status:            string(model.ItemOngoing),
+		BidIncrement:      rule.BidIncrement,
+		PriceCap:          rule.PriceCap,
+		DepositAmount:     rule.DepositAmount,
+		ExtendTriggerSec:  s.policy.ExtendTriggerSec,
+		AutoExtendSec:     s.policy.AutoExtendSec,
+		MaxExtendCount:    s.policy.MaxExtendCount,
+		MaxTotalExtendSec: s.policy.MaxTotalExtendSec,
+		EndTimeUnixMS:     endTimeUnixMS,
+	}
+	if existing != nil {
+		if existing.EndTimeUnixMS > 0 {
+			hot.EndTimeUnixMS = existing.EndTimeUnixMS
+			endTimeUnixMS = existing.EndTimeUnixMS
+		} else if !existing.EndTime.IsZero() {
+			hot.EndTimeUnixMS = existing.EndTime.UnixMilli()
+			endTimeUnixMS = hot.EndTimeUnixMS
+		}
+		if err := s.cache.UpdateAuctionHotFields(ctx, item.ID, *hot); err != nil {
+			result = "error"
+			return nil, err
+		}
+		result = "rebuilt"
+		return hot, nil
+	}
+
+	state := itemcache.AuctionState{
+		Status:            string(model.ItemOngoing),
+		RoomID:            item.RoomID,
+		CurrentPrice:      rule.StartPrice,
+		DealPrice:         rule.StartPrice,
+		EndTime:           rule.EndTime,
+		EndTimeUnixMS:     endTimeUnixMS,
+		BidIncrement:      rule.BidIncrement,
+		PriceCap:          rule.PriceCap,
+		DepositAmount:     rule.DepositAmount,
+		ExtendTriggerSec:  s.policy.ExtendTriggerSec,
+		AutoExtendSec:     s.policy.AutoExtendSec,
+		MaxExtendCount:    s.policy.MaxExtendCount,
+		MaxTotalExtendSec: s.policy.MaxTotalExtendSec,
+	}
+	if err := s.cache.InitAuctionState(ctx, item.ID, state); err != nil {
+		result = "error"
+		return nil, err
+	}
+	if err := s.cache.ScheduleAuctionEnd(ctx, item.ID, endTimeUnixMS); err != nil {
+		result = "error"
+		return nil, err
+	}
+	result = "rebuilt"
+	return hot, nil
 }
 
 func bidEndTimeUnixMS(result *itemcache.BidLuaResult) int64 {

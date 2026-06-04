@@ -3,6 +3,7 @@ package dao
 import (
 	"github.com/zet-plane/live-auction-backend/internal/app/item/dto"
 	"github.com/zet-plane/live-auction-backend/internal/app/item/model"
+	"gorm.io/gorm/clause"
 )
 
 func (s *GormStore) AutoMigrateBidLog() error {
@@ -11,6 +12,13 @@ func (s *GormStore) AutoMigrateBidLog() error {
 
 func (s *GormStore) CreateBidLog(log *model.BidLog) error {
 	return s.db.Create(log).Error
+}
+
+func (s *GormStore) CreateBidLogs(logs []*model.BidLog) error {
+	if len(logs) == 0 {
+		return nil
+	}
+	return s.db.Clauses(clause.OnConflict{DoNothing: true}).Create(&logs).Error
 }
 
 func (s *GormStore) ListBidRanking(itemID string, limit int) ([]dto.BidderPrice, error) {

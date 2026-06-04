@@ -34,6 +34,8 @@ type Service struct {
 	bidBroadcastMu           sync.Mutex
 	pendingBidBroadcasts     map[string]*pendingBidBroadcast
 	bidBroadcastDelay        time.Duration
+	bidLogWorkerMu           sync.Mutex
+	bidLogWorkerCancel       context.CancelFunc
 }
 
 type DepositChecker interface {
@@ -50,6 +52,34 @@ func NewService(store dao.Store, policy dto.AuctionPolicy, cache itemcache.Cache
 		depositSvc:        depositSvc,
 		broadcaster:       broadcaster,
 		bidBroadcastDelay: 100 * time.Millisecond,
+	}
+}
+
+func (s *Service) StartBidLogWorker(ctx context.Context, reader bidLogStreamReader) {
+	if reader == nil {
+		return
+	}
+	workerCtx, cancel := context.WithCancel(ctx)
+	worker := newBidLogWorker(s.store, reader, bidLogWorkerConfig{})
+
+	s.bidLogWorkerMu.Lock()
+	if s.bidLogWorkerCancel != nil {
+		s.bidLogWorkerCancel()
+	}
+	s.bidLogWorkerCancel = cancel
+	s.bidLogWorkerMu.Unlock()
+
+	go worker.Run(workerCtx)
+}
+
+func (s *Service) StopBidLogWorker() {
+	s.bidLogWorkerMu.Lock()
+	cancel := s.bidLogWorkerCancel
+	s.bidLogWorkerCancel = nil
+	s.bidLogWorkerMu.Unlock()
+
+	if cancel != nil {
+		cancel()
 	}
 }
 
@@ -257,8 +287,16 @@ func (s *Service) StartItem(ctx context.Context, current *usermodel.User, itemID
 	}
 	if s.cache != nil {
 		state := itemcache.AuctionState{
-			CurrentPrice: rule.StartPrice,
-			EndTime:      rule.EndTime,
+			RoomID:            item.RoomID,
+			CurrentPrice:      rule.StartPrice,
+			EndTime:           rule.EndTime,
+			BidIncrement:      rule.BidIncrement,
+			PriceCap:          rule.PriceCap,
+			DepositAmount:     rule.DepositAmount,
+			ExtendTriggerSec:  s.policy.ExtendTriggerSec,
+			AutoExtendSec:     s.policy.AutoExtendSec,
+			MaxExtendCount:    s.policy.MaxExtendCount,
+			MaxTotalExtendSec: s.policy.MaxTotalExtendSec,
 		}
 		if err := s.cache.InitAuctionState(ctx, item.ID, state); err != nil {
 			return err
@@ -666,7 +704,6 @@ func (s *Service) persistSettledAuction(ctx context.Context, result itemcache.Se
 					DealPrice: result.DealPrice,
 				},
 			}
-			_ = s.broadcaster.Fanout(wsevent.RoomTopic(item.RoomID), orderEvt)
 			_ = s.broadcaster.Unicast(wsevent.UserAddr(result.LeaderUserID), orderEvt)
 		}
 	}
