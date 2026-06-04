@@ -315,25 +315,26 @@ func TestPublishStartAndCancelValidateOwnerAndStatus(t *testing.T) {
 }
 
 type fakeCache struct {
-	states            map[string]*itemcache.AuctionState
-	stateTTLs         map[string]time.Duration
-	ending            map[string]int64
-	queues            map[string][]string
-	roomCurrent       map[string]string
-	ranking           map[string]map[string]int64
-	bidderNames       map[string]map[string]string
-	listActiveCalls   atomic.Int32
-	listActiveStarted chan struct{}
-	listActiveRelease chan struct{}
-	bidLuaCode        int
-	bidLuaErr         error
-	bidLuaResult      *itemcache.BidLuaResult
-	lastBidLuaArgs    *itemcache.BidLuaArgs
-	initCalls         int
-	hotFieldUpdates   int
-	initErr           error
-	getStateErr       error
-	deleteErr         error
+	states             map[string]*itemcache.AuctionState
+	stateTTLs          map[string]time.Duration
+	ending             map[string]int64
+	queues             map[string][]string
+	roomCurrent        map[string]string
+	ranking            map[string]map[string]int64
+	bidderNames        map[string]map[string]string
+	listActiveCalls    atomic.Int32
+	listActiveStarted  chan struct{}
+	listActiveRelease  chan struct{}
+	bidLuaCode         int
+	bidLuaErr          error
+	bidLuaResult       *itemcache.BidLuaResult
+	lastBidLuaArgs     *itemcache.BidLuaArgs
+	initCalls          int
+	hotFieldUpdates    int
+	endBeforeHotUpdate bool
+	initErr            error
+	getStateErr        error
+	deleteErr          error
 }
 
 func newFakeCache() *fakeCache {
@@ -416,11 +417,9 @@ func (c *fakeCache) UpdateAuctionHotFields(_ context.Context, itemID string, hot
 		state = &itemcache.AuctionState{}
 		c.states[itemID] = state
 	}
-	status := hot.Status
-	if status == "" {
-		status = "ongoing"
+	if c.endBeforeHotUpdate {
+		state.Status = "ended"
 	}
-	state.Status = status
 	state.RoomID = hot.RoomID
 	state.BidIncrement = hot.BidIncrement
 	state.PriceCap = hot.PriceCap

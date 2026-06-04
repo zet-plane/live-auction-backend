@@ -228,8 +228,52 @@ func TestPlaceBidRebuildsHotStateWhenStatusMissing(t *testing.T) {
 	if fc.hotFieldUpdates != 1 {
 		t.Fatalf("expected one hot field update for missing-status repair, got %d", fc.hotFieldUpdates)
 	}
-	if fc.states[itemID].Status != "ongoing" {
-		t.Fatalf("expected rebuilt hot state status ongoing, got %q", fc.states[itemID].Status)
+	if fc.states[itemID].Status != "" {
+		t.Fatalf("expected missing status to remain untouched during hot repair, got %q", fc.states[itemID].Status)
+	}
+}
+
+func TestPlaceBidHotFieldRepairDoesNotOverwriteEndedStatus(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	svc := NewService(store, testPolicy, fc, nil, nil, nil)
+	endTime := time.Now().Add(5 * time.Minute)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 1000, 100, 0, endTime)
+
+	store.findItemWithRuleCalls = 0
+	fc.initCalls = 0
+	fc.hotFieldUpdates = 0
+	fc.endBeforeHotUpdate = true
+	fc.states[itemID] = &itemcache.AuctionState{
+		Status:        "ongoing",
+		RoomID:        "room_1",
+		CurrentPrice:  1000,
+		DealPrice:     1000,
+		EndTime:       endTime,
+		EndTimeUnixMS: endTime.UnixMilli(),
+		BidIncrement:  100,
+	}
+
+	_, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
+		Price:          1100,
+		IdempotencyKey: "ended_during_hot_repair",
+		UserName:       "Alice",
+	})
+	var ce *errorx.CodeError
+	if !errors.As(err, &ce) || ce.Code != 40002 {
+		t.Fatalf("expected auction ended after concurrent status change, got %v", err)
+	}
+	if store.findItemWithRuleCalls != 1 {
+		t.Fatalf("expected one FindItemWithRule call for repair, got %d", store.findItemWithRuleCalls)
+	}
+	if fc.initCalls != 0 {
+		t.Fatalf("expected no full InitAuctionState call for hot repair, got %d", fc.initCalls)
+	}
+	if fc.hotFieldUpdates != 1 {
+		t.Fatalf("expected one hot field update, got %d", fc.hotFieldUpdates)
+	}
+	if fc.states[itemID].Status != "ended" {
+		t.Fatalf("expected repair to preserve ended status, got %q", fc.states[itemID].Status)
 	}
 }
 

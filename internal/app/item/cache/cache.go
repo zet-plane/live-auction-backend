@@ -278,12 +278,7 @@ func (c *RedisCache) GetAuctionHotConfig(ctx context.Context, itemID string) (*A
 }
 
 func (c *RedisCache) UpdateAuctionHotFields(ctx context.Context, itemID string, hot AuctionHotConfig) error {
-	status := hot.Status
-	if status == "" {
-		status = "ongoing"
-	}
 	return c.client.HSet(ctx, itemStateKey(itemID),
-		"status", status,
 		"room_id", hot.RoomID,
 		"bid_increment", hot.BidIncrement,
 		"price_cap", hot.PriceCap,
