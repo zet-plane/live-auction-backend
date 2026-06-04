@@ -24,6 +24,7 @@ var ErrEmptyDatabase = errors.New("database pointer is nil")
 
 type Item struct {
 	Name string
+	svc  *service.Service
 
 	app.UnimplementedModule
 }
@@ -59,8 +60,12 @@ func (i *Item) Load(engine *kernel.Engine) error {
 		policy.MaxTotalExtendSec = engine.Config.Auction.MaxTotalExtendSec
 	}
 
-	c := cache.NewRedisCache(engine.Cache)
+	var c cache.Cache
+	if engine.Cache != nil {
+		c = cache.NewRedisCache(engine.Cache)
+	}
 	svc := service.NewService(store, policy, c, orderapp.Svc, depositapp.Svc, wsapp.Hub)
+	i.svc = svc
 	handler.Init(svc)
 	router.RegisterRoutes(engine.Flame)
 	if setter, ok := wsapp.Hub.(interface{ SetSnapshotProvider(wshub.SnapshotProvider) }); ok {
@@ -69,10 +74,20 @@ func (i *Item) Load(engine *kernel.Engine) error {
 	engine.Cron.AddFunc("@every 1s", observability.WrapCron("item.settle_due_auctions", svc.SettleDueAuctions))
 	engine.Cron.AddFunc("@every 1s", observability.WrapCron("item.broadcast_time_sync", svc.BroadcastTimeSync))
 	engine.Cron.AddFunc("@every 1m", observability.WrapCron("item.end_expired_auctions_fallback", svc.EndExpiredAuctions))
+	if engine.Cache != nil {
+		reader := cache.NewBidLogStreamReader(engine.Cache, "backend-1")
+		if err := reader.EnsureGroup(engine.Context); err != nil {
+			return err
+		}
+		svc.StartBidLogWorker(engine.Context, reader)
+	}
 	return nil
 }
 
 func (i *Item) Stop(wg *sync.WaitGroup, _ context.Context) error {
 	defer wg.Done()
+	if i.svc != nil {
+		i.svc.StopBidLogWorker()
+	}
 	return nil
 }

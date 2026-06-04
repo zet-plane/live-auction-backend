@@ -87,6 +87,11 @@ type BidLogEvent struct {
 	CreatedAtUnixMS int64
 }
 
+type BidLogStreamMessage struct {
+	ID    string
+	Event BidLogEvent
+}
+
 type SettlementResult struct {
 	ItemID        string
 	LeaderUserID  string

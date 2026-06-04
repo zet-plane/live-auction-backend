@@ -34,6 +34,8 @@ type Service struct {
 	bidBroadcastMu           sync.Mutex
 	pendingBidBroadcasts     map[string]*pendingBidBroadcast
 	bidBroadcastDelay        time.Duration
+	bidLogWorkerMu           sync.Mutex
+	bidLogWorkerCancel       context.CancelFunc
 }
 
 type DepositChecker interface {
@@ -50,6 +52,34 @@ func NewService(store dao.Store, policy dto.AuctionPolicy, cache itemcache.Cache
 		depositSvc:        depositSvc,
 		broadcaster:       broadcaster,
 		bidBroadcastDelay: 100 * time.Millisecond,
+	}
+}
+
+func (s *Service) StartBidLogWorker(ctx context.Context, reader bidLogStreamReader) {
+	if reader == nil {
+		return
+	}
+	workerCtx, cancel := context.WithCancel(ctx)
+	worker := newBidLogWorker(s.store, reader, bidLogWorkerConfig{})
+
+	s.bidLogWorkerMu.Lock()
+	if s.bidLogWorkerCancel != nil {
+		s.bidLogWorkerCancel()
+	}
+	s.bidLogWorkerCancel = cancel
+	s.bidLogWorkerMu.Unlock()
+
+	go worker.Run(workerCtx)
+}
+
+func (s *Service) StopBidLogWorker() {
+	s.bidLogWorkerMu.Lock()
+	cancel := s.bidLogWorkerCancel
+	s.bidLogWorkerCancel = nil
+	s.bidLogWorkerMu.Unlock()
+
+	if cancel != nil {
+		cancel()
 	}
 }
 
