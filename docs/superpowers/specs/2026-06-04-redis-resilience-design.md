@@ -1,54 +1,54 @@
-# Redis Resilience and Degradation Design
+# Redis 容灾与降级设计
 
-## Context
+## 背景
 
-The backend currently depends on Redis for several different kinds of behavior:
+当前后端在多个层面依赖 Redis：
 
-- Process startup verifies Redis with `Ping`; failure aborts the server.
-- Ongoing auction state, bid ranking, idempotency, anti-sniping extension, and settlement coordination are stored in Redis and updated by Lua.
-- Room online count, room item queue, current item pointers, and WebSocket presence use Redis as a real-time state layer.
-- WebSocket tickets are issued and consumed through Redis.
-- Some read paths already tolerate Redis errors by falling back to MySQL or default values.
+- 服务启动时会 `Ping` Redis；失败会导致 server 直接退出。
+- 进行中的竞拍状态、出价排名、幂等、反狙击延时和结算协调都存放在 Redis，并通过 Lua 原子更新。
+- 房间在线人数、房间商品队列、当前拍品指针和 WebSocket 在线状态使用 Redis 作为实时状态层。
+- WebSocket ticket 通过 Redis 签发和消费。
+- 部分读取路径已经能容忍 Redis 错误，并回退到 MySQL 或安全默认值。
 
-These dependencies should not share one failure policy. Redis failure must not make the whole service look dead, but high-value auction writes must not proceed when the real-time authority is unknown.
+这些依赖不应该共用同一种失败策略。Redis 故障不能让整个服务看起来已经死亡，但高价值竞拍写入也不能在实时权威状态不明时继续执行。
 
-## Goals
+## 目标
 
-1. Keep the backend process alive when Redis is unavailable.
-2. Preserve non-auction or read-only functionality during Redis incidents where MySQL is healthy.
-3. Protect auction correctness by pausing risky writes when Redis state is unavailable, lagging, or recovering.
-4. Expose Redis and auction degradation clearly through health endpoints and metrics.
-5. Support Redis HA failover while still handling failover windows, replication lag, and split-brain risk.
+1. Redis 不可用时，后端进程仍然保持存活。
+2. MySQL 健康时，Redis 故障期间仍保留非竞拍或只读功能。
+3. 当 Redis 状态不可用、落后或正在恢复时，暂停高风险竞拍写入，保护竞拍正确性。
+4. 通过健康检查端点和指标清晰暴露 Redis 与竞拍降级状态。
+5. 支持 Redis HA 故障切换，同时显式处理切换窗口、复制延迟和脑裂风险。
 
-## Non-Goals
+## 非目标
 
-- Do not replace Redis Lua as the real-time auction serialization point.
-- Do not implement MySQL as a full real-time bidding fallback in the first version.
-- Do not introduce Redis Cluster in the first version.
-- Do not guarantee zero data loss from Redis async replication alone.
-- Do not redesign the whole deployment topology in this design.
+- 不替换 Redis Lua 作为实时竞拍串行化点。
+- 第一版不把 MySQL 做成完整的实时出价 fallback。
+- 第一版不引入 Redis Cluster。
+- 不假设 Redis 异步复制可以保证零数据丢失。
+- 本设计不重构完整部署拓扑。
 
-## Design Summary
+## 设计概要
 
-Use three layers together:
+方案由三层组成：
 
-1. Redis HA reduces outage duration.
-2. An application Redis circuit breaker prevents request threads from repeatedly blocking on Redis timeouts.
-3. Health endpoints expose process, traffic readiness, and degraded component status separately.
+1. Redis HA 用来缩短故障时间。
+2. 应用内 Redis 熔断器避免请求线程反复阻塞在 Redis timeout 上。
+3. 健康检查端点分别暴露进程存活、流量就绪和组件降级状态。
 
-During Redis failure or recovery:
+Redis 故障或恢复期间：
 
-- The process remains alive.
-- MySQL-backed read and order paths continue where possible.
-- Auction writes such as `PlaceBid`, `StartItem`, and primary settlement fail fast or pause.
-- Redis-backed read enrichment falls back to MySQL or safe defaults.
-- Recovery does not reopen auction writes until Redis is reachable and active auction state is validated or rebuilt.
+- 后端进程保持存活。
+- MySQL 支撑的读取和订单路径尽量继续可用。
+- `PlaceBid`、`StartItem` 和主结算路径等竞拍写入快速失败或暂停。
+- Redis 支撑的读取富化回退到 MySQL 或安全默认值。
+- Redis 可达后，不会立刻恢复竞拍写入；必须先校验或重建活跃竞拍状态。
 
-## Redis HA Strategy
+## Redis HA 策略
 
-The recommended first HA shape is Redis Sentinel or a managed Redis HA endpoint, not Redis Cluster.
+第一阶段推荐使用 Redis Sentinel 或托管 Redis HA endpoint，而不是 Redis Cluster。
 
-Redis Cluster is not the first choice because current auction Lua touches multiple keys in one operation:
+当前竞拍 Lua 一次操作会触达多个 key：
 
 - `auction:item:{item_id}:state`
 - `auction:item:{item_id}:ranking`
@@ -56,9 +56,9 @@ Redis Cluster is not the first choice because current auction Lua touches multip
 - `auction:item:{item_id}:idempotency:{key}`
 - `auction:ending`
 
-Redis Cluster would require careful hash-tag design so all Lua keys for one operation land in the same hash slot. That is a scaling design, not the minimum HA design.
+Redis Cluster 要求同一个 Lua 操作里的 key 落在同一个 hash slot。要做到这一点，需要重新设计 hash tag 和 key 结构。Cluster 更偏向容量扩展设计，不是当前最小 HA 方案。
 
-For Sentinel or managed HA, configure Redis to reduce split-brain write windows:
+对于 Sentinel 或托管 HA，应配置 Redis 来减少脑裂写入窗口：
 
 ```text
 replica-read-only yes
@@ -66,82 +66,82 @@ min-replicas-to-write 1
 min-replicas-max-lag 1
 ```
 
-These settings do not make Redis strongly consistent. They limit how long an isolated old primary can continue accepting writes when it cannot see healthy replicas.
+这些配置不会把 Redis 变成强一致系统。它们的作用是：当旧 primary 看不到健康 replica 时，限制它继续接受写入的时间窗口。
 
-For high-value auction write acknowledgement, successful bid handling should eventually require:
+对于高价值竞拍写入，最终应把“出价成功”的确认条件定义为：
 
 ```text
-Redis Lua success
-replica acknowledgement through WAIT or managed HA equivalent
-durable bid log handoff
-HTTP success response
+Redis Lua 成功
+通过 WAIT 或托管 HA 等价能力获得 replica 确认
+完成持久出价日志交接
+返回 HTTP success
 ```
 
-The first implementation may keep synchronous MySQL `bid_logs` writes. If the bid hot path later moves to Redis Stream, the stream append becomes the durable handoff and must also be covered by the same failover safety policy.
+第一版可以继续使用当前同步写 MySQL `bid_logs` 的方式。如果后续出价热路径改成 Redis Stream 异步落库，那么 Stream append 就是持久交接点，也必须纳入同样的 failover 安全策略。
 
-## Redis Circuit Breaker
+## Redis 熔断器
 
-Add a process-local Redis circuit breaker in `internal/core/cache` or a nearby runtime package. It tracks Redis availability for business decisions.
+新增一个进程内 Redis 熔断器，位置可以在 `internal/core/cache` 或邻近 runtime 包中。它跟踪 Redis 可用性，供业务代码做决策。
 
-States:
+状态：
 
-| State | Meaning | Business behavior |
+| 状态 | 含义 | 业务行为 |
 | --- | --- | --- |
-| `healthy` | Redis commands are succeeding | Normal operation |
-| `suspect` | Recent errors or slow commands detected | Continue limited attempts; record metrics |
-| `unavailable` | Consecutive failures crossed threshold | Auction writes fail fast; reads use fallback |
-| `recovering` | Redis ping succeeds after outage | Keep auction writes paused; validate/rebuild state |
+| `healthy` | Redis 命令正常成功 | 正常执行 |
+| `suspect` | 最近出现错误或慢命令 | 允许有限尝试并记录指标 |
+| `unavailable` | 连续失败超过阈值 | 竞拍写入快速失败；读取走 fallback |
+| `recovering` | 故障后 Redis ping 成功 | 竞拍写入继续暂停；校验或重建状态 |
 
-Transitions:
+状态流转：
 
 ```text
 healthy -> suspect
-  on Redis command timeout/error or high latency.
+  Redis 命令 timeout、报错或高延迟。
 
 suspect -> healthy
-  after a short success window.
+  短时间成功窗口通过。
 
 suspect -> unavailable
-  after N consecutive failures or a connection pool timeout burst.
+  连续 N 次失败，或出现连接池 timeout 风暴。
 
 unavailable -> recovering
-  when background probe can ping Redis and a simple read/write probe succeeds.
+  后台探测能 ping 通 Redis，并且简单读写探测成功。
 
 recovering -> healthy
-  after active auction state validation or rebuild succeeds.
+  活跃竞拍状态校验或重建成功。
 
 recovering -> unavailable
-  if probes or validation fail.
+  探测或校验失败。
 ```
 
-Suggested initial thresholds:
+建议第一版阈值：
 
 ```text
-failure_threshold: 3 consecutive failures
-success_threshold: 3 consecutive successful probes
+failure_threshold: 连续 3 次失败
+success_threshold: 连续 3 次探测成功
 probe_interval: 1s
-redis_command_timeout: 100-300ms for auction writes
+redis_command_timeout: 竞拍写入 100-300ms
 recovering_min_duration: 2s
 ```
 
-The exact values should be config-driven later. The first version can hard-code conservative defaults with tests.
+精确值后续应配置化。第一版可以先使用保守硬编码，并配套单元测试。
 
-## Business Policies By Path
+## 业务路径策略
 
-| Path | Redis unavailable | Redis recovering | Notes |
+| 路径 | Redis unavailable | Redis recovering | 说明 |
 | --- | --- | --- | --- |
-| `PlaceBid` | Fail fast with retryable auction-unavailable error | Fail fast | Do not accept bids while real-time state may be stale |
-| `StartItem` | Reject with retryable auction-unavailable error | Reject | Starting an auction requires Redis state and ending schedule |
-| `SettleDueAuctions` | Pause Redis-driven settlement | Validate before resuming | MySQL fallback compensation may continue cautiously |
-| `EndExpiredAuctions` fallback | May scan MySQL but must not double-settle | May repair only safe cases | Avoid conflicting with Redis state during recovery |
-| `GetRanking` | MySQL `bid_logs` fallback | MySQL fallback | Existing behavior mostly matches |
-| `GetItem` / item lists | MySQL DTO fallback | MySQL or rebuilt Redis state | Real-time fields may be stale or absent |
-| `Room` queries | Return `online_count=0`, empty queue, or MySQL current item | Same | Room Redis is enrichment, not durable truth |
-| WebSocket ticket | Optional local-memory ticket fallback | Optional local-memory ticket fallback | Single-instance only unless routed consistently |
-| WebSocket fanout | Continue local hub delivery | Continue | Presence sync soft-fails |
-| Login, users, orders, payments | Continue if MySQL is healthy | Continue | Must not be blocked by Redis circuit state unless they use Redis directly |
+| `PlaceBid` | 返回可重试的 auction-unavailable 错误 | 快速失败 | 实时状态可能过期时不接受出价 |
+| `StartItem` | 返回可重试的 auction-unavailable 错误 | 拒绝 | 开拍需要 Redis 状态和结束调度 |
+| `SettleDueAuctions` | 暂停 Redis 驱动结算 | 校验后再恢复 | MySQL fallback 补偿可谨慎继续 |
+| `EndExpiredAuctions` fallback | 可扫描 MySQL，但不能重复结算 | 只修复安全场景 | 避免和恢复中的 Redis 状态冲突 |
+| `GetRanking` | fallback 到 MySQL `bid_logs` | MySQL fallback | 当前行为基本已匹配 |
+| `GetItem` / item lists | MySQL DTO fallback | MySQL 或重建后的 Redis 状态 | 实时字段可能缺失或过期 |
+| `Room` queries | 返回 `online_count=0`、空队列或 MySQL current item | 同左 | 房间 Redis 是富化状态，不是持久事实 |
+| WebSocket ticket | 第一版不做本机内存 fallback，返回不可用/降级 | 同左 | 本机 ticket 需要单实例或 sticky routing |
+| WebSocket fanout | 本机 hub 继续发送 | 继续 | presence sync 软失败 |
+| 登录、用户、订单、支付 | MySQL 健康则继续 | 继续 | 除非路径直接依赖 Redis，否则不受 Redis 熔断影响 |
 
-Auction write errors should use a stable service-boundary error, for example:
+竞拍写入错误应使用稳定的 service-boundary error，例如：
 
 ```text
 HTTP 503
@@ -149,23 +149,23 @@ code: 50301
 message: auction service temporarily unavailable
 ```
 
-This distinguishes retryable infrastructure degradation from invalid bids.
+这样可以区分可重试的基础设施降级和业务无效出价。
 
-## Health Endpoints
+## 健康检查端点
 
-Split current health behavior into three endpoint concepts.
+将当前健康检查拆成三个概念。
 
 ### `/livez`
 
-Liveness only answers whether the process is alive enough that Kubernetes should not restart it.
+Liveness 只回答：进程是否还活着，Kubernetes 是否不应该重启它。
 
-Rules:
+规则：
 
-- Does not ping Redis.
-- Does not fail because Redis is unavailable.
-- May fail only for unrecoverable process-level conditions.
+- 不 ping Redis。
+- 不因为 Redis 不可用而失败。
+- 只在不可恢复的进程级异常时失败。
 
-Typical response:
+典型响应：
 
 ```json
 {"status":"ok"}
@@ -173,23 +173,23 @@ Typical response:
 
 ### `/readyz`
 
-Readiness answers whether this instance should receive general traffic.
+Readiness 回答：这个实例是否适合接收常规流量。
 
-First-version policy for the current monolith:
+当前单体服务的第一版策略：
 
-- MySQL unavailable: return `503`.
-- Redis unavailable: return `200` as long as MySQL is healthy.
-- Redis degradation details are exposed through `/health`, not through `/readyz`.
+- MySQL 不可用：返回 `503`。
+- Redis 不可用：只要 MySQL 健康，仍返回 `200`。
+- Redis 降级细节通过 `/health` 暴露，不通过 `/readyz` 摘掉整个实例。
 
-Reason: in the current monolith, Redis failure should not remove all traffic if MySQL-backed browsing, order, and account features can still work.
+原因：当前是单体服务，Redis 故障不应该移除所有流量；商品浏览、订单、账号等 MySQL 支撑路径仍应可用。
 
-If the auction write path is later split into its own service, that service's `/readyz` may return `503` when Redis circuit state is not `healthy`.
+如果后续把竞拍写路径拆成独立服务，那么该服务的 `/readyz` 可以在 Redis 熔断状态不是 `healthy` 时返回 `503`。
 
 ### `/health`
 
-Detailed component health for monitoring and humans.
+详细组件健康状态，供监控和人工排障使用。
 
-Example degraded response:
+降级响应示例：
 
 ```json
 {
@@ -205,49 +205,49 @@ Example degraded response:
 }
 ```
 
-This endpoint can return `503` when degraded if monitoring expects non-2xx alerts. Kubernetes liveness should not use it.
+如果监控系统需要用非 2xx 触发告警，`/health` 可以在 degraded 时返回 `503`。Kubernetes liveness 不应使用这个端点。
 
-## Recovery And State Validation
+## 恢复与状态校验
 
-Redis becoming reachable is not enough to resume auction writes. The app must enter `recovering` first.
+Redis 重新可达并不代表可以立刻恢复竞拍写入。应用必须先进入 `recovering`。
 
-Recovery steps:
+恢复步骤：
 
-1. Ping Redis and run a short read/write probe.
-2. List active ongoing items from MySQL.
-3. For each ongoing item:
-   - Check `auction:item:{id}:state`.
-   - If state exists and is internally consistent, keep it.
-   - If missing or stale, rebuild from MySQL item/rule plus durable `bid_logs`.
-   - Rebuild ranking and bidder names from `bid_logs` when needed.
-   - Rebuild `auction:ending` score from the authoritative end time.
-4. Check room current item pointers from MySQL and repair Redis room state opportunistically.
-5. Mark circuit `healthy` only after validation completes.
+1. Ping Redis，并执行短读写探测。
+2. 从 MySQL 列出所有 ongoing item。
+3. 对每个 ongoing item：
+   - 检查 `auction:item:{id}:state`。
+   - 如果状态存在且内部一致，保留。
+   - 如果缺失或过期，用 MySQL item/rule 加持久 `bid_logs` 重建。
+   - 必要时从 `bid_logs` 重建 ranking 和 bidder names。
+   - 从权威 end time 重建 `auction:ending` score。
+4. 从 MySQL 校验 room current item，并机会性修复 Redis room state。
+5. 只有全部校验完成后，熔断状态才能标记为 `healthy`。
 
-If validation fails for any active auction, keep auction writes unavailable and expose `recovering` or `unavailable` in `/health`.
+如果任一活跃竞拍校验失败，竞拍写入继续不可用，并在 `/health` 中暴露 `recovering` 或 `unavailable`。
 
-## Rebuild Rules
+## 重建规则
 
-All Redis keys must be classified as either rebuildable or authoritative.
+所有 Redis key 都必须被分类为“可重建投影”或“权威状态”。
 
-| Key | Classification | Rebuild source |
+| Key | 分类 | 重建来源 |
 | --- | --- | --- |
-| `auction:item:{id}:state` | Real-time working state; must be rebuildable after incident | MySQL item/rule + `bid_logs` |
-| `auction:item:{id}:ranking` | Rebuildable projection | `bid_logs` grouped by user max price |
-| `auction:item:{id}:bidder_names` | Rebuildable projection | users table joined from `bid_logs` |
-| `auction:item:{id}:idempotency:{key}` | Fast-path guard; needs durable backup | future unique index on `bid_logs` |
-| `auction:ending` | Rebuildable scheduler index | ongoing item state end times |
-| `auction:room:{id}:state` | Rebuildable room projection | MySQL room + local presence default |
-| `auction:room:{id}:item_queue` | Rebuildable projection | published items in room |
-| `ws:ticket:{ticket}` | Ephemeral | no rebuild; local fallback may exist |
+| `auction:item:{id}:state` | 实时工作状态；故障后必须可重建 | MySQL item/rule + `bid_logs` |
+| `auction:item:{id}:ranking` | 可重建投影 | 按用户聚合 `bid_logs` 最高价 |
+| `auction:item:{id}:bidder_names` | 可重建投影 | 从 `bid_logs` join users 表 |
+| `auction:item:{id}:idempotency:{key}` | 快路径保护；需要持久备份 | 未来 `bid_logs` 唯一索引 |
+| `auction:ending` | 可重建调度索引 | ongoing item state end time |
+| `auction:room:{id}:state` | 可重建房间投影 | MySQL room + 本机 presence 默认值 |
+| `auction:room:{id}:item_queue` | 可重建投影 | 房间内 published items |
+| `ws:ticket:{ticket}` | 临时状态 | 不重建；未来可选本机 fallback |
 
-The important durable record is `bid_logs`. Redis state can be reconstructed only if every acknowledged bid has durable evidence.
+关键持久记录是 `bid_logs`。只有每个已承认成功的出价都有持久证据，Redis 状态才可以可靠重建。
 
-## Idempotency Hardening
+## 幂等加固
 
-Redis idempotency keys are not enough across failover because the key can be lost if the replica was behind.
+Redis 幂等 key 不足以覆盖 failover 场景，因为 replica 落后时 key 可能丢失。
 
-Add a durable idempotency field in `bid_logs` in a later implementation:
+后续应在 `bid_logs` 增加持久幂等字段：
 
 ```text
 item_id
@@ -255,77 +255,77 @@ user_id
 idempotency_key
 ```
 
-Add a unique index over these fields. Redis remains the fast-path idempotency check; MySQL prevents duplicate acknowledged bids after failover or retries.
+并在这些字段上建立唯一索引。Redis 继续作为快路径幂等检查；MySQL 负责防止 failover 或重试后的重复已确认出价。
 
-## Observability
+## 可观测性
 
-Add metrics and logs around degradation:
+新增围绕降级的指标和日志：
 
-- Redis command error count by command or operation.
-- Redis command latency P95/P99.
-- Redis circuit state gauge.
-- Redis circuit transition counter.
-- Auction write rejected count by reason: `redis_unavailable`, `redis_recovering`.
-- Redis state rebuild count and duration.
-- Redis/MySQL auction state mismatch count.
-- Settlement paused count.
-- Bid log persistence failure count.
-- Health endpoint component status.
+- Redis command error count，按 command 或 operation 维度。
+- Redis command latency P95/P99。
+- Redis circuit state gauge。
+- Redis circuit transition counter。
+- Auction write rejected count，reason 包含 `redis_unavailable`、`redis_recovering`。
+- Redis state rebuild count 和 duration。
+- Redis/MySQL auction state mismatch count。
+- Settlement paused count。
+- Bid log persistence failure count。
+- Health endpoint component status。
 
-Logs must include operation, item ID or room ID where safe, and circuit state. Do not log secrets, Redis credentials, or tokens.
+日志应包含 operation、可安全记录的 item ID 或 room ID、circuit state。不要记录 secret、Redis credential 或 token。
 
-## Deployment Notes
+## 部署说明
 
-Current k3s production shape is single-node. Running multiple Redis pods on the same node can protect against Redis process or pod failure, but not node, disk, or network failure.
+当前 k3s 生产形态是单节点。在同一节点上运行多个 Redis pod，只能防 Redis 进程或 pod 故障，不能防节点、磁盘或网络故障。
 
-Production-grade Redis HA requires either:
+生产级 Redis HA 需要二选一：
 
-- managed Redis HA outside the single-node k3s cluster, or
-- a multi-node Kubernetes cluster with Redis Sentinel/HA scheduled across nodes.
+- 使用单节点 k3s 集群外部的托管 Redis HA。
+- 使用多节点 Kubernetes 集群，并将 Redis Sentinel/HA 跨节点调度。
 
-The application-level degradation design is still required in both cases because failover windows and replication lag still exist.
+无论采用哪种方式，应用级降级仍然必需，因为 failover 窗口和复制延迟仍然存在。
 
-## Testing Strategy
+## 测试策略
 
-Unit tests:
+单元测试：
 
-- Circuit transitions from healthy to suspect to unavailable after consecutive failures.
-- Circuit transitions from unavailable to recovering to healthy only after validation success.
-- `PlaceBid` fails fast when circuit is unavailable or recovering.
-- Ranking and item reads fall back when cache returns errors.
-- Room service handles nil/noop cache or cache errors without panics.
-- Health handlers return correct live, ready, and degraded responses.
+- 熔断器在连续失败后从 `healthy` 进入 `suspect` 再进入 `unavailable`。
+- 熔断器只有在校验成功后才能从 `unavailable` 经 `recovering` 回到 `healthy`。
+- `PlaceBid` 在 circuit 为 `unavailable` 或 `recovering` 时快速失败。
+- Ranking 和 item 读取在 cache 返回错误时 fallback。
+- Room service 面对 nil/noop cache 或 cache error 时不 panic。
+- Health handler 返回正确的 live、ready 和 degraded 响应。
 
-Integration or agent tests:
+集成测试或 agent 测试：
 
-- Start backend with Redis unavailable; process stays alive and `/livez` succeeds.
-- Redis unavailable: non-auction read path succeeds; `PlaceBid` returns retryable 503.
-- Redis returns after outage: circuit enters recovering, rebuilds active auction state, then resumes writes.
-- Redis state missing but MySQL `bid_logs` present: rebuild ranking and state.
-- Simulated Redis failover during active bidding does not produce two winners or duplicate orders.
+- Redis 不可用时启动后端；进程保持存活，`/livez` 成功。
+- Redis 不可用时，非竞拍读取路径成功；`PlaceBid` 返回可重试 503。
+- Redis 恢复后，circuit 进入 `recovering`，重建活跃竞拍状态，然后恢复写入。
+- Redis state 缺失但 MySQL `bid_logs` 存在时，能重建 ranking 和 state。
+- 模拟活跃出价中的 Redis failover，不产生两个 winner 或重复 order。
 
-Failure drills:
+故障演练：
 
-- Kill Redis primary pod.
-- Isolate Redis primary network path.
-- Restart backend while Redis is unavailable.
-- Induce Redis timeout latency without killing Redis.
-- Fail MySQL bid log write after Redis Lua success and confirm no HTTP success is acknowledged.
+- kill Redis primary pod。
+- 隔离 Redis primary 网络路径。
+- Redis 不可用时重启后端。
+- 注入 Redis 延迟 timeout，但不 kill Redis。
+- Redis Lua 成功后让 MySQL bid log 写失败，确认 HTTP 不返回 success。
 
-## Rollout Plan
+## 发布计划
 
-1. Add `/livez`, `/readyz`, and richer `/health`.
-2. Change startup so Redis connection failure does not abort the whole server.
-3. Introduce Redis circuit breaker and expose it through health.
-4. Wire `PlaceBid`, `StartItem`, and settlement to fail fast or pause when circuit is not healthy.
-5. Add fallback/noop cache behavior for room and WebSocket presence paths.
-6. Add recovery validation and Redis state rebuild for active auctions.
-7. Add Redis HA deployment or managed Redis endpoint.
-8. Add durable bid idempotency hardening.
+1. 新增 `/livez`、`/readyz` 和更详细的 `/health`。
+2. 修改启动流程，使 Redis 连接失败不再导致整个 server 退出。
+3. 引入 Redis 熔断器，并通过 health 暴露状态。
+4. 将 `PlaceBid`、`StartItem` 和 settlement 接入熔断状态，非 healthy 时快速失败或暂停。
+5. 为 room 和 WebSocket presence 路径增加 fallback/noop cache 行为。
+6. 增加活跃竞拍恢复校验与 Redis state 重建。
+7. 接入 Redis HA 部署或托管 Redis endpoint。
+8. 增加持久 bid idempotency 加固。
 
-## Decisions
+## 已定决策
 
-1. `/readyz` remains `200` when Redis is unavailable if MySQL is healthy. `/health` reports the Redis and auction-write degradation.
-2. WebSocket ticket fallback is not part of the first implementation. Redis-unavailable ticket issuance and WS upgrade should report degraded/unavailable instead of silently switching to process-local tickets. Process-local tickets can be added later only with sticky routing or single-instance deployment.
-3. Production should prefer managed Redis HA when available. Self-hosted Sentinel is acceptable for cost control or learning, but must be tested with failover drills.
-4. Acknowledged bid success should eventually require `PlaceBidLua` success, replica acknowledgement through `WAIT` or equivalent, and durable bid log persistence before HTTP success. In the current synchronous bid-log design, the order is Lua, replica acknowledgement, MySQL `bid_logs`, then HTTP success.
+1. 当前单体服务中，Redis 不可用但 MySQL 健康时，`/readyz` 仍返回 `200`。`/health` 报告 Redis 和 auction-write 降级。
+2. WebSocket ticket fallback 不进入第一版。Redis 不可用时，ticket 签发和 WS upgrade 应返回降级/不可用，而不是静默切换到进程本地 ticket。只有单实例或 sticky routing 可接受时，后续才考虑进程本地 ticket。
+3. 生产优先选择托管 Redis HA。自建 Sentinel 可用于成本控制或学习，但必须配套 failover 演练。
+4. 已确认的出价成功最终应要求 `PlaceBidLua` 成功、通过 `WAIT` 或等价机制获得 replica 确认、并完成持久 bid log 写入后，再返回 HTTP success。在当前同步 bid-log 设计中，顺序是 Lua、replica acknowledgement、MySQL `bid_logs`、HTTP success。
