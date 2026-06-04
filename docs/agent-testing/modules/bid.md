@@ -4,7 +4,7 @@
 
 出价模块负责用户对进行中的拍品提交出价、维护实时竞拍状态、记录出价日志，并提供单个拍品的出价排行榜查询。
 
-当前实现上，出价功能不是独立 Go module，而是扩展在 `internal/app/item/` 内的 bid 子能力。核心实体和状态包括 `AuctionItem`、`AuctionRule`、Redis `AuctionState`、Redis 排行榜、幂等 key 和 MySQL `BidLog`。
+当前实现上，出价功能不是独立 Go module，而是扩展在 `internal/app/item/` 内的 bid 子能力。核心实体和状态包括 `AuctionItem`、`AuctionRule`、Redis `AuctionState`、Redis 排行榜、幂等 key、Redis `auction:bid_log:stream` 和 MySQL `BidLog`。
 
 ## 2. 代码定位索引
 
@@ -13,13 +13,15 @@
 | Router | `internal/app/item/router/item.go` | 注册出价和排行榜 HTTP 路由 |
 | Handler | `internal/app/item/handler/bid.go` | 请求绑定、鉴权用户注入、统一响应 |
 | DTO | `internal/app/item/dto/bid.go` | 出价请求、出价结果、排行榜响应字段 |
-| Service | `internal/app/item/service/bid_service.go` | 出价主流程、Lua 返回码处理、BidLog 写入、一口价成交、排行榜降级 |
-| DAO Store 接口 | `internal/app/item/dao/item.go` | `AutoMigrateBidLog`、`CreateBidLog`、`ListBidRanking` 契约 |
-| DAO 实现 | `internal/app/item/dao/bid_log.go` | BidLog 迁移、写入、MySQL 聚合排行榜 |
+| Service | `internal/app/item/service/bid_service.go` | 出价主流程、hot state 读取 / 修复、Lua 返回码处理、一口价成交、排行榜降级 |
+| BidLog Worker | `internal/app/item/service/bid_log_worker.go` | 消费 Redis Stream 并异步批量持久化 `bid_logs` |
+| DAO Store 接口 | `internal/app/item/dao/item.go` | `AutoMigrateBidLog`、`CreateBidLog`、`CreateBidLogs`、`ListBidRanking` 契约 |
+| DAO 实现 | `internal/app/item/dao/bid_log.go` | BidLog 迁移、单条写入、幂等批量写入、MySQL 聚合排行榜 |
 | Model | `internal/app/item/model/bid_log.go` | `BidLog` GORM 模型 |
 | 关联 Model | `internal/app/item/model/item.go` | `AuctionItem`、`AuctionRule`、状态常量、成交字段 |
-| Cache 接口和状态 | `internal/app/item/cache/cache.go` | `AuctionState`、`BidLuaArgs`、`BidLuaResult`、Cache 接口 |
-| Redis Lua / Ranking | `internal/app/item/cache/bid.go` | 原子出价脚本、排行榜 key、幂等 key |
+| Cache 接口和状态 | `internal/app/item/cache/cache.go` | `AuctionState`、`AuctionHotConfig`、`BidLuaArgs`、`BidLuaResult`、`BidLogEvent`、Cache 接口 |
+| Redis Lua / Ranking | `internal/app/item/cache/bid.go` | 原子出价脚本、排行榜 key、幂等 key、成功出价 `XADD` |
+| Redis Stream | `internal/app/item/cache/bid_log_stream.go` | BidLog stream append/read/pending/ack/dead-letter helpers |
 | 商品状态前置 | `internal/app/item/service/service.go` | `StartItem` 初始化 `auction:item:{item_id}:state` |
 | 单元测试建议位置 | `internal/app/item/service/bid_service_test.go` | 使用 fake store、fake cache、固定身份和可控时间 |
 | Agent 测试契约 | `docs/agent-testing/modules/bid.md` | 接口契约、集成、场景、并发和一致性测试边界 |
@@ -32,8 +34,8 @@ Agent 可以测试：
 
 - HTTP 接口：`POST /api/v1/items/{item_id}/bids`、`GET /api/v1/items/{item_id}/ranking`。
 - Service 方法：`PlaceBid`、`GetRanking`。
-- DAO / Model：`BidLog` 写入、按用户最高价聚合排行榜、用户昵称 join。
-- Redis key：`auction:item:{item_id}:state`、`auction:item:{item_id}:ranking`、`auction:item:{item_id}:bidder_names`、`auction:item:{item_id}:idempotency:{key}`。
+- DAO / Model：`BidLog` 单条写入、幂等批量写入、按用户最高价聚合排行榜、用户昵称 join。
+- Redis key：`auction:item:{item_id}:state`、`auction:item:{item_id}:ranking`、`auction:item:{item_id}:bidder_names`、`auction:item:{item_id}:idempotency:{key}`、`auction:bid_log:stream`、`auction:bid_log:dead`。
 - Redis Lua 原子行为：结束时间、价格、加价幅度、排行榜、参与人数、自动延时、幂等、一口价。
 - 与出价直接相关的 `AuctionItem.Status`、`WinnerID`、`DealPrice` 状态一致性。
 - 高并发出价、重复请求、排行榜读取降级和状态一致性。
@@ -64,10 +66,10 @@ Agent 不应在本模块内测试：
 | --- | --- | --- |
 | 本地单元测试 | 使用 fake store、fake cache、固定用户、固定时间；禁止直连 MySQL、Redis、HTTP 服务或 WebSocket | 稳定验证 Service 规则、Lua 返回码映射、幂等分支、排行榜分页和错误传播 |
 | Agent 接口契约测试 | 使用真实 handler 或本地服务；使用真实测试数据库和真实测试 Redis；通过用户模块获取测试 token | 验证真实请求绑定、鉴权、统一响应、错误码和 Redis/MySQL 副作用 |
-| Agent 模块集成测试 | 使用真实 GORM store、真实测试数据库和真实测试 Redis | 验证 BidLog 落库、Redis Lua 原子更新、MySQL 排行榜 fallback |
+| Agent 模块集成测试 | 使用真实 GORM store、真实测试数据库和真实测试 Redis | 验证 Redis Lua 原子更新、成功出价 stream handoff、worker 异步落库、MySQL 排行榜 fallback |
 | 场景测试 | 使用真实接口链路、真实测试数据库和真实测试 Redis；按 `modules/item.md` 准备 ongoing 拍品 | 验证用户可见出价和排名链路 |
 | Agent 并发测试 | 使用真实 HTTP 并发请求、真实测试 Redis Lua 和真实测试数据库 | fake 无法证明原子出价、幂等和最高价最终一致性 |
-| 状态一致性测试 | 对比 HTTP 响应、MySQL `auction_items` / `bid_logs`、Redis state/ranking/names/idempotency key | 验证外部可见结果和内部状态一致 |
+| 状态一致性测试 | 对比 HTTP 响应、MySQL `auction_items` / `bid_logs`、Redis state/ranking/names/idempotency key/stream pending | 验证外部可见结果和内部最终一致 |
 | WebSocket 测试 | 出价模块内部分适用；完整连接测试转到 `modules/ws.md` | 使用 fake broadcaster 验证 `bid_success`、`user_outbid`、`auction_extended`、`auction_ended`、`order_created` 的事件生产和 payload |
 
 ## 6. 全局测试数据准备
@@ -105,6 +107,8 @@ Agent 不应在本模块内测试：
   - `auction:item:{item_id}:ranking`
   - `auction:item:{item_id}:bidder_names`
   - `auction:item:{item_id}:idempotency:{idempotency_key}`
+  - `auction:bid_log:stream` 中本批次 item 对应消息或 pending/ack 状态
+  - `auction:bid_log:dead` 中本批次 item 对应死信消息
 
 ## 7. 业务规则
 
@@ -115,9 +119,9 @@ Agent 不应在本模块内测试：
 - 出价前 Service 会按 trim 后的 `item_id` 查询 `AuctionItem` 和 `AuctionRule`。
 - 只有 `AuctionItem.Status == ongoing` 才允许出价；其他状态返回 `ErrInvalidRequest`。
 - 出价模块依赖 Redis cache；Service cache 为 nil 时返回 `ErrInternal`。
-- 每次非幂等成功出价会生成 `bid_` 前缀的 bid ID，并传入 Redis Lua。
+- 每次非幂等成功出价会生成 `bid_` 前缀的 bid ID，并与 item、room、user、price、created_at 一起传入 Redis Lua。
 - Redis Lua 使用 `auction:item:{item_id}:idempotency:{key}` 做幂等控制，TTL 固定为 86400 秒。
-- 幂等 key 已存在时，Lua 返回 code 1；Service 返回 Redis 当前状态，不再写 `BidLog`。
+- 幂等 key 已存在时，Lua 返回 code 1；Service 返回 Redis 当前状态，不再追加新的 bid-log stream 事件。
 - Redis state 不存在或当前时间大于等于结束时间时，Lua 返回 code 2；Service 转为 `40002 auction has ended`。
 - 出价 `price <= current_price` 时，Lua 返回 code 3；Service 转为 `40003 price too low`。
 - `(price - current_price) % bid_increment != 0` 时，Lua 返回 code 4；Service 转为 `40004 invalid bid increment`。
@@ -128,7 +132,9 @@ Agent 不应在本模块内测试：
 - 新用户首次进入 ranking 时，`participant_count` 加 1。
 - 每次非幂等成功出价都会让 `bid_count` 加 1。
 - 触发自动延时时，条件是剩余时间 `<= ExtendTriggerSec`、`ExtendCount < MaxExtendCount`、且 `TotalExtendedSec + AutoExtendSec <= MaxTotalExtendSec`。
-- 非幂等成功出价会同步写入 MySQL `bid_logs`，字段包括 `bid_id`、`item_id`、`room_id`、`user_id`、`price`。
+- 非幂等成功出价在 Redis Lua 内原子追加 `auction:bid_log:stream`，字段包括 `bid_id`、`item_id`、`room_id`、`user_id`、`price`、`created_at_unix_ms`；HTTP hot path 不同步写 MySQL `bid_logs`。
+- BidLog worker 消费 `auction:bid_log:stream`，批量调用 `CreateBidLogs` 持久化 MySQL `bid_logs`，成功后 `XACK`；持久化或 ACK 失败时消息应保持可重试。
+- `CreateBidLogs` 使用主键冲突忽略，重复消费同一 stream 消息不得产生重复 BidLog。
 - 当 `price_cap > 0` 且出价 `>= price_cap` 时，Service 将商品状态更新为 `ended`，并写入 `WinnerID` 和 `DealPrice`。
 - 一口价成交后 HTTP 出价响应的 `status` 为 `ended`，普通成功出价响应的 `status` 为 `ongoing`。
 - 排行榜优先读 Redis；Redis 返回错误或无数据时，Service 降级到 MySQL `bid_logs` 聚合查询。
@@ -137,7 +143,7 @@ Agent 不应在本模块内测试：
 - 排名 `rank` 从当前分页 offset + 1 开始。
 - 当商品规则 `deposit_amount > 0` 时，`PlaceBid` 会在 Redis Lua 执行前调用 `depositSvc.HasPaidDeposit`；未缴纳足额 `paid` 保证金时返回 `40005 deposit required`。
 - 当商品规则 `deposit_amount <= 0` 时，`PlaceBid` 不调用保证金检查。
-- 当前实现写 BidLog 是同步写入；代码内 TODO 标注高并发场景后续改为异步落库。
+- 当前实现写 BidLog 是 Redis Stream backed 异步落库；接口成功只证明 Redis 原子状态和 stream handoff 成功，MySQL `bid_logs` 需要按最终一致窗口验证。
 - 当前实现会通过 broadcaster 广播或单播 `bid_success`、`user_outbid`、`auction_extended`、`auction_ended`、`order_created`；未看到独立 `ranking_updated` 事件。
 
 根据当前代码结构推断：
@@ -146,7 +152,7 @@ Agent 不应在本模块内测试：
 - 当前出价接口已校验保证金；仍未看到报名、风控、黑名单、出价用户不能是拍品所属商家等限制。
 - 当前出价接口没有校验一口价时 `DealPrice` 是否使用 Redis 返回的 `CurrentPrice`；代码使用请求中的 `input.Price`。
 - 当前排行榜公开可见，不返回敏感 token 或联系方式。
-- Redis 成功但 MySQL `BidLog` 写入失败时，Redis 状态可能已经变化；当前代码没有回滚 Redis。
+- Redis Lua 成功但 worker 尚未消费或 MySQL 暂时失败时，Redis 状态和 stream 事件已经存在；当前语义是异步最终一致，不回滚 Redis。
 - 一口价 Redis 成功、BidLog 写入成功但 MySQL 商品 ended 更新失败时，Redis 状态和 BidLog 可能已经变化；当前代码没有回滚 Redis 或 BidLog。
 
 需确认内容集中在“需用户确认的问题”章节。
@@ -156,9 +162,9 @@ Agent 不应在本模块内测试：
 - 非 ongoing 拍品不能产生有效出价。
 - 已超过 Redis `end_time_unix` 的竞拍不能产生有效出价。
 - 每个成功出价的 `bid_id` 必须唯一。
-- 同一个幂等 key 重试不能重复写入 `BidLog`，也不能重复增加 `bid_count`。
+- 同一个幂等 key 重试不能重复追加 bid-log stream 事件、不能重复写入 `BidLog`，也不能重复增加 `bid_count`。
 - 当前价不能被较低出价或相同价格覆盖。
-- 不符合 `bid_increment` 的出价不能改变 Redis state、ranking 或 MySQL `bid_logs`。
+- 不符合 `bid_increment` 的出价不能改变 Redis state/ranking，不能追加 bid-log stream 事件，也不能新增 MySQL `bid_logs`。
 - Redis ranking 中每个用户只能保留该用户最高出价。
 - 排行榜第一名必须与最高有效出价用户一致。
 - `current_price`、`leader_user_id`、Redis ranking 最高分和最新成功出价响应必须一致。
@@ -186,9 +192,9 @@ Agent 不应在本模块内测试：
 | 字段 | 来源 | 规则 | 涉及接口 / 方法 | 测试点 ID |
 | --- | --- | --- | --- | --- |
 | `item_id` | path/db/Redis | 去除首尾空格后查询；必须存在；商品必须为 `ongoing` | `POST /api/v1/items/{item_id}/bids`、`PlaceBid` | `BID.FIELD.item_id.*` |
-| `price` | request/Redis/db/response | 必填；HTTP binding `min=1`；必须大于当前价；必须符合 `bid_increment`；触发 `price_cap` 可结束竞拍 | 出价接口、Redis Lua、BidLog | `BID.FIELD.price.*` |
+| `price` | request/Redis/stream/db/response | 必填；HTTP binding `min=1`；必须大于当前价；必须符合 `bid_increment`；触发 `price_cap` 可结束竞拍 | 出价接口、Redis Lua、BidLog stream、BidLog | `BID.FIELD.price.*` |
 | `idempotency_key` | request/Redis | 必填；HTTP 长度 1 到 128；Redis STRING，TTL 86400 秒；重复使用时幂等返回 | 出价接口、Redis Lua | `BID.FIELD.idempotency_key.*` |
-| `bid_id` | Redis/db/response | 非幂等成功出价生成 `bid_` 前缀；幂等重试返回原 bid ID | 出价响应、BidLog | `BID.FIELD.bid_id.*` |
+| `bid_id` | Redis/stream/db/response | 非幂等成功出价生成 `bid_` 前缀；幂等重试返回原 bid ID | 出价响应、BidLog stream、BidLog | `BID.FIELD.bid_id.*` |
 | `current_price` | Redis/response | 成功后等于本次有效出价；幂等返回 Redis 当前价格 | 出价响应、Redis state | `BID.FIELD.current_price.*` |
 | `leader_user_id` | Redis/response | 成功后等于当前出价用户 ID；幂等返回 Redis 当前领先用户 | 出价响应、Redis state | `BID.FIELD.leader_user_id.*` |
 | `end_time` | Redis/response | 由 Redis `end_time_unix` 转换；自动延时时应增加 | 出价响应、Redis state | `BID.FIELD.end_time.*` |
@@ -198,11 +204,12 @@ Agent 不应在本模块内测试：
 
 | 字段 | 来源 | 规则 | 涉及接口 / 方法 | 测试点 ID |
 | --- | --- | --- | --- | --- |
-| `BidLog.ID` | db | 主键；应等于成功出价 bid ID | `CreateBidLog`、MySQL fallback | `BID.FIELD.bid_log_id.*` |
-| `BidLog.ItemID` | db | 必须等于出价拍品 ID | `CreateBidLog`、`ListBidRanking` | `BID.FIELD.bid_log_item_id.*` |
-| `BidLog.RoomID` | db | 必须等于拍品 `RoomID` | `CreateBidLog` | `BID.FIELD.bid_log_room_id.*` |
-| `BidLog.UserID` | db | 必须等于当前出价用户 ID | `CreateBidLog`、排行榜 | `BID.FIELD.bid_log_user_id.*` |
-| `BidLog.Price` | db | 必须等于请求出价价格 | `CreateBidLog`、排行榜 | `BID.FIELD.bid_log_price.*` |
+| `BidLog.ID` | stream/db | 主键；应等于成功出价 bid ID；重复消费时冲突忽略 | Redis Stream、`CreateBidLogs`、MySQL fallback | `BID.FIELD.bid_log_id.*` |
+| `BidLog.ItemID` | stream/db | 必须等于出价拍品 ID | Redis Stream、`CreateBidLogs`、`ListBidRanking` | `BID.FIELD.bid_log_item_id.*` |
+| `BidLog.RoomID` | stream/db | 必须等于拍品 `RoomID` | Redis Stream、`CreateBidLogs` | `BID.FIELD.bid_log_room_id.*` |
+| `BidLog.UserID` | stream/db | 必须等于当前出价用户 ID | Redis Stream、`CreateBidLogs`、排行榜 | `BID.FIELD.bid_log_user_id.*` |
+| `BidLog.Price` | stream/db | 必须等于请求出价价格 | Redis Stream、`CreateBidLogs`、排行榜 | `BID.FIELD.bid_log_price.*` |
+| `BidLog.CreatedAt` | stream/db | 来自 stream `created_at_unix_ms`，应接近出价发生时间 | Redis Stream、`CreateBidLogs` | `BID.FIELD.bid_log_created_at.*` |
 | `ranking.rank` | response | 从 1 开始；分页时从 offset + 1 开始 | 排行榜接口 | `BID.FIELD.rank.*` |
 | `ranking.user_id` | Redis/db/response | Redis 来源为 ZSET member；MySQL 来源为 BidLog user_id | 排行榜接口 | `BID.FIELD.ranking_user_id.*` |
 | `ranking.user_name` | Redis/db/response | Redis 来源为 bidder_names；MySQL fallback 来源为 users.name；可能为空 | 排行榜接口 | `BID.FIELD.ranking_user_name.*` |
@@ -223,7 +230,7 @@ Agent 不应在本模块内测试：
 | Handler | `internal/app/item/handler/bid.go` | `PlaceBid` 绑定 JSON、读取当前用户、调用 Service |
 | DTO | `internal/app/item/dto/bid.go` | `PlaceBidRequest`、`PlaceBidInput`、`PlaceBidResult` |
 | Service | `internal/app/item/service/bid_service.go` | `PlaceBid` |
-| DAO | `internal/app/item/dao/item.go`、`internal/app/item/dao/bid_log.go` | 查 item/rule、写 BidLog、更新一口价成交状态 |
+| DAO | `internal/app/item/dao/item.go`、`internal/app/item/dao/bid_log.go` | 查 item/rule、worker 批量写 BidLog、更新一口价成交状态 |
 | Model | `internal/app/item/model/item.go`、`internal/app/item/model/bid_log.go` | `AuctionItem`、`AuctionRule`、`BidLog` |
 | Cache | `internal/app/item/cache/cache.go`、`internal/app/item/cache/bid.go` | Redis Lua 原子出价 |
 | Deposit | `internal/app/deposit/service/service.go` | `HasPaidDeposit` 校验足额 `paid` 保证金 |
@@ -231,7 +238,7 @@ Agent 不应在本模块内测试：
 
 #### 接口职责
 
-提交当前登录用户对指定 ongoing 拍品的一次出价。接口负责校验请求字段、按规则校验保证金、调用 Redis Lua 原子更新实时竞拍状态、同步写 BidLog，并在达到一口价时结束拍品。
+提交当前登录用户对指定 ongoing 拍品的一次出价。接口负责校验请求字段、按规则校验保证金、调用 Redis Lua 原子更新实时竞拍状态并追加 bid-log stream 事件；后台 worker 负责异步持久化 BidLog。达到一口价时，接口还负责结束拍品。
 
 接口不负责创建拍品、开始竞拍、支付保证金、订单生成或 WebSocket 连接管理；当前 Service 会通过 broadcaster 生产出价相关实时事件。
 
@@ -247,7 +254,7 @@ Agent 不应在本模块内测试：
 
 | 字段 | 规则 | 证据 |
 | --- | --- | --- |
-| `bid_id` | 成功时非空；幂等重试返回原 bid ID | HTTP 响应 + Redis idempotency key + BidLog |
+| `bid_id` | 成功时非空；幂等重试返回原 bid ID | HTTP 响应 + Redis idempotency key + BidLog stream / 最终 BidLog |
 | `current_price` | 等于 Redis 当前价 | HTTP 响应 + Redis state |
 | `leader_user_id` | 等于当前领先用户 ID | HTTP 响应 + Redis state |
 | `end_time` | 等于 Redis `end_time_unix` 转换结果 | HTTP 响应 + Redis state |
@@ -268,8 +275,9 @@ Agent 不应在本模块内测试：
 - 用户首次合法出价成功，HTTP 返回 `bid_id`、当前价、领先用户、结束时间和 `ongoing` 状态。
 - Redis state 更新为新当前价和领先用户，`bid_count` 加 1。
 - Redis ranking 记录该用户最高价，bidder_names 记录用户名称。
-- MySQL `bid_logs` 新增一条记录，字段与请求和拍品一致。
-- 同一个 `idempotency_key` 重试返回成功，但不新增 BidLog，不重复增加 `bid_count`。
+- Redis Lua 在同一次原子执行内追加一条 bid-log stream 事件，字段与请求和拍品一致。
+- BidLog worker 消费 stream 后，MySQL `bid_logs` 最终新增一条记录，字段与 stream 事件一致。
+- 同一个 `idempotency_key` 重试返回成功，但不追加新的 stream 事件，不新增 BidLog，不重复增加 `bid_count`。
 - 接近结束时间出价时，满足策略则自动延时并更新 Redis 延时字段。
 - 出价达到或超过 `price_cap` 时，HTTP 返回 `ended`，MySQL 商品状态为 `ended`，`WinnerID` 和 `DealPrice` 正确。
 
@@ -279,22 +287,22 @@ Agent 不应在本模块内测试：
 - 请求体缺字段或字段非法时返回 binding 参数错误。
 - `item_id` 不存在时返回 not found。
 - 商品状态不是 `ongoing` 时返回 invalid request。
-- 商品要求保证金但当前用户没有足额 `paid` 保证金时返回 `40005 deposit required`，且不得改变 Redis state/ranking 或写入 `BidLog`。
+- 商品要求保证金但当前用户没有足额 `paid` 保证金时返回 `40005 deposit required`，且不得改变 Redis state/ranking、不得追加 stream 事件或写入 `BidLog`。
 - Redis state 不存在或竞拍已结束时返回 `40002 auction has ended`。
 - 出价小于等于当前价时返回 `40003 price too low`。
 - 出价不符合加价幅度时返回 `40004 invalid bid increment`。
-- Redis Lua 执行失败时接口失败；需验证不会写 BidLog。
-- MySQL BidLog 写入失败时接口失败；需记录 Redis 可能已经更新的已知风险。
+- Redis Lua 执行失败时接口失败；需验证不会追加 stream 事件或写 BidLog。
+- BidLog worker 持久化失败不会回滚已成功的 HTTP 出价；需通过 pending / 未 ACK 消息和 worker 日志记录最终一致风险。
 - 一口价 MySQL 状态更新失败时接口失败；需记录 BidLog 和 Redis 可能已更新的已知风险。
 
 #### 状态和一致性验证
 
 - HTTP 响应与 Redis state 一致。
 - Redis ranking 第一名与 Redis `leader_user_id` 一致。
-- 非幂等成功出价必须有对应 BidLog。
-- 幂等重试不能产生第二条相同业务含义 BidLog。
-- 一口价成交时 HTTP、MySQL `auction_items`、Redis state 和 BidLog 必须一致。
-- 失败请求不得改变当前价、领先用户、排行榜或 BidLog，除非是已知的 Redis 成功后 MySQL 失败风险场景；该场景必须在报告中单独标注。
+- 非幂等成功出价必须有对应 stream 事件，并在 worker 成功后有对应 BidLog。
+- 幂等重试不能产生第二条相同业务含义 stream 事件或 BidLog。
+- 一口价成交时 HTTP、MySQL `auction_items`、Redis state、stream 事件和最终 BidLog 必须一致。
+- 失败请求不得改变当前价、领先用户、排行榜、stream 或 BidLog。
 
 #### 适用测试方法
 
@@ -395,7 +403,7 @@ Agent 不应在本模块内测试：
 | 层级 | 位置 | 说明 |
 | --- | --- | --- |
 | Service | `internal/app/item/service/bid_service.go` | `PlaceBid` |
-| Store 接口 | `internal/app/item/dao/item.go` | `FindItemWithRule`、`CreateBidLog`、`UpdateItemWithRule` |
+| Store 接口 | `internal/app/item/dao/item.go` | `FindItemWithRule`、`CreateBidLog`、`CreateBidLogs`、`UpdateItemWithRule` |
 | Cache 接口 | `internal/app/item/cache/cache.go` | `PlaceBidLua` |
 | Model | `internal/app/item/model/item.go`、`internal/app/item/model/bid_log.go` | 商品、规则、出价日志 |
 
@@ -408,21 +416,21 @@ Agent 不应在本模块内测试：
 
 #### 单元测试点
 
-- 成功出价写 BidLog。
+- 成功出价通过 Redis Lua 追加 bid-log stream 事件，不同步写 BidLog。
 - 非 ongoing 商品拒绝。
 - cache nil 返回内部错误。
-- Lua code 1 幂等返回且不写 BidLog。
+- Lua code 1 幂等返回且不追加 stream、不写 BidLog。
 - Lua code 2/3/4 映射为对应业务错误码。
 - 未知 Lua code 返回内部错误。
-- Redis 错误、BidLog 写入错误、商品更新错误的错误传播。
+- Redis 错误、商品更新错误的错误传播。
 - 一口价更新 `Status/WinnerID/DealPrice`。
 - 自动延时参数正确传入 fake cache。
 
 #### 集成测试点
 
-- 真实 Redis Lua 一次请求内完成校验和状态更新。
-- 真实 MySQL BidLog 与 Redis 成功结果一致。
-- Redis 成功但 MySQL 失败的风险场景需要故障注入或在报告中记录未覆盖。
+- 真实 Redis Lua 一次请求内完成校验、状态更新和 stream handoff。
+- BidLog worker 消费 stream 后，真实 MySQL BidLog 与 Redis 成功结果最终一致。
+- worker 持久化失败、ACK 失败和 pending 重试场景需要故障注入或在报告中记录未覆盖。
 
 ### `Service.GetRanking`
 
@@ -449,7 +457,7 @@ Agent 不应在本模块内测试：
 - `bidder_names` 缺失时 user_name 为空但不影响排序。
 - MySQL `MAX(price)` 聚合和 users.name join 正确。
 
-### `GormStore.CreateBidLog` / `GormStore.ListBidRanking`
+### `GormStore.CreateBidLog` / `GormStore.CreateBidLogs` / `GormStore.ListBidRanking`
 
 #### 代码定位
 
@@ -466,6 +474,7 @@ Agent 不应在本模块内测试：
 #### 集成测试点
 
 - `CreateBidLog` 持久化所有字段。
+- `CreateBidLogs` 批量持久化所有字段，重复 ID 时幂等忽略。
 - `ListBidRanking` 只返回指定 `item_id`。
 - 同一用户多条 BidLog 只取最高价。
 - 多用户按最高价倒序。
@@ -478,14 +487,16 @@ Agent 不应在本模块内测试：
 
 #### 业务价值
 
-这是出价模块最小可用链路，证明用户可见响应、Redis 实时状态和 MySQL 出价日志一致。
+这是出价模块最小可用链路，证明用户可见响应、Redis 实时状态、Redis Stream handoff 和 MySQL 出价日志最终一致。
 
 #### 关联接口 / 方法
 
 - `POST /api/v1/items/{item_id}/bids`
 - `Service.PlaceBid`
 - `Cache.PlaceBidLua`
-- `GormStore.CreateBidLog`
+- Redis `auction:bid_log:stream`
+- `bidLogWorker`
+- `GormStore.CreateBidLogs`
 
 #### 代码定位
 
@@ -515,12 +526,14 @@ Agent 不应在本模块内测试：
 - HTTP 成功，返回 `status=ongoing`。
 - Redis `current_price` 和 `leader_user_id` 更新为用户 A。
 - Redis ranking 中用户 A 分数等于出价。
-- MySQL `bid_logs` 有且仅有本次出价记录。
+- Redis `auction:bid_log:stream` 已追加本次出价事件。
+- BidLog worker 消费后，MySQL `bid_logs` 有且仅有本次出价记录。
 
 #### 证据要求
 
 - HTTP 响应。
 - Redis HGETALL state、ZREVRANGE ranking、HGET bidder_names。
+- Redis stream 中本次 item/bid 的消息或消费后 pending/ack 证据。
 - MySQL `bid_logs` 查询。
 - 清理结果。
 
@@ -581,13 +594,15 @@ Agent 不应在本模块内测试：
 
 - 两次 HTTP 都成功。
 - 第二次返回原 bid ID 或 Redis 当前状态。
-- MySQL BidLog 只新增一条。
+- Redis stream 不重复追加第二条相同业务含义消息。
+- MySQL BidLog 最终只新增一条。
 - Redis `bid_count` 只增加一次。
 - Redis idempotency key TTL 存在。
 
 #### 证据要求
 
 - 两次 HTTP 响应。
+- Redis stream 事件数量。
 - MySQL BidLog count。
 - Redis state 和 idempotency key TTL。
 
@@ -613,14 +628,15 @@ Agent 不应在本模块内测试：
 - MySQL `auction_items.status=ended`。
 - `WinnerID` 为用户 B。
 - `DealPrice` 为本次请求价格。
-- BidLog 记录本次出价。
+- Redis stream 记录本次出价，worker 最终写入 BidLog。
 - 后续出价应失败，成交结果不变。
 
 #### 证据要求
 
 - HTTP 响应。
-- MySQL `auction_items` 和 `bid_logs`。
+- MySQL `auction_items` 和最终 `bid_logs`。
 - Redis state/ranking。
+- Redis stream 事件。
 - 后续失败出价响应。
 
 ### 场景 5：自动延时
@@ -657,11 +673,11 @@ Agent 不应在本模块内测试：
 
 | 当前状态 | 动作 | 目标状态 | 允许 | 涉及接口 / 方法 | 一致性证据 |
 | --- | --- | --- | --- | --- | --- |
-| `draft` | 出价 | `draft` | 否 | `POST /bids` | HTTP 错误 + DB 状态不变 + 无 BidLog + Redis 不变 |
-| `published` | 出价 | `published` | 否 | `POST /bids` | HTTP 错误 + DB 状态不变 + 无 BidLog + Redis 不变 |
-| `ongoing` | 合法普通出价 | `ongoing` | 是 | `POST /bids` | HTTP + Redis state/ranking + BidLog |
-| `ongoing` | 一口价出价 | `ended` | 是 | `POST /bids` | HTTP + AuctionItem + BidLog + Redis ranking |
-| `ongoing` | 幂等重试 | `ongoing` 或 `ended` | 是 | `POST /bids` | HTTP + BidLog 不重复 + Redis 计数不重复 |
+| `draft` | 出价 | `draft` | 否 | `POST /bids` | HTTP 错误 + DB 状态不变 + 无 stream/BidLog + Redis 不变 |
+| `published` | 出价 | `published` | 否 | `POST /bids` | HTTP 错误 + DB 状态不变 + 无 stream/BidLog + Redis 不变 |
+| `ongoing` | 合法普通出价 | `ongoing` | 是 | `POST /bids` | HTTP + Redis state/ranking + stream + 最终 BidLog |
+| `ongoing` | 一口价出价 | `ended` | 是 | `POST /bids` | HTTP + AuctionItem + stream + 最终 BidLog + Redis ranking |
+| `ongoing` | 幂等重试 | `ongoing` 或 `ended` | 是 | `POST /bids` | HTTP + stream/BidLog 不重复 + Redis 计数不重复 |
 | `ongoing` | 低价/同价出价 | `ongoing` | 否 | `POST /bids` | HTTP `40003` + Redis/DB 不变 |
 | `ongoing` | 非法加价幅度 | `ongoing` | 否 | `POST /bids` | HTTP `40004` + Redis/DB 不变 |
 | `ended` | 出价 | `ended` | 否 | `POST /bids` | HTTP 错误 + 成交结果不变 |
@@ -671,9 +687,9 @@ Agent 不应在本模块内测试：
 
 | 并发目标 | 是否需要 | 真实依赖 | 通过标准 |
 | --- | --- | --- | --- |
-| 多用户不同价格同时出价 | 是 | 真实 HTTP、Redis Lua、MySQL | 最高合法价格获胜；ranking、state、BidLog 一致 |
+| 多用户不同价格同时出价 | 是 | 真实 HTTP、Redis Lua、MySQL | 最高合法价格获胜；ranking、state、stream、最终 BidLog 一致 |
 | 多用户相同价格同时出价 | 是 | 真实 HTTP、Redis Lua、MySQL | 至多一个请求成功改变当前价；失败请求错误可解释 |
-| 同一用户同一幂等 key 重复提交 | 是 | 真实 HTTP、Redis Lua、MySQL | 只产生一个 bid_id 和一条 BidLog |
+| 同一用户同一幂等 key 重复提交 | 是 | 真实 HTTP、Redis Lua、MySQL | 只产生一个 bid_id、一条 stream 事件和一条 BidLog |
 | 同一用户不同幂等 key 快速递增出价 | 是 | 真实 HTTP、Redis Lua、MySQL | 价格单调上升，ranking 保留最高价 |
 | 一口价和普通出价同时发生 | 是 | 真实 HTTP、Redis Lua、MySQL | 成交结果唯一，成交后后续出价无效 |
 | 排行榜查询与并发出价同时发生 | 是 | 真实 HTTP、Redis | 查询结果可以是某一时刻快照，但不得乱序或返回重复 rank |
@@ -684,7 +700,7 @@ Agent 不应在本模块内测试：
 - 每个请求的 `price`、`idempotency_key`、HTTP 状态、错误码或 bid ID。
 - 最终 Redis state。
 - 最终 Redis ranking。
-- 最终 MySQL BidLog 数量和最高价聚合。
+- 最终 Redis stream 事件数量、MySQL BidLog 数量和最高价聚合。
 - 如触发一口价，最终 MySQL 商品成交状态。
 
 ## 15. WebSocket / Redis / 外部副作用测试
@@ -695,7 +711,9 @@ Agent 不应在本模块内测试：
 | `auction:item:{item_id}:ranking` ZSET | 非幂等成功出价 | ZREVRANGE WITHSCORES 验证排序和最高价 | 删除本批次 ranking |
 | `auction:item:{item_id}:bidder_names` HASH | 非幂等成功出价 | HGET/HMGET 验证用户昵称 | 删除本批次 bidder_names |
 | `auction:item:{item_id}:idempotency:{key}` STRING | 非幂等成功出价 | GET 验证 bid ID，TTL 验证过期时间存在 | 删除本批次 idempotency keys |
-| MySQL `bid_logs` | 非幂等成功出价 | SQL 查询字段和数量 | 删除或标记本批次测试数据 |
+| `auction:bid_log:stream` STREAM | 非幂等成功出价 | XREAD/XRANGE 或 consumer pending/ack 证据验证事件字段；消费成功后可验证无本批次 pending | 不能清空 stream；只记录本批次消息 ID，必要时 XACK 本批次 pending |
+| `auction:bid_log:dead` STREAM | stream 消息解析失败 | 查询本批次 item 是否出现死信 | 不能清空 stream；只记录本批次消息 ID |
+| MySQL `bid_logs` | BidLog worker 消费 stream | SQL 查询字段和数量 | 删除或标记本批次测试数据 |
 | WebSocket 出价成功消息 | 非幂等成功出价 | fake broadcaster 或真实 WebSocket 客户端验证 `bid_success` payload；完整连接转到 `modules/ws.md` | 关闭本批次连接 |
 | WebSocket 被超越消息 | 后一用户超越前一领先用户 | fake broadcaster 或真实 WebSocket 客户端验证 `user_outbid` 只发给前领先用户 | 关闭本批次连接 |
 | WebSocket 自动延时消息 | 临近结束出价触发自动延时 | fake broadcaster 或真实 WebSocket 客户端验证 `auction_extended` payload 与 Redis end_time 一致 | 关闭本批次连接 |
@@ -708,12 +726,12 @@ Agent 不应在本模块内测试：
 | --- | --- | --- | --- |
 | 低价或同价覆盖当前价 | 单元 / 接口 / 并发 | `price <= current_price` | HTTP `40003` + Redis/DB 不变 |
 | 加价幅度校验失效 | 单元 / 接口 | `(price-current_price) % bid_increment != 0` | HTTP `40004` + Redis/DB 不变 |
-| 幂等重试重复写日志 | 单元 / 接口 / 并发 | 同 `idempotency_key` 重复请求 | BidLog count 不变 + bid_count 不变 |
+| 幂等重试重复写日志 | 单元 / 接口 / 并发 | 同 `idempotency_key` 重复请求 | stream 事件数不变 + BidLog count 不变 + bid_count 不变 |
 | Redis ranking 与 current leader 不一致 | 集成 / 状态一致性 | 多用户连续或并发出价 | Redis state + ranking + HTTP 排行榜 |
 | MySQL fallback 排行榜不按最高价 | DAO 集成 | 同一用户多条 BidLog | SQL 聚合结果 + HTTP fallback 响应 |
 | 自动延时超过上限 | 单元 / 集成 | 多次临近结束出价 | Redis extend_count / total_extended_sec |
 | 一口价后仍可有效出价 | 场景 / 并发 | `price >= price_cap` 后再次出价 | MySQL 成交状态不变 |
-| Redis 成功 MySQL 失败造成不一致 | 故障注入 / 风险报告 | BidLog 或 ended 更新失败 | HTTP 错误 + Redis/DB 差异证据 |
+| worker 失败造成 BidLog 延迟落库 | 故障注入 / 风险报告 | CreateBidLogs 或 XACK 失败 | HTTP 成功 + Redis stream pending/未 ack + MySQL 暂未一致证据 |
 | 公开排行榜泄露敏感信息 | 接口契约 | 查询 ranking | 响应只含 rank/user_id/user_name/price |
 
 ## 17. 测试类型覆盖矩阵
@@ -726,6 +744,8 @@ Agent 不应在本模块内测试：
 | `Service.GetRanking` | 是 | 否 | 是 | 是 | 是 | 是 | 是 | 是 |
 | `Redis PlaceBidLua` | 是 | 否 | 是 | 是 | 是 | 是 | 是 | 是 |
 | `GormStore.CreateBidLog` | 否 | 否 | 是 | 是 | 是 | 是 | 是 | 是 |
+| `GormStore.CreateBidLogs` | 否 | 否 | 是 | 是 | 是 | 是 | 是 | 是 |
+| `BidLogWorker` | 是 | 否 | 是 | 是 | 是 | 是 | 是 | 是 |
 | `GormStore.ListBidRanking` | 否 | 否 | 是 | 是 | 是 | 是 | 否 | 是 |
 | `price` 字段 | 是 | 是 | 是 | 是 | 是 | 是 | 是 | 是 |
 | `idempotency_key` 字段 | 是 | 是 | 是 | 是 | 是 | 是 | 是 | 是 |
@@ -737,9 +757,9 @@ Agent 不应在本模块内测试：
 
 **核心验证点（全部通过才算过）：**
 
-- 合法出价接口返回成功，HTTP 响应、Redis state、Redis ranking 和 MySQL BidLog 一致。
+- 合法出价接口返回成功，HTTP 响应、Redis state、Redis ranking、Redis stream handoff 和 worker 后 MySQL BidLog 最终一致。
 - 非 ongoing、已结束、低价、同价、非法加价幅度、非法请求体和未登录请求均失败，且不会产生有效状态变化。
-- 同一 `idempotency_key` 重试不重复写 BidLog、不重复增加 Redis 计数。
+- 同一 `idempotency_key` 重试不重复追加 stream、不重复写 BidLog、不重复增加 Redis 计数。
 - 多用户连续出价后，当前价、领先用户和排行榜第一名一致。
 - 排行榜分页、排序、每用户最高价聚合和 page/page_size 归一化符合预期。
 - 一口价出价后，商品状态、赢家和成交价正确，后续出价不能改变成交结果。
@@ -749,6 +769,7 @@ Agent 不应在本模块内测试：
 **辅助验证点（建议验证，可附说明跳过）：**
 
 - Redis idempotency key TTL 接近 86400 秒。
+- BidLog worker 消费后，本批次 stream 消息无 pending，`auction:bid_log:dead` 无本批次死信。
 - bidder_names 中昵称与当前用户名称一致。
 - 自动延时字段 `extend_count`、`total_extended_sec`、`is_extended` 正确。
 - Redis 失败时排行榜可从 MySQL fallback 返回。
@@ -759,7 +780,7 @@ Agent 不应在本模块内测试：
 - 当前是否允许商家身份参与出价？如果不允许，出价接口需要补身份限制，测试也应增加商家出价失败场景。
 - 当前是否需要校验出价用户不能是拍品所属商家？
 - 当前是否需要报名、风控或黑名单校验？代码当前仅实现保证金校验。
-- Redis Lua 成功但 MySQL BidLog 写入失败时，期望语义是接口失败并允许状态不一致、补偿修复，还是应改为异步落库/重试/回滚？
+- Redis Lua 成功但 BidLog worker 长时间未消费成功时，是否需要后台补偿告警、人工修复入口或明确的 SLA？
 - 一口价 Redis 成功但 MySQL ended 更新失败时，是否需要补偿任务或事务化状态修复？
 - `GET /ranking` 是否应校验 item 存在？当前实现不存在也可能返回空榜。
 - 排行榜同价时是否需要稳定排序规则？当前 Redis/MySQL 都只明确按价格倒序。
