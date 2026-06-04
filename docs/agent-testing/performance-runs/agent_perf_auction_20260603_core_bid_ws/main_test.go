@@ -475,6 +475,8 @@ func TestDefaultPrometheusQueriesUseObservedMetricNames(t *testing.T) {
 		"ws_write_count_total",
 		"ws_write_duration_bucket",
 		"ws_send_queue_depth_bucket",
+		"ws_time_sync_count_total",
+		"ws_time_sync_write_lag_duration_bucket",
 	} {
 		if !strings.Contains(joined, metric) {
 			t.Fatalf("expected default Prometheus queries to include %s; got:%s", metric, joined)

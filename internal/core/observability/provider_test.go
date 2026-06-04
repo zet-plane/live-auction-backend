@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/zet-plane/live-auction-backend/config"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
@@ -64,6 +66,7 @@ func TestMeterProviderUsesSubSecondDurationBuckets(t *testing.T) {
 	for _, name := range []string{
 		"http.server.request.duration",
 		"db.client.operation.duration",
+		"ws.time_sync.write_lag.duration",
 	} {
 		t.Run(name, func(t *testing.T) {
 			histogram, err := mp.Meter("test").Float64Histogram(name)
@@ -82,6 +85,61 @@ func TestMeterProviderUsesSubSecondDurationBuckets(t *testing.T) {
 				t.Fatalf("bounds = %v, want %v", got, want)
 			}
 		})
+	}
+}
+
+func TestWSTimeSyncMetricsAreRecorded(t *testing.T) {
+	ctx := context.Background()
+	reader := metric.NewManualReader()
+	oldProvider := otel.GetMeterProvider()
+	otel.SetMeterProvider(newMeterProvider(nil, reader))
+	t.Cleanup(func() {
+		otel.SetMeterProvider(oldProvider)
+	})
+
+	rec, err := NewRecorder()
+	if err != nil {
+		t.Fatalf("NewRecorder returned error: %v", err)
+	}
+	rec.WSTimeSync(ctx, WSTimeSyncMetric{Action: "overwrite", Result: "success"})
+	rec.WSTimeSync(ctx, WSTimeSyncMetric{Action: "write", Result: "success", WriteLag: 250 * time.Millisecond})
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(ctx, &rm); err != nil {
+		t.Fatalf("Collect returned error: %v", err)
+	}
+	if !int64SumHasAttributes(t, rm, "ws.time_sync.count", map[string]string{"action": "overwrite", "result": "success"}) {
+		t.Fatalf("ws.time_sync.count missing overwrite success attributes")
+	}
+	if !float64HistogramHasAttributes(t, rm, "ws.time_sync.write_lag.duration", map[string]string{"action": "write", "result": "success"}) {
+		t.Fatalf("ws.time_sync.write_lag.duration missing write success attributes")
+	}
+}
+
+func TestWSTimeSyncSkipsZeroWriteLagHistogram(t *testing.T) {
+	ctx := context.Background()
+	reader := metric.NewManualReader()
+	oldProvider := otel.GetMeterProvider()
+	otel.SetMeterProvider(newMeterProvider(nil, reader))
+	t.Cleanup(func() {
+		otel.SetMeterProvider(oldProvider)
+	})
+
+	rec, err := NewRecorder()
+	if err != nil {
+		t.Fatalf("NewRecorder returned error: %v", err)
+	}
+	rec.WSTimeSync(ctx, WSTimeSyncMetric{Action: "write", Result: "success"})
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(ctx, &rm); err != nil {
+		t.Fatalf("Collect returned error: %v", err)
+	}
+	if !hasMetric(rm, "ws.time_sync.count") {
+		t.Fatalf("metric %q was not collected", "ws.time_sync.count")
+	}
+	if hasMetric(rm, "ws.time_sync.write_lag.duration") {
+		t.Fatalf("zero write lag should not collect ws.time_sync.write_lag.duration")
 	}
 }
 
@@ -133,6 +191,79 @@ func histogramBounds(t *testing.T, rm metricdata.ResourceMetrics, name string) [
 	}
 	t.Fatalf("metric %s not found in collected data", name)
 	return nil
+}
+
+func int64SumHasAttributes(t *testing.T, rm metricdata.ResourceMetrics, name string, attrs map[string]string) bool {
+	t.Helper()
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != name {
+				continue
+			}
+			data, ok := m.Data.(metricdata.Sum[int64])
+			if !ok {
+				t.Fatalf("%s data type = %T, want Sum[int64]", name, m.Data)
+			}
+			for _, point := range data.DataPoints {
+				if dataPointHasAttributes(point.Attributes.ToSlice(), attrs) {
+					return true
+				}
+			}
+			return false
+		}
+	}
+	t.Fatalf("metric %s not found in collected data", name)
+	return false
+}
+
+func float64HistogramHasAttributes(t *testing.T, rm metricdata.ResourceMetrics, name string, attrs map[string]string) bool {
+	t.Helper()
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != name {
+				continue
+			}
+			data, ok := m.Data.(metricdata.Histogram[float64])
+			if !ok {
+				t.Fatalf("%s data type = %T, want Histogram[float64]", name, m.Data)
+			}
+			for _, point := range data.DataPoints {
+				if dataPointHasAttributes(point.Attributes.ToSlice(), attrs) {
+					return true
+				}
+			}
+			return false
+		}
+	}
+	t.Fatalf("metric %s not found in collected data", name)
+	return false
+}
+
+func dataPointHasAttributes(got []attribute.KeyValue, want map[string]string) bool {
+	for key, value := range want {
+		found := false
+		for _, attr := range got {
+			if string(attr.Key) == key && attr.Value.AsString() == value {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+func hasMetric(rm metricdata.ResourceMetrics, name string) bool {
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name == name {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func int64GaugeValue(t *testing.T, rm metricdata.ResourceMetrics, name string) int64 {

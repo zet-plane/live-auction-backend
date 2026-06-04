@@ -212,32 +212,60 @@ func (h *Hub) Unicast(addr string, event wsevent.Event) error {
 
 func (h *Hub) deliver(c *Conn, event wsevent.Event) bool {
 	start := time.Now()
-	queueLen := int64(len(c.send))
-	queueCap := int64(cap(c.send))
-	if !c.enqueue(event) {
-		reason := "send_queue_full"
-		if c.isClosed() {
-			reason = "closed"
+	switch classifyEventLane(event.Type) {
+	case laneHigh:
+		queueLen := int64(len(c.high))
+		queueCap := int64(cap(c.high))
+		if !c.enqueueHigh(event) {
+			reason := "high_queue_full"
+			if c.isClosed() {
+				reason = "closed"
+			}
+			h.closeConnWithReason(c, reason)
+			recordDelivery(event.Type, "dropped", reason, queueLen, queueCap, time.Since(start))
+			return false
 		}
-		h.closeConnWithReason(c, reason)
-		observability.DefaultRecorder().WSDelivery(context.Background(), observability.WSDeliveryMetric{
-			Result:    "dropped",
-			Reason:    reason,
-			EventType: event.Type,
-			QueueLen:  queueLen,
-			QueueCap:  queueCap,
-			Duration:  time.Since(start),
-		})
-		return false
+		recordDelivery(event.Type, "success", string(laneHigh), int64(len(c.high)), queueCap, time.Since(start))
+		return true
+	case laneLatest:
+		_, ok := c.enqueueTimeSync(event)
+		if !ok {
+			reason := "latest_queue_full"
+			if c.isClosed() {
+				reason = "closed"
+			}
+			h.closeConnWithReason(c, reason)
+			recordDelivery(event.Type, "dropped", reason, 0, 1, time.Since(start))
+			return false
+		}
+		recordDelivery(event.Type, "success", string(laneLatest), 1, 1, time.Since(start))
+		return true
+	default:
+		queueLen := int64(len(c.send))
+		queueCap := int64(cap(c.send))
+		if !c.enqueueNormal(event) {
+			reason := "send_queue_full"
+			if c.isClosed() {
+				reason = "closed"
+			}
+			h.closeConnWithReason(c, reason)
+			recordDelivery(event.Type, "dropped", reason, queueLen, queueCap, time.Since(start))
+			return false
+		}
+		recordDelivery(event.Type, "success", string(laneNormal), int64(len(c.send)), queueCap, time.Since(start))
+		return true
 	}
+}
+
+func recordDelivery(eventType, result, reason string, queueLen, queueCap int64, duration time.Duration) {
 	observability.DefaultRecorder().WSDelivery(context.Background(), observability.WSDeliveryMetric{
-		Result:    "success",
-		EventType: event.Type,
-		QueueLen:  int64(len(c.send)),
+		Result:    result,
+		Reason:    reason,
+		EventType: eventType,
+		QueueLen:  queueLen,
 		QueueCap:  queueCap,
-		Duration:  time.Since(start),
+		Duration:  duration,
 	})
-	return true
 }
 
 func (h *Hub) closeConn(c *Conn) {

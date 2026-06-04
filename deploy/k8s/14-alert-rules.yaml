@@ -141,10 +141,10 @@ data:
 
           # 应用指标中断（服务宕机）
           - alert: AppMetricsMissing
-            expr: absent(http_server_request_count_total)
-            for: 1m
+            expr: absent(db_client_connections_max_open{exported_job="live-auction-backend"})
+            for: 2m
             labels:
               severity: critical
             annotations:
               summary: "应用指标中断"
-              description: "超过 1 分钟未收到 live-auction-backend 指标，服务可能已宕机"
+              description: "超过 2 分钟未收到 live-auction-backend 运行时指标，服务或指标导出链路可能异常"

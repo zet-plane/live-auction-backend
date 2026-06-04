@@ -15,18 +15,26 @@ import (
 const (
 	readDeadline  = 60 * time.Second
 	writeDeadline = 10 * time.Second
+	highBufSize   = 16
 	sendBufSize   = 64
 )
 
 var pingInterval = 25 * time.Second
 
 type Conn struct {
-	id        string
-	userID    string
-	roomID    string
-	ws        socket
-	send      chan wsevent.Event
-	hub       *Hub
+	id     string
+	userID string
+	roomID string
+	ws     socket
+	high   chan wsevent.Event
+	send   chan wsevent.Event
+	hub    *Hub
+
+	timeSyncMu      sync.Mutex
+	latestTimeSync  *wsevent.Event
+	timeSyncUpdated time.Time
+	timeSyncNotify  chan struct{}
+
 	closeMu   sync.RWMutex
 	closeOnce sync.Once
 	closed    bool
@@ -53,8 +61,11 @@ func NewConn(id, userID, roomID string, ws socket, hub *Hub) *Conn {
 		userID: userID,
 		roomID: roomID,
 		ws:     ws,
+		high:   make(chan wsevent.Event, highBufSize),
 		send:   make(chan wsevent.Event, sendBufSize),
 		hub:    hub,
+
+		timeSyncNotify: make(chan struct{}, 1),
 	}
 }
 
@@ -98,37 +109,91 @@ func (c *Conn) StartWriteLoop() {
 	ticker := time.NewTicker(pingInterval)
 	defer ticker.Stop()
 
+	var deferredNormal *wsevent.Event
 	for {
+		if deferredNormal == nil {
+			if event, ok := c.popHigh(); ok {
+				if reason, ok := c.writeTracked(event, laneHigh); !ok {
+					closeReason = "write_json_" + reason
+					return
+				}
+				continue
+			}
+			if event, lag, ok := c.popTimeSync(); ok {
+				if reason, ok := c.writeTracked(event, laneLatest); !ok {
+					recordTimeSyncWrite("failed", lag)
+					closeReason = "write_json_" + reason
+					return
+				}
+				recordTimeSyncWrite("success", lag)
+				continue
+			}
+		}
+		if deferredNormal != nil {
+			if event, ok := c.popHigh(); ok {
+				if reason, ok := c.writeTracked(event, laneHigh); !ok {
+					closeReason = "write_json_" + reason
+					return
+				}
+				continue
+			}
+			if event, lag, ok := c.popTimeSync(); ok {
+				if reason, ok := c.writeTracked(event, laneLatest); !ok {
+					recordTimeSyncWrite("failed", lag)
+					closeReason = "write_json_" + reason
+					return
+				}
+				recordTimeSyncWrite("success", lag)
+				continue
+			}
+			event := *deferredNormal
+			deferredNormal = nil
+			if reason, ok := c.writeTracked(event, laneNormal); !ok {
+				closeReason = "write_json_" + reason
+				return
+			}
+			continue
+		}
+
 		select {
+		case event, ok := <-c.high:
+			if !ok {
+				closeReason = "high_closed"
+				return
+			}
+			if reason, ok := c.writeTracked(event, laneHigh); !ok {
+				closeReason = "write_json_" + reason
+				return
+			}
+		case <-c.timeSyncNotify:
+			continue
 		case event, ok := <-c.send:
 			if !ok {
 				closeReason = "send_closed"
 				return
 			}
-			queueLen := int64(len(c.send))
-			queueCap := int64(cap(c.send))
-			c.ws.SetWriteDeadline(time.Now().Add(writeDeadline))
-			start := time.Now()
-			if err := c.ws.WriteJSON(event); err != nil {
-				reason := classifySocketWriteReason(err)
+			if high, ok := c.popHigh(); ok {
+				deferredNormal = &event
+				if reason, ok := c.writeTracked(high, laneHigh); !ok {
+					closeReason = "write_json_" + reason
+					return
+				}
+				continue
+			}
+			if latest, lag, ok := c.popTimeSync(); ok {
+				deferredNormal = &event
+				if reason, ok := c.writeTracked(latest, laneLatest); !ok {
+					recordTimeSyncWrite("failed", lag)
+					closeReason = "write_json_" + reason
+					return
+				}
+				recordTimeSyncWrite("success", lag)
+				continue
+			}
+			if reason, ok := c.writeTracked(event, laneNormal); !ok {
 				closeReason = "write_json_" + reason
-				observability.DefaultRecorder().WSWrite(context.Background(), observability.WSWriteMetric{
-					Result:    "failed",
-					Reason:    reason,
-					EventType: event.Type,
-					QueueLen:  queueLen,
-					QueueCap:  queueCap,
-					Duration:  time.Since(start),
-				})
 				return
 			}
-			observability.DefaultRecorder().WSWrite(context.Background(), observability.WSWriteMetric{
-				Result:    "success",
-				EventType: event.Type,
-				QueueLen:  queueLen,
-				QueueCap:  queueCap,
-				Duration:  time.Since(start),
-			})
 		case <-ticker.C:
 			deadline := time.Now().Add(writeDeadline)
 			if err := c.ws.WriteControl(websocket.PingMessage, nil, deadline); err != nil {
@@ -136,6 +201,72 @@ func (c *Conn) StartWriteLoop() {
 				return
 			}
 		}
+	}
+}
+
+func (c *Conn) popHigh() (wsevent.Event, bool) {
+	select {
+	case event, ok := <-c.high:
+		return event, ok
+	default:
+		return wsevent.Event{}, false
+	}
+}
+
+func (c *Conn) popTimeSync() (wsevent.Event, time.Duration, bool) {
+	c.timeSyncMu.Lock()
+	defer c.timeSyncMu.Unlock()
+	if c.latestTimeSync == nil {
+		return wsevent.Event{}, 0, false
+	}
+	event := *c.latestTimeSync
+	lag := time.Since(c.timeSyncUpdated)
+	c.latestTimeSync = nil
+	return event, lag, true
+}
+
+func (c *Conn) writeTracked(event wsevent.Event, lane eventLane) (string, bool) {
+	queueLen, queueCap := c.queueStats(lane)
+	c.ws.SetWriteDeadline(time.Now().Add(writeDeadline))
+	start := time.Now()
+	if err := c.ws.WriteJSON(event); err != nil {
+		reason := classifySocketWriteReason(err)
+		observability.DefaultRecorder().WSWrite(context.Background(), observability.WSWriteMetric{
+			Result:    "failed",
+			Reason:    reason,
+			EventType: event.Type,
+			QueueLen:  queueLen,
+			QueueCap:  queueCap,
+			Duration:  time.Since(start),
+		})
+		return reason, false
+	}
+	observability.DefaultRecorder().WSWrite(context.Background(), observability.WSWriteMetric{
+		Result:    "success",
+		EventType: event.Type,
+		QueueLen:  queueLen,
+		QueueCap:  queueCap,
+		Duration:  time.Since(start),
+	})
+	return "none", true
+}
+
+func recordTimeSyncWrite(result string, lag time.Duration) {
+	observability.DefaultRecorder().WSTimeSync(context.Background(), observability.WSTimeSyncMetric{
+		Action:   "write",
+		Result:   result,
+		WriteLag: lag,
+	})
+}
+
+func (c *Conn) queueStats(lane eventLane) (int64, int64) {
+	switch lane {
+	case laneHigh:
+		return int64(len(c.high)), int64(cap(c.high))
+	case laneLatest:
+		return 0, 1
+	default:
+		return int64(len(c.send)), int64(cap(c.send))
 	}
 }
 
@@ -159,6 +290,32 @@ func classifySocketWriteReason(err error) string {
 }
 
 func (c *Conn) enqueue(event wsevent.Event) bool {
+	switch classifyEventLane(event.Type) {
+	case laneHigh:
+		return c.enqueueHigh(event)
+	case laneLatest:
+		_, ok := c.enqueueTimeSync(event)
+		return ok
+	default:
+		return c.enqueueNormal(event)
+	}
+}
+
+func (c *Conn) enqueueHigh(event wsevent.Event) bool {
+	c.closeMu.RLock()
+	defer c.closeMu.RUnlock()
+	if c.closed {
+		return false
+	}
+	select {
+	case c.high <- event:
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *Conn) enqueueNormal(event wsevent.Event) bool {
 	c.closeMu.RLock()
 	defer c.closeMu.RUnlock()
 	if c.closed {
@@ -172,6 +329,33 @@ func (c *Conn) enqueue(event wsevent.Event) bool {
 	}
 }
 
+func (c *Conn) enqueueTimeSync(event wsevent.Event) (bool, bool) {
+	c.closeMu.RLock()
+	defer c.closeMu.RUnlock()
+	if c.closed {
+		return false, false
+	}
+
+	c.timeSyncMu.Lock()
+	overwritten := c.latestTimeSync != nil
+	eventCopy := event
+	c.latestTimeSync = &eventCopy
+	c.timeSyncUpdated = time.Now()
+	c.timeSyncMu.Unlock()
+	if overwritten {
+		observability.DefaultRecorder().WSTimeSync(context.Background(), observability.WSTimeSyncMetric{
+			Action: "overwrite",
+			Result: "success",
+		})
+	}
+
+	select {
+	case c.timeSyncNotify <- struct{}{}:
+	default:
+	}
+	return overwritten, true
+}
+
 func (c *Conn) close() {
 	c.closeWith(nil)
 }
@@ -183,7 +367,12 @@ func (c *Conn) closeWith(beforeClose func()) {
 		}
 		c.closeMu.Lock()
 		c.closed = true
-		close(c.send)
+		if c.high != nil {
+			close(c.high)
+		}
+		if c.send != nil {
+			close(c.send)
+		}
 		c.closeMu.Unlock()
 		if c.ws != nil {
 			_ = c.ws.Close()

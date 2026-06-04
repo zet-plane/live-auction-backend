@@ -17,7 +17,34 @@ func newTestConn(userID, roomID string) *Conn {
 		id:     "conn_" + userID,
 		userID: userID,
 		roomID: roomID,
+		high:   make(chan wsevent.Event, 8),
 		send:   make(chan wsevent.Event, 8),
+
+		timeSyncNotify: make(chan struct{}, 1),
+	}
+}
+
+func TestClassifyEventLane(t *testing.T) {
+	tests := []struct {
+		eventType string
+		want      eventLane
+	}{
+		{eventType: "time_sync", want: laneLatest},
+		{eventType: "user_outbid", want: laneHigh},
+		{eventType: "auction_extended", want: laneHigh},
+		{eventType: "auction_ended", want: laneHigh},
+		{eventType: "auction_cancelled", want: laneHigh},
+		{eventType: "order_created", want: laneHigh},
+		{eventType: "auction_started", want: laneHigh},
+		{eventType: "auction_snapshot", want: laneHigh},
+		{eventType: "bid_success", want: laneNormal},
+		{eventType: "unknown_event", want: laneNormal},
+	}
+
+	for _, tt := range tests {
+		if got := classifyEventLane(tt.eventType); got != tt.want {
+			t.Fatalf("classifyEventLane(%q) = %q, want %q", tt.eventType, got, tt.want)
+		}
 	}
 }
 
@@ -130,6 +157,7 @@ type fakeSocket struct {
 	readDeadlineCalls int
 	writeJSONErr      error
 	writeJSONCh       chan struct{}
+	writes            []wsevent.Event
 	closeOnce         sync.Once
 }
 
@@ -156,10 +184,13 @@ func (s *fakeSocket) ReadMessage() (int, []byte, error) {
 
 func (s *fakeSocket) SetWriteDeadline(time.Time) error { return nil }
 
-func (s *fakeSocket) WriteJSON(any) error {
+func (s *fakeSocket) WriteJSON(v any) error {
 	s.mu.Lock()
 	err := s.writeJSONErr
 	ch := s.writeJSONCh
+	if event, ok := v.(wsevent.Event); ok {
+		s.writes = append(s.writes, event)
+	}
 	s.mu.Unlock()
 	if ch != nil {
 		close(ch)
@@ -188,6 +219,12 @@ func (s *fakeSocket) readDeadlineCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.readDeadlineCalls
+}
+
+func (s *fakeSocket) writtenEvents() []wsevent.Event {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]wsevent.Event(nil), s.writes...)
 }
 
 func TestCloseConnRemovesPresenceOnce(t *testing.T) {
@@ -371,10 +408,10 @@ func TestRegisterDeliversSnapshotWhenProviderHasOne(t *testing.T) {
 	if len(provider.calls) != 1 || provider.calls[0] != "room_1" {
 		t.Fatalf("expected snapshot provider called for room_1, got %v", provider.calls)
 	}
-	if len(c.send) != 1 {
-		t.Fatalf("expected snapshot delivered to new conn, got %d events", len(c.send))
+	if len(c.high) != 1 {
+		t.Fatalf("expected snapshot delivered to high queue, got %d events", len(c.high))
 	}
-	if got := <-c.send; got.Type != "auction_snapshot" {
+	if got := <-c.high; got.Type != "auction_snapshot" {
 		t.Fatalf("expected auction_snapshot, got %q", got.Type)
 	}
 }
@@ -428,6 +465,96 @@ func TestStartWriteLoopRecordsSocketWriteMetrics(t *testing.T) {
 	}
 }
 
+func TestHighPriorityEventWritesBeforeNormalQueue(t *testing.T) {
+	h := NewHub(nil)
+	ws := newFakeSocket()
+	conn := NewConn("conn_1", "user_1", "room_1", ws, h)
+	h.Register(conn)
+
+	for i := 0; i < 8; i++ {
+		h.SendToRoom("room_1", wsevent.Event{Type: "bid_success", Payload: map[string]any{"seq": i}})
+	}
+	h.SendToRoom("room_1", wsevent.Event{Type: "auction_ended", Payload: map[string]any{"seq": 99}})
+
+	go conn.StartWriteLoop()
+	t.Cleanup(conn.close)
+
+	waitFor(t, func() bool { return len(ws.writtenEvents()) >= 1 })
+	first := ws.writtenEvents()[0]
+	if first.Type != "auction_ended" {
+		t.Fatalf("expected high priority event first, got %+v", first)
+	}
+}
+
+func TestTimeSyncDeliveryKeepsOnlyLatestEvent(t *testing.T) {
+	h := NewHub(nil)
+	ws := newFakeSocket()
+	conn := NewConn("conn_1", "user_1", "room_1", ws, h)
+	h.Register(conn)
+
+	h.SendToRoom("room_1", wsevent.Event{Type: "time_sync", Payload: map[string]any{"seq": 1}})
+	h.SendToRoom("room_1", wsevent.Event{Type: "time_sync", Payload: map[string]any{"seq": 2}})
+
+	go conn.StartWriteLoop()
+	t.Cleanup(conn.close)
+
+	waitFor(t, func() bool { return len(ws.writtenEvents()) >= 1 })
+	first := ws.writtenEvents()[0]
+	if first.Type != "time_sync" {
+		t.Fatalf("expected time_sync first, got %+v", first)
+	}
+	payload := first.Payload.(map[string]any)
+	if payload["seq"] != 2 {
+		t.Fatalf("expected latest time_sync seq=2, got %#v", payload)
+	}
+}
+
+func TestTimeSyncOverwriteAndWriteMetrics(t *testing.T) {
+	rec := &captureWSRecorder{}
+	observability.SetDefaultRecorder(rec)
+	t.Cleanup(func() { observability.SetDefaultRecorder(nil) })
+
+	h := NewHub(nil)
+	ws := newFakeSocket()
+	conn := NewConn("conn_1", "user_1", "room_1", ws, h)
+	h.Register(conn)
+
+	h.SendToRoom("room_1", wsevent.Event{Type: "time_sync", Payload: map[string]any{"seq": 1}})
+	h.SendToRoom("room_1", wsevent.Event{Type: "time_sync", Payload: map[string]any{"seq": 2}})
+
+	if got := rec.timeSyncCount("overwrite", "success"); got != 1 {
+		t.Fatalf("expected one overwrite metric, got %d", got)
+	}
+
+	go conn.StartWriteLoop()
+	t.Cleanup(conn.close)
+
+	waitFor(t, func() bool { return rec.timeSyncCount("write", "success") == 1 })
+	metric := rec.lastTimeSync()
+	if metric.WriteLag <= 0 {
+		t.Fatalf("expected positive time_sync write lag, got %s", metric.WriteLag)
+	}
+}
+
+func TestHighPriorityEventWritesBeforeTimeSync(t *testing.T) {
+	h := NewHub(nil)
+	ws := newFakeSocket()
+	conn := NewConn("conn_1", "user_1", "room_1", ws, h)
+	h.Register(conn)
+
+	h.SendToRoom("room_1", wsevent.Event{Type: "time_sync", Payload: map[string]any{"seq": 1}})
+	h.SendToRoom("room_1", wsevent.Event{Type: "auction_cancelled", Payload: map[string]any{"seq": 2}})
+
+	go conn.StartWriteLoop()
+	t.Cleanup(conn.close)
+
+	waitFor(t, func() bool { return len(ws.writtenEvents()) >= 1 })
+	first := ws.writtenEvents()[0]
+	if first.Type != "auction_cancelled" {
+		t.Fatalf("expected high priority event before time_sync, got %+v", first)
+	}
+}
+
 func TestStartReadLoopConfiguresPongDeadlineRefresh(t *testing.T) {
 	h := NewHub(nil)
 	ws := newFakeSocket()
@@ -461,8 +588,8 @@ func TestUnicastDeliversToUser(t *testing.T) {
 		t.Fatalf("Unicast error: %v", err)
 	}
 
-	if len(c1.send) != 1 {
-		t.Errorf("c1 should receive 1 event, got %d", len(c1.send))
+	if len(c1.high) != 1 {
+		t.Errorf("c1 should receive 1 high priority event, got %d", len(c1.high))
 	}
 	if len(c2.send) != 0 {
 		t.Errorf("c2 should not receive event, got %d", len(c2.send))
@@ -591,6 +718,7 @@ type captureWSRecorder struct {
 	broadcasts  []observability.WSBroadcastMetric
 	deliveries  []observability.WSDeliveryMetric
 	writes      []observability.WSWriteMetric
+	timeSyncs   []observability.WSTimeSyncMetric
 }
 
 func (r *captureWSRecorder) WSConnection(_ context.Context, m observability.WSConnectionMetric) {
@@ -615,6 +743,12 @@ func (r *captureWSRecorder) WSWrite(_ context.Context, m observability.WSWriteMe
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.writes = append(r.writes, m)
+}
+
+func (r *captureWSRecorder) WSTimeSync(_ context.Context, m observability.WSTimeSyncMetric) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.timeSyncs = append(r.timeSyncs, m)
 }
 
 func (r *captureWSRecorder) connectionDelta() int64 {
@@ -688,4 +822,25 @@ func (r *captureWSRecorder) closeReasonCount(reason string) int {
 		}
 	}
 	return total
+}
+
+func (r *captureWSRecorder) timeSyncCount(action, result string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var total int
+	for _, m := range r.timeSyncs {
+		if m.Action == action && m.Result == result {
+			total++
+		}
+	}
+	return total
+}
+
+func (r *captureWSRecorder) lastTimeSync() observability.WSTimeSyncMetric {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.timeSyncs) == 0 {
+		return observability.WSTimeSyncMetric{}
+	}
+	return r.timeSyncs[len(r.timeSyncs)-1]
 }

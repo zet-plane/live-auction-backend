@@ -23,6 +23,7 @@ type Recorder interface {
 	WSBroadcast(context.Context, WSBroadcastMetric)
 	WSDelivery(context.Context, WSDeliveryMetric)
 	WSWrite(context.Context, WSWriteMetric)
+	WSTimeSync(context.Context, WSTimeSyncMetric)
 	OrderAuctionCreate(context.Context, OrderMetric)
 }
 
@@ -117,6 +118,12 @@ type WSWriteMetric struct {
 	Duration  time.Duration
 }
 
+type WSTimeSyncMetric struct {
+	Action   string
+	Result   string
+	WriteLag time.Duration
+}
+
 type OrderMetric struct {
 	Result string
 }
@@ -136,6 +143,7 @@ func (NoopRecorder) WSConnection(context.Context, WSConnectionMetric) {}
 func (NoopRecorder) WSBroadcast(context.Context, WSBroadcastMetric)   {}
 func (NoopRecorder) WSDelivery(context.Context, WSDeliveryMetric)     {}
 func (NoopRecorder) WSWrite(context.Context, WSWriteMetric)           {}
+func (NoopRecorder) WSTimeSync(context.Context, WSTimeSyncMetric)     {}
 func (NoopRecorder) OrderAuctionCreate(context.Context, OrderMetric)  {}
 
 var defaultRecorder Recorder = NoopRecorder{}
@@ -185,6 +193,8 @@ type OTelRecorder struct {
 	wsWriteCount          metric.Int64Counter
 	wsWriteDuration       metric.Float64Histogram
 	wsSendQueueDepth      metric.Int64Histogram
+	wsTimeSyncCount       metric.Int64Counter
+	wsTimeSyncWriteLag    metric.Float64Histogram
 	orderCount            metric.Int64Counter
 }
 
@@ -318,6 +328,14 @@ func NewRecorder() (*OTelRecorder, error) {
 	if err != nil {
 		return nil, err
 	}
+	wsTimeSyncCount, err := meter.Int64Counter("ws.time_sync.count")
+	if err != nil {
+		return nil, err
+	}
+	wsTimeSyncWriteLag, err := meter.Float64Histogram("ws.time_sync.write_lag.duration")
+	if err != nil {
+		return nil, err
+	}
 	orderCount, err := meter.Int64Counter("order.auction_create.count")
 	if err != nil {
 		return nil, err
@@ -355,6 +373,8 @@ func NewRecorder() (*OTelRecorder, error) {
 		wsWriteCount:          wsWriteCount,
 		wsWriteDuration:       wsWriteDuration,
 		wsSendQueueDepth:      wsSendQueueDepth,
+		wsTimeSyncCount:       wsTimeSyncCount,
+		wsTimeSyncWriteLag:    wsTimeSyncWriteLag,
 		orderCount:            orderCount,
 	}, nil
 }
@@ -387,7 +407,7 @@ func (r *OTelRecorder) DBQuery(ctx context.Context, m DBQueryMetric) {
 }
 
 func (r *OTelRecorder) Cron(ctx context.Context, m CronMetric) {
-	opts := metric.WithAttributes(attribute.String("job", m.Name), attribute.String("result", m.Result))
+	opts := metric.WithAttributes(attribute.String("cron_job", m.Name), attribute.String("result", m.Result))
 	r.cronCount.Add(ctx, 1, opts)
 	r.cronDuration.Record(ctx, m.Duration.Seconds(), opts)
 }
@@ -473,6 +493,17 @@ func (r *OTelRecorder) WSWrite(ctx context.Context, m WSWriteMetric) {
 	r.wsWriteCount.Add(ctx, 1, opts)
 	r.wsWriteDuration.Record(ctx, m.Duration.Seconds(), opts)
 	r.wsSendQueueDepth.Record(ctx, m.QueueLen, opts)
+}
+
+func (r *OTelRecorder) WSTimeSync(ctx context.Context, m WSTimeSyncMetric) {
+	opts := metric.WithAttributes(
+		attribute.String("action", SafeReason(m.Action)),
+		attribute.String("result", SafeReason(m.Result)),
+	)
+	r.wsTimeSyncCount.Add(ctx, 1, opts)
+	if m.WriteLag != 0 {
+		r.wsTimeSyncWriteLag.Record(ctx, m.WriteLag.Seconds(), opts)
+	}
 }
 
 func (r *OTelRecorder) OrderAuctionCreate(ctx context.Context, m OrderMetric) {

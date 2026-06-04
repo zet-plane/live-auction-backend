@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
@@ -78,6 +79,36 @@ func TestBidHotPathMetricsAreRecorded(t *testing.T) {
 	}
 }
 
+func TestCronMetricsAvoidPrometheusReservedJobLabel(t *testing.T) {
+	ctx := context.Background()
+	reader := sdkmetric.NewManualReader()
+	oldProvider := otel.GetMeterProvider()
+	otel.SetMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)))
+	t.Cleanup(func() {
+		otel.SetMeterProvider(oldProvider)
+	})
+
+	rec, err := NewRecorder()
+	if err != nil {
+		t.Fatalf("NewRecorder returned error: %v", err)
+	}
+	rec.Cron(ctx, CronMetric{Name: "auction.settle_due", Result: "success", Duration: 10 * time.Millisecond})
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(ctx, &rm); err != nil {
+		t.Fatalf("Collect returned error: %v", err)
+	}
+	for _, name := range []string{"cron.job.run.count", "cron.job.duration"} {
+		attrs := metricAttributes(t, rm, name)
+		if got := attrs["cron_job"]; got != "auction.settle_due" {
+			t.Fatalf("%s cron_job attribute = %q, want auction.settle_due", name, got)
+		}
+		if _, ok := attrs["job"]; ok {
+			t.Fatalf("%s should not use reserved Prometheus job attribute", name)
+		}
+	}
+}
+
 func collectedMetricNames(rm metricdata.ResourceMetrics) map[string]bool {
 	names := make(map[string]bool)
 	for _, sm := range rm.ScopeMetrics {
@@ -86,6 +117,41 @@ func collectedMetricNames(rm metricdata.ResourceMetrics) map[string]bool {
 		}
 	}
 	return names
+}
+
+func metricAttributes(t *testing.T, rm metricdata.ResourceMetrics, name string) map[string]string {
+	t.Helper()
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != name {
+				continue
+			}
+			switch data := m.Data.(type) {
+			case metricdata.Sum[int64]:
+				if len(data.DataPoints) != 1 {
+					t.Fatalf("%s datapoints = %d, want 1", name, len(data.DataPoints))
+				}
+				return attributesMap(data.DataPoints[0].Attributes.ToSlice())
+			case metricdata.Histogram[float64]:
+				if len(data.DataPoints) != 1 {
+					t.Fatalf("%s datapoints = %d, want 1", name, len(data.DataPoints))
+				}
+				return attributesMap(data.DataPoints[0].Attributes.ToSlice())
+			default:
+				t.Fatalf("%s data type = %T, want Sum[int64] or Histogram[float64]", name, m.Data)
+			}
+		}
+	}
+	t.Fatalf("metric %s not found in collected data", name)
+	return nil
+}
+
+func attributesMap(attrs []attribute.KeyValue) map[string]string {
+	out := make(map[string]string, len(attrs))
+	for _, attr := range attrs {
+		out[string(attr.Key)] = attr.Value.AsString()
+	}
+	return out
 }
 
 type captureRecorder struct {

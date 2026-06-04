@@ -1298,6 +1298,10 @@ func defaultPrometheusQueries() []prometheusQuery {
 			Query: `sum(rate(ws_delivery_count_total[1m])) by (event_type, result)`,
 		},
 		{
+			Name:  "ws_delivery_by_event_lane",
+			Query: `sum(rate(ws_delivery_count_total[1m])) by (event_type, result, reason)`,
+		},
+		{
 			Name:  "ws_write_rps",
 			Query: `sum(rate(ws_write_count_total[1m])) by (event_type, result)`,
 		},
@@ -1308,6 +1312,14 @@ func defaultPrometheusQueries() []prometheusQuery {
 		{
 			Name:  "ws_send_queue_depth_p95",
 			Query: `histogram_quantile(0.95, sum(rate(ws_send_queue_depth_bucket[1m])) by (le, event_type, result))`,
+		},
+		{
+			Name:  "ws_time_sync_overwrite_rps",
+			Query: `sum(rate(ws_time_sync_count_total{action="overwrite"}[1m]))`,
+		},
+		{
+			Name:  "ws_time_sync_write_lag_p95",
+			Query: `histogram_quantile(0.95, sum(rate(ws_time_sync_write_lag_duration_bucket{action="write"}[1m])) by (le))`,
 		},
 		{
 			Name:  "backend_restarts",
