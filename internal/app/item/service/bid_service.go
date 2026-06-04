@@ -237,7 +237,6 @@ func (s *Service) PlaceBid(ctx context.Context, current *usermodel.User, itemID 
 						DealPrice: input.Price,
 					},
 				}
-				_ = s.broadcaster.Fanout(wsevent.RoomTopic(item.RoomID), orderEvt)
 				_ = s.broadcaster.Unicast(wsevent.UserAddr(current.ID), orderEvt)
 			}
 		}

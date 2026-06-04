@@ -11,6 +11,9 @@ import (
 	itemcache "github.com/zet-plane/live-auction-backend/internal/app/item/cache"
 	itemdto "github.com/zet-plane/live-auction-backend/internal/app/item/dto"
 	itemmodel "github.com/zet-plane/live-auction-backend/internal/app/item/model"
+	orderdto "github.com/zet-plane/live-auction-backend/internal/app/order/dto"
+	ordermodel "github.com/zet-plane/live-auction-backend/internal/app/order/model"
+	orderservice "github.com/zet-plane/live-auction-backend/internal/app/order/service"
 	usermodel "github.com/zet-plane/live-auction-backend/internal/app/user/model"
 	"github.com/zet-plane/live-auction-backend/internal/core/observability"
 	"github.com/zet-plane/live-auction-backend/pkg/errorx"
@@ -798,6 +801,58 @@ func TestPlaceBidPriceCapEndsAuction(t *testing.T) {
 	}
 }
 
+func TestPlaceBidPriceCapEmitsSingleOrderCreatedToWinner(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	fb := &fakeBroadcaster{}
+	orderSvc := orderservice.NewService(newFakeOrderStore(), 30*time.Minute)
+	svc := NewService(store, testPolicy, fc, orderSvc, nil, fb)
+	endTime := time.Now().Add(5 * time.Minute)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 500, endTime)
+
+	result, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
+		Price:          500,
+		IdempotencyKey: "idem_cap_order",
+		UserName:       "Alice",
+	})
+	if err != nil {
+		t.Fatalf("PlaceBid failed: %v", err)
+	}
+	if result.Status != "ended" {
+		t.Fatalf("expected status ended when price cap reached, got %q", result.Status)
+	}
+
+	var fanoutOrderCreated []fakeFanout
+	for _, f := range fb.fanoutSnapshot() {
+		if f.event.Type == itemdto.EventOrderCreated {
+			fanoutOrderCreated = append(fanoutOrderCreated, f)
+		}
+	}
+	if len(fanoutOrderCreated) != 0 {
+		t.Fatalf("expected no room fanout order_created events, got %d", len(fanoutOrderCreated))
+	}
+
+	var winnerOrderCreated []fakeUnicast
+	for _, u := range fb.unicastSnapshot() {
+		if u.event.Type == itemdto.EventOrderCreated {
+			winnerOrderCreated = append(winnerOrderCreated, u)
+		}
+	}
+	if len(winnerOrderCreated) != 1 {
+		t.Fatalf("expected exactly one unicast order_created event, got %d", len(winnerOrderCreated))
+	}
+	if winnerOrderCreated[0].addr != wsevent.UserAddr("user_1") {
+		t.Fatalf("expected order_created unicast to winner user_1, got %q", winnerOrderCreated[0].addr)
+	}
+	payload, ok := winnerOrderCreated[0].event.Payload.(itemdto.OrderCreatedPayload)
+	if !ok {
+		t.Fatalf("expected OrderCreatedPayload, got %T", winnerOrderCreated[0].event.Payload)
+	}
+	if payload.ItemID != itemID || payload.WinnerID != "user_1" || payload.DealPrice != 500 || payload.OrderID == "" {
+		t.Fatalf("unexpected order_created payload: %+v", payload)
+	}
+}
+
 type fakeDepositChecker struct {
 	paid  bool
 	err   error
@@ -1050,6 +1105,85 @@ func (f *fakeBroadcaster) resetUnicasts() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.unicasts = nil
+}
+
+type fakeOrderStore struct {
+	mu             sync.Mutex
+	ordersByID     map[string]*ordermodel.Order
+	ordersByItemID map[string]*ordermodel.Order
+}
+
+func newFakeOrderStore() *fakeOrderStore {
+	return &fakeOrderStore{
+		ordersByID:     make(map[string]*ordermodel.Order),
+		ordersByItemID: make(map[string]*ordermodel.Order),
+	}
+}
+
+func (s *fakeOrderStore) AutoMigrate() error { return nil }
+
+func (s *fakeOrderStore) CreateOrder(order *ordermodel.Order) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	copy := *order
+	s.ordersByID[order.ID] = &copy
+	s.ordersByItemID[order.ItemID] = &copy
+	return nil
+}
+
+func (s *fakeOrderStore) FindOrder(orderID string) (*ordermodel.Order, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	order, ok := s.ordersByID[orderID]
+	if !ok {
+		return nil, errorx.ErrNotFound
+	}
+	copy := *order
+	return &copy, nil
+}
+
+func (s *fakeOrderStore) FindOrderByItemID(itemID string) (*ordermodel.Order, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	order, ok := s.ordersByItemID[itemID]
+	if !ok {
+		return nil, errorx.ErrNotFound
+	}
+	copy := *order
+	return &copy, nil
+}
+
+func (s *fakeOrderStore) FindOrderDetail(orderID string) (*orderdto.OrderDetail, error) {
+	return nil, errorx.ErrNotFound
+}
+
+func (s *fakeOrderStore) UpdateOrderStatus(orderID string, from, to ordermodel.OrderStatus) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	order, ok := s.ordersByID[orderID]
+	if !ok {
+		return false, errorx.ErrNotFound
+	}
+	if order.Status != from {
+		return false, nil
+	}
+	copy := *order
+	copy.Status = to
+	s.ordersByID[orderID] = &copy
+	s.ordersByItemID[order.ItemID] = &copy
+	return true, nil
+}
+
+func (s *fakeOrderStore) ListOrders(input orderdto.ListOrdersInput) ([]orderdto.OrderWithTitle, int64, error) {
+	return nil, 0, nil
+}
+
+func (s *fakeOrderStore) ListExpiredPendingOrders(before time.Time, limit int) ([]ordermodel.Order, error) {
+	return nil, nil
+}
+
+func (s *fakeOrderStore) ListEndedItemsWithoutOrder(limit int) ([]orderdto.EndedItemSummary, error) {
+	return nil, nil
 }
 
 func waitForBidFanouts(t *testing.T, fb *fakeBroadcaster, want int) []fakeFanout {

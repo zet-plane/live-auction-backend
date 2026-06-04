@@ -704,7 +704,6 @@ func (s *Service) persistSettledAuction(ctx context.Context, result itemcache.Se
 					DealPrice: result.DealPrice,
 				},
 			}
-			_ = s.broadcaster.Fanout(wsevent.RoomTopic(item.RoomID), orderEvt)
 			_ = s.broadcaster.Unicast(wsevent.UserAddr(result.LeaderUserID), orderEvt)
 		}
 	}
