@@ -163,6 +163,48 @@ func (s *fakeStore) CreateBidLog(log *itemmodel.BidLog) error {
 	return nil
 }
 
+func (s *fakeStore) CreateBidLogs(logs []*itemmodel.BidLog) error {
+	seen := make(map[string]bool, len(s.bidLogs)+len(logs))
+	for _, existing := range s.bidLogs {
+		seen[existing.ID] = true
+	}
+	for _, log := range logs {
+		if seen[log.ID] {
+			continue
+		}
+		cp := *log
+		s.bidLogs = append(s.bidLogs, &cp)
+		seen[log.ID] = true
+	}
+	return nil
+}
+
+func TestFakeStoreCreateBidLogsSkipsDuplicateIDs(t *testing.T) {
+	store := newFakeStore()
+
+	err := store.CreateBidLogs([]*itemmodel.BidLog{
+		{ID: "bid_1", ItemID: "item_1", RoomID: "room_1", UserID: "user_1", Price: 100},
+		{ID: "bid_2", ItemID: "item_1", RoomID: "room_1", UserID: "user_2", Price: 200},
+	})
+	if err != nil {
+		t.Fatalf("CreateBidLogs returned error: %v", err)
+	}
+	err = store.CreateBidLogs([]*itemmodel.BidLog{
+		{ID: "bid_2", ItemID: "item_1", RoomID: "room_1", UserID: "user_2", Price: 200},
+		{ID: "bid_3", ItemID: "item_1", RoomID: "room_1", UserID: "user_3", Price: 300},
+	})
+	if err != nil {
+		t.Fatalf("CreateBidLogs returned error on duplicate batch: %v", err)
+	}
+
+	if len(store.bidLogs) != 3 {
+		t.Fatalf("expected 3 unique bid logs, got %d", len(store.bidLogs))
+	}
+	if store.bidLogs[2].ID != "bid_3" {
+		t.Fatalf("expected bid_3 to be appended, got %q", store.bidLogs[2].ID)
+	}
+}
+
 func (s *fakeStore) ListBidRanking(itemID string, limit int) ([]itemdto.BidderPrice, error) {
 	best := map[string]int64{}
 	for _, l := range s.bidLogs {
