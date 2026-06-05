@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -36,6 +37,12 @@ func TestRoomFeedCursorRoundTrip(t *testing.T) {
 	if encoded == "" {
 		t.Fatal("expected non-empty cursor")
 	}
+	if strings.Contains(encoded, "=") {
+		t.Fatalf("expected raw base64 cursor without padding, got %q", encoded)
+	}
+	if _, err := base64.RawURLEncoding.DecodeString(encoded); err != nil {
+		t.Fatalf("expected cursor to decode with RawURLEncoding: %v", err)
+	}
 
 	decoded, err := DecodeRoomFeedCursor(encoded)
 	if err != nil {
@@ -53,11 +60,28 @@ func TestDecodeRoomFeedCursorRejectsInvalidValue(t *testing.T) {
 }
 
 func TestDecodeRoomFeedCursorRejectsMissingFields(t *testing.T) {
-	raw := `{"created_at":"2026-06-05T10:30:45Z","id":""}`
-	encoded := base64.RawURLEncoding.EncodeToString([]byte(raw))
+	tests := []struct {
+		name string
+		raw  string
+	}{
+		{
+			name: "omitted id",
+			raw:  `{"created_at":"2026-06-05T10:30:45Z"}`,
+		},
+		{
+			name: "omitted created_at",
+			raw:  `{"id":"room_abc"}`,
+		},
+	}
 
-	if _, err := DecodeRoomFeedCursor(encoded); !errors.Is(err, errorx.ErrInvalidRequest) {
-		t.Fatalf("expected ErrInvalidRequest, got %v", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			encoded := base64.RawURLEncoding.EncodeToString([]byte(tt.raw))
+
+			if _, err := DecodeRoomFeedCursor(encoded); !errors.Is(err, errorx.ErrInvalidRequest) {
+				t.Fatalf("expected ErrInvalidRequest, got %v", err)
+			}
+		})
 	}
 }
 
