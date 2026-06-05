@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"sort"
 	"testing"
 	"time"
 
@@ -78,6 +79,35 @@ func (s *fakeStore) ListRooms(status model.RoomStatus) ([]*model.LiveRoom, error
 			cp := *r
 			result = append(result, &cp)
 		}
+	}
+	return result, nil
+}
+
+func (s *fakeStore) ListLiveRoomsByCursor(cursor *dto.RoomFeedCursor, limit int) ([]*model.LiveRoom, error) {
+	var result []*model.LiveRoom
+	for _, r := range s.rooms {
+		if r.Status != model.RoomLive {
+			continue
+		}
+		if cursor != nil {
+			if r.CreatedAt.After(cursor.CreatedAt) {
+				continue
+			}
+			if r.CreatedAt.Equal(cursor.CreatedAt) && r.ID >= cursor.ID {
+				continue
+			}
+		}
+		cp := *r
+		result = append(result, &cp)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].CreatedAt.Equal(result[j].CreatedAt) {
+			return result[i].ID > result[j].ID
+		}
+		return result[i].CreatedAt.After(result[j].CreatedAt)
+	})
+	if limit > 0 && len(result) > limit {
+		result = result[:limit]
 	}
 	return result, nil
 }

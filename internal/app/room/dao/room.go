@@ -3,6 +3,7 @@ package dao
 import (
 	"errors"
 
+	"github.com/zet-plane/live-auction-backend/internal/app/room/dto"
 	"github.com/zet-plane/live-auction-backend/internal/app/room/model"
 	"github.com/zet-plane/live-auction-backend/pkg/errorx"
 	"gorm.io/gorm"
@@ -15,6 +16,7 @@ type Store interface {
 	FindRoomByMerchantID(merchantID string) (*model.LiveRoom, error)
 	UpdateRoom(room *model.LiveRoom) error
 	ListRooms(status model.RoomStatus) ([]*model.LiveRoom, error)
+	ListLiveRoomsByCursor(cursor *dto.RoomFeedCursor, limit int) ([]*model.LiveRoom, error)
 }
 
 type GormStore struct {
@@ -66,6 +68,26 @@ func (s *GormStore) ListRooms(status model.RoomStatus) ([]*model.LiveRoom, error
 		db = db.Where("status = ?", status)
 	}
 	if err := db.Order("created_at DESC").Find(&rooms).Error; err != nil {
+		return nil, err
+	}
+	return rooms, nil
+}
+
+func (s *GormStore) ListLiveRoomsByCursor(cursor *dto.RoomFeedCursor, limit int) ([]*model.LiveRoom, error) {
+	var rooms []*model.LiveRoom
+	db := s.db.Model(&model.LiveRoom{}).Where("status = ?", model.RoomLive)
+	if cursor != nil {
+		db = db.Where(
+			"created_at < ? OR (created_at = ? AND id < ?)",
+			cursor.CreatedAt,
+			cursor.CreatedAt,
+			cursor.ID,
+		)
+	}
+	if limit > 0 {
+		db = db.Limit(limit)
+	}
+	if err := db.Order("created_at DESC, id DESC").Find(&rooms).Error; err != nil {
 		return nil, err
 	}
 	return rooms, nil
