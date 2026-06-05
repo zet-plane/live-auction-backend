@@ -184,6 +184,55 @@ func (s *Service) ListRooms(ctx context.Context, statusFilter model.RoomStatus) 
 	return result, nil
 }
 
+func (s *Service) ListRoomFeed(ctx context.Context, input dto.RoomFeedInput) (result *dto.RoomFeedResult, err error) {
+	input = dto.NormalizeRoomFeedInput(input)
+	hasMore := false
+	finish := observability.Track(ctx, "room.feed", "limit", input.Limit)
+	defer func() {
+		finish(&err, "has_more", hasMore)
+	}()
+
+	cursor, err := dto.DecodeRoomFeedCursor(input.Cursor)
+	if err != nil {
+		return nil, err
+	}
+
+	rooms, err := s.store.ListLiveRoomsByCursor(cursor, input.Limit+1)
+	if err != nil {
+		return nil, err
+	}
+	if len(rooms) > input.Limit {
+		hasMore = true
+		rooms = rooms[:input.Limit]
+	}
+
+	list := make([]dto.RoomDetailDTO, 0, len(rooms))
+	for _, room := range rooms {
+		onlineCount := 0
+		if state, ok, _ := s.cache.GetRoomState(ctx, room.ID); ok {
+			onlineCount = state.OnlineCount
+		}
+		itemQueue, _ := s.cache.GetItemQueue(ctx, room.ID)
+		d := dto.NewRoomDetailDTO(room, onlineCount, itemQueue, nil)
+		list = append(list, d)
+	}
+
+	nextCursor := ""
+	if hasMore && len(rooms) > 0 {
+		last := rooms[len(rooms)-1]
+		nextCursor, err = dto.EncodeRoomFeedCursor(dto.RoomFeedCursor{CreatedAt: last.CreatedAt, ID: last.ID})
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return &dto.RoomFeedResult{
+		List:       list,
+		NextCursor: nextCursor,
+		HasMore:    hasMore,
+	}, nil
+}
+
 func (s *Service) roomItems(ctx context.Context, itemQueue []string) []itemdto.ItemListDTO {
 	if s.itemReader == nil || len(itemQueue) == 0 {
 		return []itemdto.ItemListDTO{}

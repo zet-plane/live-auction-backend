@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
+	"reflect"
 	"sort"
 	"testing"
 	"time"
@@ -115,10 +117,12 @@ func (s *fakeStore) ListLiveRoomsByCursor(cursor *dto.RoomFeedCursor, limit int)
 // ─── fakeCache ────────────────────────────────────────────────────────────────
 
 type fakeCache struct {
-	states    map[string]*roomcache.RoomState
-	queues    map[string][]string
-	initErr   error
-	updateErr error
+	states       map[string]*roomcache.RoomState
+	queues       map[string][]string
+	initErr      error
+	updateErr    error
+	stateErr     error
+	itemQueueErr error
 }
 
 func newFakeCache() *fakeCache {
@@ -138,6 +142,9 @@ func (c *fakeCache) InitRoomState(_ context.Context, roomID string, state roomca
 }
 
 func (c *fakeCache) GetRoomState(_ context.Context, roomID string) (*roomcache.RoomState, bool, error) {
+	if c.stateErr != nil {
+		return nil, false, c.stateErr
+	}
 	s, ok := c.states[roomID]
 	if !ok {
 		return nil, false, nil
@@ -166,6 +173,9 @@ func (c *fakeCache) ClearRoomCurrentItem(_ context.Context, roomID string) error
 }
 
 func (c *fakeCache) GetItemQueue(_ context.Context, roomID string) ([]string, error) {
+	if c.itemQueueErr != nil {
+		return nil, c.itemQueueErr
+	}
 	q := c.queues[roomID]
 	if q == nil {
 		return []string{}, nil
@@ -429,5 +439,113 @@ func TestGetRoomFallsBackWhenCacheMiss(t *testing.T) {
 	}
 	if len(result.ItemQueue) != 0 {
 		t.Fatalf("expected empty item_queue, got %v", result.ItemQueue)
+	}
+}
+
+func addRoom(store *fakeStore, id string, status model.RoomStatus, createdAt time.Time) {
+	room := &model.LiveRoom{
+		ID:         id,
+		MerchantID: "merchant_" + id,
+		Title:      "Room " + id,
+		Status:     status,
+		CreatedAt:  createdAt,
+		UpdatedAt:  createdAt,
+	}
+	store.rooms[id] = room
+	store.byMerchant[room.MerchantID] = room
+}
+
+func TestListRoomFeedReturnsOnlyLiveRoomsInStableOrder(t *testing.T) {
+	store := newFakeStore()
+	base := time.Date(2026, 6, 5, 10, 0, 0, 0, time.UTC)
+	addRoom(store, "room_a", model.RoomLive, base.Add(time.Minute))
+	addRoom(store, "room_c", model.RoomLive, base)
+	addRoom(store, "room_b", model.RoomLive, base)
+	addRoom(store, "room_idle", model.RoomIdle, base.Add(2*time.Minute))
+
+	result, err := NewService(store, newFakeCache()).ListRoomFeed(context.Background(), dto.RoomFeedInput{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListRoomFeed: %v", err)
+	}
+	if len(result.List) != 3 {
+		t.Fatalf("expected 3 live rooms, got %d", len(result.List))
+	}
+	got := []string{result.List[0].ID, result.List[1].ID, result.List[2].ID}
+	want := []string{"room_a", "room_c", "room_b"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("expected order %v, got %v", want, got)
+	}
+	if result.HasMore {
+		t.Fatal("expected has_more false")
+	}
+	if result.NextCursor != "" {
+		t.Fatalf("expected empty next_cursor, got %q", result.NextCursor)
+	}
+}
+
+func TestListRoomFeedReturnsNextBatchFromCursor(t *testing.T) {
+	store := newFakeStore()
+	base := time.Date(2026, 6, 5, 10, 0, 0, 0, time.UTC)
+	addRoom(store, "room_4", model.RoomLive, base.Add(4*time.Minute))
+	addRoom(store, "room_3", model.RoomLive, base.Add(3*time.Minute))
+	addRoom(store, "room_2", model.RoomLive, base.Add(2*time.Minute))
+	addRoom(store, "room_1", model.RoomLive, base.Add(time.Minute))
+
+	svc := NewService(store, newFakeCache())
+	first, err := svc.ListRoomFeed(context.Background(), dto.RoomFeedInput{Limit: 2})
+	if err != nil {
+		t.Fatalf("first ListRoomFeed: %v", err)
+	}
+	if !first.HasMore || first.NextCursor == "" {
+		t.Fatalf("expected has_more with next cursor, got %+v", first)
+	}
+	if got := []string{first.List[0].ID, first.List[1].ID}; !reflect.DeepEqual(got, []string{"room_4", "room_3"}) {
+		t.Fatalf("unexpected first batch %v", got)
+	}
+
+	second, err := svc.ListRoomFeed(context.Background(), dto.RoomFeedInput{Cursor: first.NextCursor, Limit: 2})
+	if err != nil {
+		t.Fatalf("second ListRoomFeed: %v", err)
+	}
+	if got := []string{second.List[0].ID, second.List[1].ID}; !reflect.DeepEqual(got, []string{"room_2", "room_1"}) {
+		t.Fatalf("unexpected second batch %v", got)
+	}
+	if second.HasMore || second.NextCursor != "" {
+		t.Fatalf("expected no more results, got %+v", second)
+	}
+}
+
+func TestListRoomFeedRejectsInvalidCursor(t *testing.T) {
+	_, err := NewService(newFakeStore(), newFakeCache()).ListRoomFeed(context.Background(), dto.RoomFeedInput{Cursor: "bad"})
+	if !errors.Is(err, errorx.ErrInvalidRequest) {
+		t.Fatalf("expected ErrInvalidRequest, got %v", err)
+	}
+}
+
+func TestListRoomFeedNormalizesLimitAndSoftFailsCache(t *testing.T) {
+	store := newFakeStore()
+	base := time.Date(2026, 6, 5, 10, 0, 0, 0, time.UTC)
+	for i := 0; i < dto.RoomFeedMaxLimit+5; i++ {
+		addRoom(store, fmt.Sprintf("room_%02d", i), model.RoomLive, base.Add(time.Duration(i)*time.Minute))
+	}
+	fc := newFakeCache()
+	fc.stateErr = errors.New("state unavailable")
+	fc.itemQueueErr = errors.New("queue unavailable")
+
+	result, err := NewService(store, fc).ListRoomFeed(context.Background(), dto.RoomFeedInput{Limit: dto.RoomFeedMaxLimit + 10})
+	if err != nil {
+		t.Fatalf("ListRoomFeed: %v", err)
+	}
+	if len(result.List) != dto.RoomFeedMaxLimit {
+		t.Fatalf("expected max limit %d, got %d", dto.RoomFeedMaxLimit, len(result.List))
+	}
+	if !result.HasMore || result.NextCursor == "" {
+		t.Fatalf("expected next cursor with more results, got %+v", result)
+	}
+	if result.List[0].OnlineCount != 0 {
+		t.Fatalf("expected online_count fallback 0, got %d", result.List[0].OnlineCount)
+	}
+	if len(result.List[0].ItemQueue) != 0 {
+		t.Fatalf("expected empty item_queue fallback, got %v", result.List[0].ItemQueue)
 	}
 }
