@@ -1314,6 +1314,12 @@ rtk git commit -m "feat: record ws stream lifecycle metrics"
 
 ## Final Verification
 
+Task 7 execution status note, 2026-06-05:
+
+- Added `ws_connection_lifecycle` counter with `stream`, `result`, and `reason` attributes.
+- Hub now records stream-aware lifecycle events for accepted connections, normal removal, and same-stream replacement closure.
+- Local verification covers `internal/core/observability` and `internal/app/ws/...`; no additional online matrix was run for this task.
+
 Before claiming implementation complete, run:
 
 ```bash

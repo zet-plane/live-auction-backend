@@ -183,6 +183,42 @@ func TestRegisterReplacesSameUserSameRoomSameStream(t *testing.T) {
 	}
 }
 
+func TestRegisterRecordsStreamLifecycleMetric(t *testing.T) {
+	rec := &captureWSRecorder{}
+	observability.SetDefaultRecorder(rec)
+	t.Cleanup(func() { observability.SetDefaultRecorder(nil) })
+
+	h := NewHub(nil)
+	conn := NewConnWithStream("conn_control", "user_1", "room_1", newFakeSocket(), h, streamControl)
+
+	h.Register(conn)
+	h.Remove(conn)
+
+	if got := rec.lifecycleCount("control", "accepted", ""); got != 1 {
+		t.Fatalf("accepted lifecycle count = %d, want 1", got)
+	}
+	if got := rec.lifecycleCount("control", "closed", "normal"); got != 1 {
+		t.Fatalf("closed lifecycle count = %d, want 1", got)
+	}
+}
+
+func TestRegisterRecordsReplacedStreamLifecycleMetric(t *testing.T) {
+	rec := &captureWSRecorder{}
+	observability.SetDefaultRecorder(rec)
+	t.Cleanup(func() { observability.SetDefaultRecorder(nil) })
+
+	h := NewHub(nil)
+	first := NewConnWithStream("conn_1", "user_1", "room_1", newFakeSocket(), h, streamMarket)
+	second := NewConnWithStream("conn_2", "user_1", "room_1", newFakeSocket(), h, streamMarket)
+
+	h.Register(first)
+	h.Register(second)
+
+	if got := rec.lifecycleCount("market", "closed", "replaced"); got != 1 {
+		t.Fatalf("replaced lifecycle count = %d, want 1", got)
+	}
+}
+
 func TestRemoveCleansIndexes(t *testing.T) {
 	h := NewHub(nil)
 	c := newTestConn("user_1", "room_1")
@@ -941,6 +977,7 @@ type captureWSRecorder struct {
 	deliveries  []observability.WSDeliveryMetric
 	writes      []observability.WSWriteMetric
 	timeSyncs   []observability.WSTimeSyncMetric
+	lifecycles  []observability.WSConnectionLifecycleMetric
 }
 
 func (r *captureWSRecorder) WSConnection(_ context.Context, m observability.WSConnectionMetric) {
@@ -971,6 +1008,12 @@ func (r *captureWSRecorder) WSTimeSync(_ context.Context, m observability.WSTime
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.timeSyncs = append(r.timeSyncs, m)
+}
+
+func (r *captureWSRecorder) WSConnectionLifecycle(_ context.Context, m observability.WSConnectionLifecycleMetric) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.lifecycles = append(r.lifecycles, m)
 }
 
 func (r *captureWSRecorder) connectionDelta() int64 {
@@ -1052,6 +1095,18 @@ func (r *captureWSRecorder) timeSyncCount(action, result string) int {
 	var total int
 	for _, m := range r.timeSyncs {
 		if m.Action == action && m.Result == result {
+			total++
+		}
+	}
+	return total
+}
+
+func (r *captureWSRecorder) lifecycleCount(stream, result, reason string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var total int
+	for _, m := range r.lifecycles {
+		if m.Stream == stream && m.Result == result && m.Reason == reason {
 			total++
 		}
 	}

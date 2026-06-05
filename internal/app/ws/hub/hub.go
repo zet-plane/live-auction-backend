@@ -71,6 +71,7 @@ func (h *Hub) Register(c *Conn) {
 		Result:      "success",
 		ActiveDelta: 1,
 	})
+	recordConnectionLifecycle(c, "accepted", "")
 	for range replaced {
 		observability.DefaultRecorder().WSConnection(context.Background(), observability.WSConnectionMetric{
 			Action:      "replace",
@@ -80,6 +81,7 @@ func (h *Hub) Register(c *Conn) {
 	}
 
 	for _, old := range replaced {
+		recordConnectionLifecycle(old, "closed", "replaced")
 		old.close()
 	}
 
@@ -138,6 +140,7 @@ func (h *Hub) Remove(c *Conn) {
 			Result:      "success",
 			ActiveDelta: -1,
 		})
+		recordConnectionLifecycle(c, "closed", "normal")
 	}
 }
 
@@ -287,6 +290,17 @@ func recordDelivery(eventType, result, reason string, queueLen, queueCap int64, 
 		QueueLen:  queueLen,
 		QueueCap:  queueCap,
 		Duration:  duration,
+	})
+}
+
+func recordConnectionLifecycle(c *Conn, result, reason string) {
+	if c == nil {
+		return
+	}
+	observability.DefaultRecorder().WSConnectionLifecycle(context.Background(), observability.WSConnectionLifecycleMetric{
+		Stream: string(c.stream),
+		Result: result,
+		Reason: reason,
 	})
 }
 

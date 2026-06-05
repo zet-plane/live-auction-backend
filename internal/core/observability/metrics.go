@@ -20,6 +20,7 @@ type Recorder interface {
 	BidLogStream(context.Context, BidLogStreamMetric)
 	BidLogWorker(context.Context, BidLogWorkerMetric)
 	WSConnection(context.Context, WSConnectionMetric)
+	WSConnectionLifecycle(context.Context, WSConnectionLifecycleMetric)
 	WSBroadcast(context.Context, WSBroadcastMetric)
 	WSDelivery(context.Context, WSDeliveryMetric)
 	WSWrite(context.Context, WSWriteMetric)
@@ -92,6 +93,12 @@ type WSConnectionMetric struct {
 	ActiveDelta int64
 }
 
+type WSConnectionLifecycleMetric struct {
+	Stream string
+	Result string
+	Reason string
+}
+
 type WSBroadcastMetric struct {
 	Mode       string
 	Result     string
@@ -130,21 +137,22 @@ type OrderMetric struct {
 
 type NoopRecorder struct{}
 
-func (NoopRecorder) HTTPRequest(context.Context, HTTPRequestMetric)   {}
-func (NoopRecorder) RedisLua(context.Context, RedisLuaMetric)         {}
-func (NoopRecorder) DBQuery(context.Context, DBQueryMetric)           {}
-func (NoopRecorder) Cron(context.Context, CronMetric)                 {}
-func (NoopRecorder) Bid(context.Context, BidMetric)                   {}
-func (NoopRecorder) BidBroadcast(context.Context, BidBroadcastMetric) {}
-func (NoopRecorder) BidHotState(context.Context, BidHotStateMetric)   {}
-func (NoopRecorder) BidLogStream(context.Context, BidLogStreamMetric) {}
-func (NoopRecorder) BidLogWorker(context.Context, BidLogWorkerMetric) {}
-func (NoopRecorder) WSConnection(context.Context, WSConnectionMetric) {}
-func (NoopRecorder) WSBroadcast(context.Context, WSBroadcastMetric)   {}
-func (NoopRecorder) WSDelivery(context.Context, WSDeliveryMetric)     {}
-func (NoopRecorder) WSWrite(context.Context, WSWriteMetric)           {}
-func (NoopRecorder) WSTimeSync(context.Context, WSTimeSyncMetric)     {}
-func (NoopRecorder) OrderAuctionCreate(context.Context, OrderMetric)  {}
+func (NoopRecorder) HTTPRequest(context.Context, HTTPRequestMetric)                     {}
+func (NoopRecorder) RedisLua(context.Context, RedisLuaMetric)                           {}
+func (NoopRecorder) DBQuery(context.Context, DBQueryMetric)                             {}
+func (NoopRecorder) Cron(context.Context, CronMetric)                                   {}
+func (NoopRecorder) Bid(context.Context, BidMetric)                                     {}
+func (NoopRecorder) BidBroadcast(context.Context, BidBroadcastMetric)                   {}
+func (NoopRecorder) BidHotState(context.Context, BidHotStateMetric)                     {}
+func (NoopRecorder) BidLogStream(context.Context, BidLogStreamMetric)                   {}
+func (NoopRecorder) BidLogWorker(context.Context, BidLogWorkerMetric)                   {}
+func (NoopRecorder) WSConnection(context.Context, WSConnectionMetric)                   {}
+func (NoopRecorder) WSConnectionLifecycle(context.Context, WSConnectionLifecycleMetric) {}
+func (NoopRecorder) WSBroadcast(context.Context, WSBroadcastMetric)                     {}
+func (NoopRecorder) WSDelivery(context.Context, WSDeliveryMetric)                       {}
+func (NoopRecorder) WSWrite(context.Context, WSWriteMetric)                             {}
+func (NoopRecorder) WSTimeSync(context.Context, WSTimeSyncMetric)                       {}
+func (NoopRecorder) OrderAuctionCreate(context.Context, OrderMetric)                    {}
 
 var defaultRecorder Recorder = NoopRecorder{}
 
@@ -185,6 +193,7 @@ type OTelRecorder struct {
 	bidLogWorkerDuration  metric.Float64Histogram
 	wsConnectionCount     metric.Int64Counter
 	wsConnectionActive    metric.Int64UpDownCounter
+	wsConnectionLifecycle metric.Int64Counter
 	wsBroadcastCount      metric.Int64Counter
 	wsBroadcastTargets    metric.Int64Histogram
 	wsBroadcastDuration   metric.Float64Histogram
@@ -296,6 +305,10 @@ func NewRecorder() (*OTelRecorder, error) {
 	if err != nil {
 		return nil, err
 	}
+	wsConnectionLifecycle, err := meter.Int64Counter("ws_connection_lifecycle")
+	if err != nil {
+		return nil, err
+	}
 	wsBroadcastCount, err := meter.Int64Counter("ws.broadcast.count")
 	if err != nil {
 		return nil, err
@@ -365,6 +378,7 @@ func NewRecorder() (*OTelRecorder, error) {
 		bidLogWorkerDuration:  bidLogWorkerDuration,
 		wsConnectionCount:     wsConnectionCount,
 		wsConnectionActive:    wsConnectionActive,
+		wsConnectionLifecycle: wsConnectionLifecycle,
 		wsBroadcastCount:      wsBroadcastCount,
 		wsBroadcastTargets:    wsBroadcastTargets,
 		wsBroadcastDuration:   wsBroadcastDuration,
@@ -460,6 +474,14 @@ func (r *OTelRecorder) WSConnection(ctx context.Context, m WSConnectionMetric) {
 	if m.ActiveDelta != 0 {
 		r.wsConnectionActive.Add(ctx, m.ActiveDelta, opts)
 	}
+}
+
+func (r *OTelRecorder) WSConnectionLifecycle(ctx context.Context, m WSConnectionLifecycleMetric) {
+	r.wsConnectionLifecycle.Add(ctx, 1, metric.WithAttributes(
+		attribute.String("stream", SafeReason(m.Stream)),
+		attribute.String("result", SafeReason(m.Result)),
+		attribute.String("reason", SafeReason(m.Reason)),
+	))
 }
 
 func (r *OTelRecorder) WSBroadcast(ctx context.Context, m WSBroadcastMetric) {

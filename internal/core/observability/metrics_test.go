@@ -109,6 +109,34 @@ func TestCronMetricsAvoidPrometheusReservedJobLabel(t *testing.T) {
 	}
 }
 
+func TestWSConnectionLifecycleMetricsIncludeStreamAndResult(t *testing.T) {
+	ctx := context.Background()
+	reader := sdkmetric.NewManualReader()
+	oldProvider := otel.GetMeterProvider()
+	otel.SetMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)))
+	t.Cleanup(func() {
+		otel.SetMeterProvider(oldProvider)
+	})
+
+	rec, err := NewRecorder()
+	if err != nil {
+		t.Fatalf("NewRecorder returned error: %v", err)
+	}
+	rec.WSConnectionLifecycle(ctx, WSConnectionLifecycleMetric{
+		Stream: "control",
+		Result: "accepted",
+	})
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(ctx, &rm); err != nil {
+		t.Fatalf("Collect returned error: %v", err)
+	}
+	attrs := metricAttributes(t, rm, "ws_connection_lifecycle")
+	if attrs["stream"] == "" || attrs["result"] == "" {
+		t.Fatalf("expected stream and result attrs, got %#v", attrs)
+	}
+}
+
 func collectedMetricNames(rm metricdata.ResourceMetrics) map[string]bool {
 	names := make(map[string]bool)
 	for _, sm := range rm.ScopeMetrics {
