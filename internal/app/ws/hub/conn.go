@@ -25,6 +25,7 @@ type Conn struct {
 	id     string
 	userID string
 	roomID string
+	stream connStream
 	ws     socket
 	high   chan wsevent.Event
 	send   chan wsevent.Event
@@ -56,10 +57,15 @@ type clientMessage struct {
 }
 
 func NewConn(id, userID, roomID string, ws socket, hub *Hub) *Conn {
+	return NewConnWithStream(id, userID, roomID, ws, hub, streamAll)
+}
+
+func NewConnWithStream(id, userID, roomID string, ws socket, hub *Hub, stream connStream) *Conn {
 	return &Conn{
 		id:     id,
 		userID: userID,
 		roomID: roomID,
+		stream: stream,
 		ws:     ws,
 		high:   make(chan wsevent.Event, highBufSize),
 		send:   make(chan wsevent.Event, sendBufSize),

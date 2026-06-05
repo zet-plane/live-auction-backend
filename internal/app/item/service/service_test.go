@@ -611,11 +611,12 @@ func (c *fakeCache) SettleAuctionLua(_ context.Context, itemID string, nowUnixMS
 	state.DealPrice = dealPrice
 	delete(c.ending, itemID)
 	return &itemcache.SettlementResult{
-		ItemID:        itemID,
-		LeaderUserID:  state.LeaderUserID,
-		DealPrice:     dealPrice,
-		EndedAtUnixMS: nowUnixMS,
-		EndReason:     "time_expired",
+		ItemID:         itemID,
+		LeaderUserID:   state.LeaderUserID,
+		DealPrice:      dealPrice,
+		EndedAtUnixMS:  nowUnixMS,
+		EndReason:      "time_expired",
+		AuctionVersion: int64(state.BidCount),
 	}, true, nil
 }
 
@@ -758,6 +759,7 @@ func (c *fakeCache) PlaceBidLua(_ context.Context, itemID string, args itemcache
 		IsCapped:         isCapped,
 		PrevLeaderUserID: prevLeader,
 		Status:           state.Status,
+		AuctionVersion:   int64(state.BidCount),
 	}, nil
 }
 
@@ -1153,6 +1155,9 @@ func TestAuctionSnapshotReturnsRedisOngoingState(t *testing.T) {
 	if snapshot.BidCount != 5 || snapshot.ParticipantCount != 3 {
 		t.Fatalf("expected bid/participant counts 5/3, got %d/%d", snapshot.BidCount, snapshot.ParticipantCount)
 	}
+	if snapshot.AuctionVersion != 5 {
+		t.Fatalf("expected auction_version 5, got %d", snapshot.AuctionVersion)
+	}
 }
 
 func TestAuctionSnapshotReturnsRedisEndedState(t *testing.T) {
@@ -1202,6 +1207,9 @@ func TestAuctionSnapshotReturnsRedisEndedState(t *testing.T) {
 	if snapshot.BidCount != 8 || snapshot.ParticipantCount != 2 {
 		t.Fatalf("expected bid/participant counts 8/2, got %d/%d", snapshot.BidCount, snapshot.ParticipantCount)
 	}
+	if snapshot.AuctionVersion != 8 {
+		t.Fatalf("expected auction_version 8, got %d", snapshot.AuctionVersion)
+	}
 	if snapshot.EndReason != "time_expired" {
 		t.Fatalf("expected end_reason time_expired, got %q", snapshot.EndReason)
 	}
@@ -1225,6 +1233,7 @@ func TestBroadcastTimeSyncFansOutOngoingActiveAuctions(t *testing.T) {
 		DealPrice:     1200,
 		EndTime:       endTime,
 		EndTimeUnixMS: endTime.UnixMilli(),
+		BidCount:      12,
 	}
 	fc.ending[itemID] = endTime.UnixMilli()
 
@@ -1263,6 +1272,9 @@ func TestBroadcastTimeSyncFansOutOngoingActiveAuctions(t *testing.T) {
 	}
 	if payload.Status != "ongoing" {
 		t.Fatalf("expected status ongoing, got %q", payload.Status)
+	}
+	if payload.AuctionVersion != 12 {
+		t.Fatalf("expected auction_version 12, got %d", payload.AuctionVersion)
 	}
 }
 
@@ -1601,6 +1613,42 @@ func TestCancelItemClearsRoomCurrentItem(t *testing.T) {
 	}
 }
 
+func TestCancelItemBroadcastsAuctionVersionBeforeDeletingState(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	fb := &fakeBroadcaster{}
+	svc := NewService(store, itemdto.AuctionPolicy{}, fc, nil, nil, fb)
+	itemID := seedPublishedItem(t, svc, "merchant_1", "room_abc")
+	merchant := &usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}
+
+	_ = svc.StartItem(context.Background(), merchant, itemID)
+	fc.states[itemID].BidCount = 4
+
+	if err := svc.CancelItem(context.Background(), merchant, itemID); err != nil {
+		t.Fatalf("CancelItem failed: %v", err)
+	}
+
+	var payload itemdto.AuctionCancelledPayload
+	found := false
+	for _, f := range fb.fanouts {
+		if f.event.Type != itemdto.EventAuctionCancelled || f.topic != wsevent.RoomTopic("room_abc") {
+			continue
+		}
+		got, ok := f.event.Payload.(itemdto.AuctionCancelledPayload)
+		if !ok {
+			t.Fatalf("expected AuctionCancelledPayload, got %T", f.event.Payload)
+		}
+		payload = got
+		found = true
+	}
+	if !found {
+		t.Fatalf("expected auction_cancelled fanout, got %+v", fb.fanouts)
+	}
+	if payload.AuctionVersion != 4 {
+		t.Fatalf("expected auction_version 4, got %d", payload.AuctionVersion)
+	}
+}
+
 func seedPublishedItem(t *testing.T, svc *Service, merchantID, roomID string) string {
 	t.Helper()
 	start := time.Date(2026, 5, 21, 20, 0, 0, 0, time.UTC)
@@ -1760,6 +1808,7 @@ func TestSettleDueAuctionsBroadcastsFinalAuctionEndedPayload(t *testing.T) {
 	fc.states[itemID].LeaderUserID = "user_winner"
 	fc.states[itemID].DealPrice = 1600
 	fc.states[itemID].CurrentPrice = 1600
+	fc.states[itemID].BidCount = 6
 	fc.ending[itemID] = dueEnd.UnixMilli()
 	svc.now = func() time.Time { return now }
 
@@ -1795,6 +1844,9 @@ func TestSettleDueAuctionsBroadcastsFinalAuctionEndedPayload(t *testing.T) {
 	}
 	if payload.EndReason != "time_expired" {
 		t.Fatalf("expected end_reason time_expired, got %q", payload.EndReason)
+	}
+	if payload.AuctionVersion != 6 {
+		t.Fatalf("expected auction_version 6, got %d", payload.AuctionVersion)
 	}
 }
 

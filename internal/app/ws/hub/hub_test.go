@@ -17,6 +17,7 @@ func newTestConn(userID, roomID string) *Conn {
 		id:     "conn_" + userID,
 		userID: userID,
 		roomID: roomID,
+		stream: streamAll,
 		high:   make(chan wsevent.Event, 8),
 		send:   make(chan wsevent.Event, 8),
 
@@ -44,6 +45,48 @@ func TestClassifyEventLane(t *testing.T) {
 	for _, tt := range tests {
 		if got := classifyEventLane(tt.eventType); got != tt.want {
 			t.Fatalf("classifyEventLane(%q) = %q, want %q", tt.eventType, got, tt.want)
+		}
+	}
+}
+
+func TestParseConnStream(t *testing.T) {
+	tests := []struct {
+		raw  string
+		want connStream
+	}{
+		{"", streamAll},
+		{"all", streamAll},
+		{"control", streamControl},
+		{"market", streamMarket},
+		{"user", streamControl},
+		{"bad", streamAll},
+	}
+	for _, tt := range tests {
+		if got := parseConnStream(tt.raw); got != tt.want {
+			t.Fatalf("parseConnStream(%q) = %q, want %q", tt.raw, got, tt.want)
+		}
+	}
+}
+
+func TestClassifyEventStream(t *testing.T) {
+	tests := []struct {
+		eventType string
+		want      connStream
+	}{
+		{"time_sync", streamControl},
+		{"auction_snapshot", streamControl},
+		{"auction_started", streamControl},
+		{"auction_extended", streamControl},
+		{"auction_ended", streamControl},
+		{"auction_cancelled", streamControl},
+		{"bid_success", streamMarket},
+		{"user_outbid", streamControl},
+		{"order_created", streamControl},
+		{"unknown_event", streamMarket},
+	}
+	for _, tt := range tests {
+		if got := classifyEventStream(tt.eventType); got != tt.want {
+			t.Fatalf("classifyEventStream(%q) = %q, want %q", tt.eventType, got, tt.want)
 		}
 	}
 }
@@ -101,6 +144,45 @@ func TestRegisterSameUserRoomReplacesOldConnection(t *testing.T) {
 	}
 }
 
+func TestRegisterAllowsSameUserSameRoomDifferentStreams(t *testing.T) {
+	h := NewHub(nil)
+	control := NewConnWithStream("conn_control", "user_1", "room_1", newFakeSocket(), h, streamControl)
+	market := NewConnWithStream("conn_market", "user_1", "room_1", newFakeSocket(), h, streamMarket)
+
+	h.Register(control)
+	h.Register(market)
+
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if got := len(h.rooms["room_1"]); got != 2 {
+		t.Fatalf("room connection count = %d, want 2", got)
+	}
+	if got := len(h.users["user_1"]); got != 2 {
+		t.Fatalf("user connection count = %d, want 2", got)
+	}
+}
+
+func TestRegisterReplacesSameUserSameRoomSameStream(t *testing.T) {
+	h := NewHub(nil)
+	first := NewConnWithStream("conn_1", "user_1", "room_1", newFakeSocket(), h, streamMarket)
+	second := NewConnWithStream("conn_2", "user_1", "room_1", newFakeSocket(), h, streamMarket)
+
+	h.Register(first)
+	h.Register(second)
+
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if got := len(h.rooms["room_1"]); got != 1 {
+		t.Fatalf("room connection count = %d, want 1", got)
+	}
+	if _, ok := h.rooms["room_1"]["conn_2"]; !ok {
+		t.Fatalf("replacement connection not registered")
+	}
+	if !first.isClosed() {
+		t.Fatalf("expected first same-stream connection to be closed after replacement")
+	}
+}
+
 func TestRemoveCleansIndexes(t *testing.T) {
 	h := NewHub(nil)
 	c := newTestConn("user_1", "room_1")
@@ -118,10 +200,36 @@ func TestRemoveCleansIndexes(t *testing.T) {
 	}
 }
 
+func TestRemoveLeavesPresenceAfterLastSameUserRoomStreamConnection(t *testing.T) {
+	h := NewHub(nil)
+	presence := &fakePresenceStore{leaveCh: make(chan struct{}, 2)}
+	h.presence = presence
+	control := NewConnWithStream("conn_control", "user_1", "room_1", newFakeSocket(), h, streamControl)
+	market := NewConnWithStream("conn_market", "user_1", "room_1", newFakeSocket(), h, streamMarket)
+
+	h.Register(control)
+	h.Register(market)
+	waitFor(t, func() bool { return presence.joinCount() == 2 })
+
+	h.Remove(control)
+	select {
+	case <-presence.leaveCh:
+		t.Fatalf("presence leave should wait until the last same-user room stream closes")
+	case <-time.After(30 * time.Millisecond):
+	}
+
+	h.Remove(market)
+	waitFor(t, func() bool { return presence.leaveCount() == 1 })
+	if got := presence.leaveCount(); got != 1 {
+		t.Fatalf("presence leave count after last removal = %d, want 1", got)
+	}
+}
+
 type fakePresenceStore struct {
-	mu     sync.Mutex
-	joins  []string
-	leaves []string
+	mu      sync.Mutex
+	joins   []string
+	leaves  []string
+	leaveCh chan struct{}
 }
 
 func (s *fakePresenceStore) JoinRoom(_ context.Context, roomID, userID string) error {
@@ -135,6 +243,12 @@ func (s *fakePresenceStore) LeaveRoom(_ context.Context, roomID, userID string) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.leaves = append(s.leaves, roomID+"/"+userID)
+	if s.leaveCh != nil {
+		select {
+		case s.leaveCh <- struct{}{}:
+		default:
+		}
+	}
 	return nil
 }
 
@@ -294,6 +408,59 @@ func TestFanoutDeliversToRoom(t *testing.T) {
 	}
 }
 
+func TestFanoutDeliversOnlyToMatchingRoomStreams(t *testing.T) {
+	h := NewHub(nil)
+	controlWS := newFakeSocket()
+	marketWS := newFakeSocket()
+	allWS := newFakeSocket()
+	control := NewConnWithStream("conn_control", "user_1", "room_1", controlWS, h, streamControl)
+	market := NewConnWithStream("conn_market", "user_2", "room_1", marketWS, h, streamMarket)
+	all := NewConnWithStream("conn_all", "user_3", "room_1", allWS, h, streamAll)
+	h.Register(control)
+	h.Register(market)
+	h.Register(all)
+
+	h.SendToRoom("room_1", wsevent.Event{Type: "time_sync"})
+
+	if len(controlWS.writtenEvents()) != 0 || len(marketWS.writtenEvents()) != 0 || len(allWS.writtenEvents()) != 0 {
+		t.Fatalf("events should be queued but not written until write loop starts")
+	}
+	if len(control.high) != 0 {
+		t.Fatalf("time_sync must not enter high queue")
+	}
+	if market.latestTimeSync != nil {
+		t.Fatalf("market stream should not receive control time_sync")
+	}
+	if all.latestTimeSync == nil {
+		t.Fatalf("all stream should receive time_sync for backward compatibility")
+	}
+	if control.latestTimeSync == nil {
+		t.Fatalf("control stream should receive time_sync")
+	}
+}
+
+func TestFanoutDeliversMarketEventsOnlyToMatchingRoomStreams(t *testing.T) {
+	h := NewHub(nil)
+	control := NewConnWithStream("conn_control", "user_1", "room_1", newFakeSocket(), h, streamControl)
+	market := NewConnWithStream("conn_market", "user_2", "room_1", newFakeSocket(), h, streamMarket)
+	all := NewConnWithStream("conn_all", "user_3", "room_1", newFakeSocket(), h, streamAll)
+	h.Register(control)
+	h.Register(market)
+	h.Register(all)
+
+	h.SendToRoom("room_1", wsevent.Event{Type: "bid_success"})
+
+	if len(control.send) != 0 {
+		t.Fatalf("control stream should not receive market bid_success")
+	}
+	if len(market.send) != 1 {
+		t.Fatalf("market stream should receive bid_success, got %d events", len(market.send))
+	}
+	if len(all.send) != 1 {
+		t.Fatalf("all stream should receive bid_success for backward compatibility, got %d events", len(all.send))
+	}
+}
+
 func TestFanoutRecordsBroadcastAndDeliveryMetrics(t *testing.T) {
 	rec := &captureWSRecorder{}
 	observability.SetDefaultRecorder(rec)
@@ -338,6 +505,7 @@ func TestFullChannelRecordsDroppedDeliveryMetric(t *testing.T) {
 		id:     "slow_conn",
 		userID: "user_slow",
 		roomID: "room_1",
+		stream: streamAll,
 		send:   make(chan wsevent.Event, 1),
 	}
 	h.Register(c)
@@ -413,6 +581,35 @@ func TestRegisterDeliversSnapshotWhenProviderHasOne(t *testing.T) {
 	}
 	if got := <-c.high; got.Type != "auction_snapshot" {
 		t.Fatalf("expected auction_snapshot, got %q", got.Type)
+	}
+}
+
+func TestRegisterDeliversSnapshotOnlyToMatchingStreams(t *testing.T) {
+	h := NewHub(nil)
+	provider := &fakeSnapshotProvider{
+		event: wsevent.Event{Type: "auction_snapshot"},
+		ok:    true,
+	}
+	h.SetSnapshotProvider(provider)
+
+	market := NewConnWithStream("conn_market", "user_1", "room_1", newFakeSocket(), h, streamMarket)
+	control := NewConnWithStream("conn_control", "user_2", "room_1", newFakeSocket(), h, streamControl)
+	all := NewConnWithStream("conn_all", "user_3", "room_1", newFakeSocket(), h, streamAll)
+	h.Register(market)
+	h.Register(control)
+	h.Register(all)
+
+	if len(provider.calls) != 2 {
+		t.Fatalf("snapshot provider should skip market stream and run for control/all only, got calls %v", provider.calls)
+	}
+	if len(market.high) != 0 || len(market.send) != 0 || market.latestTimeSync != nil {
+		t.Fatalf("market stream should not receive control auction_snapshot")
+	}
+	if len(control.high) != 1 {
+		t.Fatalf("control stream should receive auction_snapshot, got %d events", len(control.high))
+	}
+	if len(all.high) != 1 {
+		t.Fatalf("all stream should receive auction_snapshot for backward compatibility, got %d events", len(all.high))
 	}
 }
 
@@ -596,6 +793,30 @@ func TestUnicastDeliversToUser(t *testing.T) {
 	}
 }
 
+func TestUnicastDeliversOnlyToMatchingUserStreams(t *testing.T) {
+	h := NewHub(nil)
+	control := NewConnWithStream("conn_control", "user_1", "room_1", newFakeSocket(), h, streamControl)
+	market := NewConnWithStream("conn_market", "user_1", "room_1", newFakeSocket(), h, streamMarket)
+	all := NewConnWithStream("conn_all", "user_1", "room_1", newFakeSocket(), h, streamAll)
+	h.Register(control)
+	h.Register(market)
+	h.Register(all)
+
+	if err := h.Unicast(wsevent.UserAddr("user_1"), wsevent.Event{Type: "user_outbid"}); err != nil {
+		t.Fatalf("Unicast error: %v", err)
+	}
+
+	if len(control.high) != 1 {
+		t.Fatalf("control stream should receive user_outbid, got %d events", len(control.high))
+	}
+	if len(all.high) != 1 {
+		t.Fatalf("all stream should receive user_outbid for backward compatibility, got %d events", len(all.high))
+	}
+	if len(market.high) != 0 || len(market.send) != 0 || market.latestTimeSync != nil {
+		t.Fatalf("market stream should not receive control user_outbid")
+	}
+}
+
 func TestSlowConnectionIsClosedOnFullChannel(t *testing.T) {
 	h := NewHub(nil)
 	// send channel 容量为 1，填满后下次 Fanout 应触发 closeConn
@@ -603,6 +824,7 @@ func TestSlowConnectionIsClosedOnFullChannel(t *testing.T) {
 		id:     "slow_conn",
 		userID: "user_slow",
 		roomID: "room_1",
+		stream: streamAll,
 		send:   make(chan wsevent.Event, 1), // 容量1
 	}
 	h.Register(c)

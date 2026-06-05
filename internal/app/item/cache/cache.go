@@ -78,6 +78,7 @@ type BidLuaResult struct {
 	IsCapped         bool
 	PrevLeaderUserID string // leader before this bid; empty if no previous leader
 	Status           string
+	AuctionVersion   int64
 }
 
 type BidLogEvent struct {
@@ -95,11 +96,12 @@ type BidLogStreamMessage struct {
 }
 
 type SettlementResult struct {
-	ItemID        string
-	LeaderUserID  string
-	DealPrice     int64
-	EndedAtUnixMS int64
-	EndReason     string
+	ItemID         string
+	LeaderUserID   string
+	DealPrice      int64
+	EndedAtUnixMS  int64
+	EndReason      string
+	AuctionVersion int64
 }
 
 const FinalSnapshotTTL = 24 * time.Hour
@@ -173,6 +175,7 @@ if end_ms == 0 or end_ms > now_ms then return {0} end
 
 local leader = s['leader_user_id'] or ''
 local deal = tonumber(s['deal_price'] or s['current_price'] or 0)
+local bid_cnt = tonumber(s['bid_count'] or 0)
 
 redis.call('HSET', state_key,
   'status', 'ended',
@@ -181,7 +184,7 @@ redis.call('HSET', state_key,
   'deal_price', deal)
 redis.call('ZREM', ending_key, item_id)
 
-return {1, leader, deal, now_ms, 'time_expired'}
+return {1, leader, deal, now_ms, 'time_expired', bid_cnt}
 `
 
 var settleAuctionScript = redis.NewScript(settleAuctionLuaScript)
@@ -360,11 +363,12 @@ func (c *RedisCache) SettleAuctionLua(ctx context.Context, itemID string, nowUni
 		return nil, false, fmt.Errorf("settlement lua result length unexpected: %d", len(res))
 	}
 	return &SettlementResult{
-		ItemID:        itemID,
-		LeaderUserID:  luaAnyToString(res[1]),
-		DealPrice:     luaAnyToInt64(res[2]),
-		EndedAtUnixMS: luaAnyToInt64(res[3]),
-		EndReason:     luaAnyToString(res[4]),
+		ItemID:         itemID,
+		LeaderUserID:   luaAnyToString(res[1]),
+		DealPrice:      luaAnyToInt64(res[2]),
+		EndedAtUnixMS:  luaAnyToInt64(res[3]),
+		EndReason:      luaAnyToString(res[4]),
+		AuctionVersion: luaAnyToInt64At(res, 5),
 	}, true, nil
 }
 
@@ -438,6 +442,13 @@ func luaAnyToInt64(v any) int64 {
 	default:
 		return parseInt64(fmt.Sprint(v))
 	}
+}
+
+func luaAnyToInt64At(values []any, index int) int64 {
+	if index < 0 || index >= len(values) {
+		return 0
+	}
+	return luaAnyToInt64(values[index])
 }
 
 func luaAnyToString(v any) string {

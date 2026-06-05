@@ -48,18 +48,19 @@ if existing then
   local end_unix = tonumber(m['end_time_unix'] or 0)
   local end_ms = tonumber(m['end_time_unix_ms'] or 0)
   local status = m['status'] or 'ongoing'
+  local bid_cnt = tonumber(m['bid_count'] or 0)
   if end_ms == 0 then end_ms = end_unix * 1000 end
   if end_unix == 0 and end_ms > 0 then end_unix = math.floor(end_ms / 1000) end
-  return {1, existing, deal_price, m['leader_user_id'] or '', end_unix, end_ms, 0, 0, '', status}
+  return {1, existing, deal_price, m['leader_user_id'] or '', end_unix, end_ms, 0, 0, '', status, bid_cnt}
 end
 
 local raw = redis.call('HGETALL', state_key)
-if #raw == 0 then return {2,'',0,'',0,0,0,0,'',''} end
+if #raw == 0 then return {2,'',0,'',0,0,0,0,'','',0} end
 local s = {}
 for i = 1, #raw, 2 do s[raw[i]] = raw[i+1] end
 
 local status = s['status'] or ''
-if status ~= '' and status ~= 'ongoing' then return {2,'',0,'',0,0,0,0,'',status} end
+if status ~= '' and status ~= 'ongoing' then return {2,'',0,'',0,0,0,0,'',status,0} end
 
 local cur_price = tonumber(s['deal_price'] or s['current_price'] or 0)
 local end_unix  = tonumber(s['end_time_unix']  or 0)
@@ -73,9 +74,9 @@ local prev_leader = s['leader_user_id'] or ''
 if end_ms == 0 then end_ms = end_unix * 1000 end
 if end_unix == 0 and end_ms > 0 then end_unix = math.floor(end_ms / 1000) end
 
-if now_ms >= end_ms then return {2,'',0,'',0,0,0,0,'',''} end
-if price <= cur_price   then return {3,'',0,'',0,0,0,0,'',''} end
-if (price - cur_price) % bid_incr ~= 0 then return {4,'',0,'',0,0,0,0,'',''} end
+if now_ms >= end_ms then return {2,'',0,'',0,0,0,0,'','',0} end
+if price <= cur_price   then return {3,'',0,'',0,0,0,0,'','',0} end
+if (price - cur_price) % bid_incr ~= 0 then return {4,'',0,'',0,0,0,0,'','',0} end
 
 redis.call('XADD', '{{BID_LOG_STREAM_NAME}}', '*',
   '{{BID_LOG_FIELD_BID_ID}}', bid_id,
@@ -130,7 +131,7 @@ if price_cap > 0 and price >= price_cap then
   redis.call('ZREM', ending_key, item_id)
 end
 
-return {0, bid_id, price, user_id, end_unix, end_ms, is_extended, is_capped, prev_leader, result_status}
+return {0, bid_id, price, user_id, end_unix, end_ms, is_extended, is_capped, prev_leader, result_status, bid_cnt}
 `
 
 var bidLuaScript = strings.NewReplacer(
@@ -218,6 +219,9 @@ func (c *RedisCache) PlaceBidLua(ctx context.Context, itemID string, args BidLua
 	}
 	if len(res) > 9 {
 		result.Status = toStr(res[9])
+	}
+	if len(res) > 10 {
+		result.AuctionVersion = toI64(res[10])
 	}
 	span.SetAttributes(attribute.String("auction.item_id", itemID), attribute.Int("auction.lua.code", result.Code))
 	observability.DefaultRecorder().RedisLua(ctx, observability.RedisLuaMetric{Code: strconv.Itoa(result.Code), Duration: time.Since(start)})

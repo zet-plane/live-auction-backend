@@ -92,9 +92,11 @@ func (s *Service) fanoutBidSuccess(pending *pendingBidBroadcast, pendingCount in
 	if pending == nil || s.broadcaster == nil {
 		return
 	}
+	payload := pending.payload
+	payload.CoalescedBids = pending.bids
 	err := s.broadcaster.Fanout(wsevent.RoomTopic(pending.roomID), wsevent.Event{
 		Type:    dto.EventBidSuccess,
-		Payload: pending.payload,
+		Payload: payload,
 	})
 	recordBidBroadcastMetric("flush", fanoutResult(err), pending.bids, pendingCount, time.Since(pending.createdAt))
 }
