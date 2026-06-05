@@ -168,3 +168,32 @@ func ListRooms(r flamego.Render, req *http.Request, c flamego.Context) {
 	}
 	response.OK(r, result)
 }
+
+// ListRoomFeed lists live rooms for short-video-style feed browsing.
+//
+// @Summary 直播间 Feed
+// @Tags rooms
+// @Produce json
+// @Param cursor query string false "游标"
+// @Param limit query int false "每批数量"
+// @Success 200 {object} response.Body{data=dto.RoomFeedResult}
+// @Failure 400 {object} response.Body
+// @Failure 500 {object} response.Body
+// @Router /api/v1/rooms/feed [get]
+func ListRoomFeed(r flamego.Render, req *http.Request, c flamego.Context) {
+	if svc == nil {
+		response.Error(r, errorx.ErrInternal)
+		return
+	}
+	input := dto.RoomFeedInput{
+		Cursor: c.Query("cursor"),
+		Limit:  c.QueryInt("limit"),
+	}
+	result, err := svc.ListRoomFeed(req.Context(), input)
+	if err != nil {
+		logx.Warnw("ListRoomFeed failed", "limit", input.Limit, "err", err)
+		response.Error(r, err)
+		return
+	}
+	response.OK(r, result)
+}

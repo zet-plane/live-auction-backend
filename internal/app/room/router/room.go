@@ -13,6 +13,7 @@ func RegisterRoutes(f *flamego.Flame) {
 	auth := web.Authorization(userhandler.AuthenticateToken)
 
 	f.Get("/api/v1/rooms", handler.ListRooms)
+	f.Get("/api/v1/rooms/feed", handler.ListRoomFeed)
 	f.Get("/api/v1/rooms/{room_id}", handler.GetRoom)
 	f.Group("/api/v1", func() {
 		f.Post("/merchant/room", binding.JSON(dto.CreateRoomRequest{}), handler.ActivateRoom)
