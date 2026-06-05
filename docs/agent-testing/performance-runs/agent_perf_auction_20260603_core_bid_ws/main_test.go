@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -139,6 +140,72 @@ func TestLoadConfigCanUseWebSocketStreamMode(t *testing.T) {
 
 	if cfg.WSStreamMode != wsStreamModeControlMarket {
 		t.Fatalf("expected websocket stream mode %s, got %q", wsStreamModeControlMarket, cfg.WSStreamMode)
+	}
+}
+
+func TestLoadConfigParsesWSUpgradeModeAndJitterConfig(t *testing.T) {
+	t.Setenv("PERF_WS_UPGRADE_MODE", "priority_jittered")
+	t.Setenv("PERF_WS_CONTROL_JITTER_MIN", "100ms")
+	t.Setenv("PERF_WS_CONTROL_JITTER_MAX", "1500ms")
+	t.Setenv("PERF_WS_MARKET_JITTER_MIN", "500ms")
+	t.Setenv("PERF_WS_MARKET_JITTER_MAX", "3s")
+	t.Setenv("PERF_WS_UPGRADE_BATCH_SIZE", "20")
+	t.Setenv("PERF_WS_UPGRADE_BATCH_INTERVAL", "1s")
+
+	cfg := loadConfig()
+
+	if cfg.WSUpgradeMode != wsUpgradeModePriorityJittered {
+		t.Fatalf("WSUpgradeMode = %q, want %q", cfg.WSUpgradeMode, wsUpgradeModePriorityJittered)
+	}
+	if cfg.WSControlJitterMin != 100*time.Millisecond || cfg.WSControlJitterMax != 1500*time.Millisecond {
+		t.Fatalf("control jitter = %s..%s", cfg.WSControlJitterMin, cfg.WSControlJitterMax)
+	}
+	if cfg.WSMarketJitterMin != 500*time.Millisecond || cfg.WSMarketJitterMax != 3*time.Second {
+		t.Fatalf("market jitter = %s..%s", cfg.WSMarketJitterMin, cfg.WSMarketJitterMax)
+	}
+	if cfg.WSUpgradeBatchSize != 20 {
+		t.Fatalf("WSUpgradeBatchSize = %d, want 20", cfg.WSUpgradeBatchSize)
+	}
+	if cfg.WSUpgradeBatchInterval != time.Second {
+		t.Fatalf("WSUpgradeBatchInterval = %s, want 1s", cfg.WSUpgradeBatchInterval)
+	}
+}
+
+func TestLoadConfigDefaultsToImmediateUpgradeMode(t *testing.T) {
+	cfg := loadConfig()
+
+	if cfg.WSUpgradeMode != wsUpgradeModeImmediate {
+		t.Fatalf("WSUpgradeMode = %q, want %q", cfg.WSUpgradeMode, wsUpgradeModeImmediate)
+	}
+	if cfg.WSControlJitterMin != 0 || cfg.WSControlJitterMax != 0 {
+		t.Fatalf("default control jitter = %s..%s, want zero", cfg.WSControlJitterMin, cfg.WSControlJitterMax)
+	}
+	if cfg.WSMarketJitterMin != 0 || cfg.WSMarketJitterMax != 0 {
+		t.Fatalf("default market jitter = %s..%s, want zero", cfg.WSMarketJitterMin, cfg.WSMarketJitterMax)
+	}
+	if cfg.WSUpgradeBatchSize != 0 {
+		t.Fatalf("default WSUpgradeBatchSize = %d, want 0", cfg.WSUpgradeBatchSize)
+	}
+	if cfg.WSUpgradeBatchInterval != 0 {
+		t.Fatalf("default WSUpgradeBatchInterval = %s, want zero", cfg.WSUpgradeBatchInterval)
+	}
+}
+
+func TestLoadConfigNormalizesBadWSUpgradeModeToImmediate(t *testing.T) {
+	t.Setenv("PERF_WS_UPGRADE_MODE", "surprise")
+
+	cfg := loadConfig()
+
+	if cfg.WSUpgradeMode != wsUpgradeModeImmediate {
+		t.Fatalf("WSUpgradeMode = %q, want %q", cfg.WSUpgradeMode, wsUpgradeModeImmediate)
+	}
+}
+
+func TestNormalizeDurationRangeSwapsInvertedRange(t *testing.T) {
+	min, max := normalizeDurationRange(3*time.Second, 500*time.Millisecond)
+
+	if min != 500*time.Millisecond || max != 3*time.Second {
+		t.Fatalf("range = %s..%s, want 500ms..3s", min, max)
 	}
 }
 
@@ -300,7 +367,7 @@ func TestWSStatsRecordsTimeSyncIntervals(t *testing.T) {
 	if snapshot.TimeSyncCount != 2 {
 		t.Fatalf("expected two time_sync events, got %d", snapshot.TimeSyncCount)
 	}
-	_, count, _, samples, _, _ := stats.deltaSince(WSStatsSnapshot{})
+	_, count, _, samples, _, _, _ := stats.deltaSince(WSStatsSnapshot{})
 	if count != 2 || len(samples) != 1 || samples[0] <= 0 {
 		t.Fatalf("expected time_sync count and interval sample, got count=%d samples=%v", count, samples)
 	}
@@ -313,7 +380,7 @@ func TestWSStatsRecordsControlTimeSyncDiagnostics(t *testing.T) {
 	time.Sleep(time.Millisecond)
 	stats.recordStream(1, "control", []byte(`{"type":"time_sync","payload":{"server_time_unix_ms":`+strconv.FormatInt(serverTime, 10)+`}}`))
 
-	_, _, controlCount, _, arrivalDelays, intervals := stats.deltaSince(WSStatsSnapshot{})
+	_, _, controlCount, _, arrivalDelays, intervals, _ := stats.deltaSince(WSStatsSnapshot{})
 	if controlCount != 2 {
 		t.Fatalf("expected two control time_sync events, got %d", controlCount)
 	}
@@ -322,6 +389,20 @@ func TestWSStatsRecordsControlTimeSyncDiagnostics(t *testing.T) {
 	}
 	if len(intervals) != 1 || intervals[0] <= 0 {
 		t.Fatalf("expected one positive control interval sample, got %v", intervals)
+	}
+}
+
+func TestWSStatsRecordsReadProcessDurations(t *testing.T) {
+	stats := newWSStats()
+	stats.recordReadProcess(2 * time.Millisecond)
+	stats.recordReadProcess(5 * time.Millisecond)
+
+	_, _, _, _, _, _, readSamples := stats.deltaSince(WSStatsSnapshot{})
+	if len(readSamples) != 2 {
+		t.Fatalf("expected two read process samples, got %d", len(readSamples))
+	}
+	if readSamples[0] != 2*time.Millisecond || readSamples[1] != 5*time.Millisecond {
+		t.Fatalf("unexpected read process samples: %v", readSamples)
 	}
 }
 
@@ -350,6 +431,94 @@ func TestWSURLOmitsStreamQueryForAllMode(t *testing.T) {
 			t.Fatalf("expected all-mode stream %q to omit stream query, got %s", stream, got)
 		}
 	}
+}
+
+func TestWSConnectWavesImmediateKeepsExistingSplitShape(t *testing.T) {
+	cfg := Config{WSStreamMode: wsStreamModeControlMarket, WSUpgradeMode: wsUpgradeModeImmediate}
+	data := &TestData{UserTokens: make([]string, 3)}
+
+	waves := wsConnectWaves(cfg, data, 3)
+
+	if len(waves) != 1 {
+		t.Fatalf("expected one immediate wave, got %d", len(waves))
+	}
+	if waves[0].Delay != 0 {
+		t.Fatalf("expected immediate wave delay 0, got %s", waves[0].Delay)
+	}
+	want := []string{"0:control", "0:market", "1:control", "1:market", "2:control", "2:market"}
+	if got := targetsStreams(waves[0].Targets); !reflect.DeepEqual(got, want) {
+		t.Fatalf("immediate targets = %v, want %v", got, want)
+	}
+}
+
+func TestWSConnectWavesJitteredControlsBeforeMarkets(t *testing.T) {
+	cfg := Config{
+		WSStreamMode:           wsStreamModeControlMarket,
+		WSUpgradeMode:          wsUpgradeModeJittered,
+		WSControlJitterMin:     100 * time.Millisecond,
+		WSControlJitterMax:     1500 * time.Millisecond,
+		WSMarketJitterMin:      time.Second,
+		WSMarketJitterMax:      3 * time.Second,
+		WSUpgradeBatchSize:     2,
+		WSUpgradeBatchInterval: 500 * time.Millisecond,
+		WSConnectMaxAttempts:   20,
+		WSConnectConcurrency:   4,
+		WSConnectTimeout:       time.Second,
+	}
+	data := &TestData{UserTokens: make([]string, 3)}
+
+	waves := wsConnectWaves(cfg, data, 3)
+
+	if len(waves) != 4 {
+		t.Fatalf("expected four jittered waves, got %d", len(waves))
+	}
+	wantDelays := []time.Duration{100 * time.Millisecond, 600 * time.Millisecond, time.Second, 1500 * time.Millisecond}
+	for i, want := range wantDelays {
+		if waves[i].Delay != want {
+			t.Fatalf("wave %d delay = %s, want %s", i, waves[i].Delay, want)
+		}
+	}
+	wantTargets := [][]string{
+		{"0:control", "1:control"},
+		{"2:control"},
+		{"0:market", "1:market"},
+		{"2:market"},
+	}
+	for i, want := range wantTargets {
+		if got := targetsStreams(waves[i].Targets); !reflect.DeepEqual(got, want) {
+			t.Fatalf("wave %d targets = %v, want %v", i, got, want)
+		}
+	}
+}
+
+func TestWSConnectWavesPriorityJitteredPrioritizesFirstTwentyPercent(t *testing.T) {
+	cfg := Config{
+		WSStreamMode:           wsStreamModeControlMarket,
+		WSUpgradeMode:          wsUpgradeModePriorityJittered,
+		WSUpgradeBatchSize:     2,
+		WSUpgradeBatchInterval: time.Second,
+		WSConnectMaxAttempts:   20,
+		WSConnectConcurrency:   4,
+		WSConnectTimeout:       time.Second,
+	}
+	data := &TestData{UserTokens: make([]string, 10)}
+
+	waves := wsConnectWaves(cfg, data, 10)
+
+	if len(waves) == 0 {
+		t.Fatal("expected priority jittered waves")
+	}
+	if got, want := targetsStreams(waves[0].Targets), []string{"0:control", "1:control"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("first priority wave targets = %v, want %v", got, want)
+	}
+}
+
+func targetsStreams(targets []wsConnectTarget) []string {
+	out := make([]string, 0, len(targets))
+	for _, target := range targets {
+		out = append(out, strconv.Itoa(target.UserIndex)+":"+target.Stream)
+	}
+	return out
 }
 
 func TestEnsureWSConnectionsUsesOneUserPerConnectionAndRunsInParallel(t *testing.T) {
@@ -391,6 +560,9 @@ func TestEnsureWSConnectionsUsesOneUserPerConnectionAndRunsInParallel(t *testing
 
 	if report.Failures != 0 {
 		t.Fatalf("expected no websocket connection failures, got %d", report.Failures)
+	}
+	if len(report.Durations) != 8 {
+		t.Fatalf("expected one connection duration per attempt, got %d", len(report.Durations))
 	}
 	if got := wsConnectedCount(data); got != 8 {
 		t.Fatalf("expected 8 connected websocket users, got %d", got)
@@ -442,6 +614,96 @@ func TestEnsureWSConnectionsUsesControlAndMarketStreamsInSplitMode(t *testing.T)
 		if seen[userIndex]["control"] != 1 || seen[userIndex]["market"] != 1 || seen[userIndex]["all"] != 0 {
 			t.Fatalf("expected user %d to open exactly control and market streams, got %#v", userIndex, seen[userIndex])
 		}
+	}
+}
+
+func TestEnsureWSConnectionsJitteredConnectsControlsBeforeMarkets(t *testing.T) {
+	var mu sync.Mutex
+	var order []string
+	cfg := Config{
+		WSStreamMode:           wsStreamModeControlMarket,
+		WSUpgradeMode:          wsUpgradeModeJittered,
+		WSConnectConcurrency:   4,
+		WSConnectMaxAttempts:   20,
+		WSUpgradeBatchSize:     2,
+		WSUpgradeBatchInterval: 0,
+	}
+	data := &TestData{UserTokens: make([]string, 3)}
+
+	report := ensureWSConnectionsWith(context.Background(), cfg, data, 3, func(ctx context.Context, cfg Config, data *TestData, userIndex int, stream string) (*websocketConn, error) {
+		mu.Lock()
+		order = append(order, stream)
+		mu.Unlock()
+		return nil, nil
+	})
+
+	if report.Failures != 0 {
+		t.Fatalf("expected no websocket connection failures, got %d", report.Failures)
+	}
+	seenMarket := false
+	for _, stream := range order {
+		if stream == "market" {
+			seenMarket = true
+		}
+		if stream == "control" && seenMarket {
+			t.Fatalf("control stream appeared after market in order %v", order)
+		}
+	}
+	if got := wsStreamConnectedCount(data, "control"); got != 3 {
+		t.Fatalf("expected 3 control websocket connections, got %d", got)
+	}
+	if got := wsStreamConnectedCount(data, "market"); got != 3 {
+		t.Fatalf("expected 3 market websocket connections, got %d", got)
+	}
+}
+
+func TestEnsureWSConnectionsStopsJitteredAfterRetryBudget(t *testing.T) {
+	var attempts atomic.Int64
+	cfg := Config{
+		WSStreamMode:           wsStreamModeControlMarket,
+		WSUpgradeMode:          wsUpgradeModeJittered,
+		WSConnectConcurrency:   2,
+		WSConnectMaxAttempts:   3,
+		WSUpgradeBatchSize:     1,
+		WSUpgradeBatchInterval: 0,
+	}
+	data := &TestData{UserTokens: make([]string, 3)}
+
+	report := ensureWSConnectionsWith(context.Background(), cfg, data, 3, func(ctx context.Context, cfg Config, data *TestData, userIndex int, stream string) (*websocketConn, error) {
+		attempts.Add(1)
+		return nil, errors.New("dial failed")
+	})
+
+	if attempts.Load() != 3 {
+		t.Fatalf("expected 3 connection attempts, got %d", attempts.Load())
+	}
+	if report.Failures != 3 {
+		t.Fatalf("expected 3 websocket connection failures, got %d", report.Failures)
+	}
+}
+
+func TestWSConnectWaveSleepDelayUsesPerStreamOffsets(t *testing.T) {
+	lastDelays := map[string]time.Duration{}
+	waves := []wsConnectWave{
+		{Name: "control_1", Delay: 100 * time.Millisecond, Targets: []wsConnectTarget{{Stream: "control"}}},
+		{Name: "control_2", Delay: 600 * time.Millisecond, Targets: []wsConnectTarget{{Stream: "control"}}},
+		{Name: "market_1", Delay: time.Second, Targets: []wsConnectTarget{{Stream: "market"}}},
+		{Name: "market_2", Delay: 1500 * time.Millisecond, Targets: []wsConnectTarget{{Stream: "market"}}},
+	}
+
+	var sleeps []time.Duration
+	for _, wave := range waves {
+		sleeps = append(sleeps, wsConnectWaveSleepDelay(wave, lastDelays))
+	}
+
+	want := []time.Duration{
+		100 * time.Millisecond,
+		500 * time.Millisecond,
+		time.Second,
+		500 * time.Millisecond,
+	}
+	if !reflect.DeepEqual(sleeps, want) {
+		t.Fatalf("sleep delays = %v, want %v", sleeps, want)
 	}
 }
 
@@ -498,6 +760,9 @@ func TestEnsureWSConnectionsStopsAtRetryBudget(t *testing.T) {
 	}
 	if report.Failures != 5 {
 		t.Fatalf("expected failures to match failed attempts, got %d", report.Failures)
+	}
+	if len(report.Durations) != 5 {
+		t.Fatalf("expected failed attempts to record durations, got %d", len(report.Durations))
 	}
 	if report.Errors["dial:dial failed"] != 5 {
 		t.Fatalf("expected dial error bucket to count 5 failures, got %d", report.Errors["dial:dial failed"])
@@ -616,6 +881,40 @@ func TestThresholdStopReasonUsesControlTimeSyncCountInSplitMode(t *testing.T) {
 	}
 }
 
+func TestPrintPlanIncludesWSUpgradeConfig(t *testing.T) {
+	cfg := Config{
+		BatchID:                "batch_test",
+		Environment:            "test",
+		BaseURL:                "http://example.test",
+		WSConnectConcurrency:   8,
+		WSConnectTimeout:       time.Second,
+		WSConnectMaxAttempts:   20,
+		WSStreamMode:           wsStreamModeControlMarket,
+		WSUpgradeMode:          wsUpgradeModeJittered,
+		WSControlJitterMin:     100 * time.Millisecond,
+		WSControlJitterMax:     1500 * time.Millisecond,
+		WSMarketJitterMin:      500 * time.Millisecond,
+		WSMarketJitterMax:      3 * time.Second,
+		WSUpgradeBatchSize:     20,
+		WSUpgradeBatchInterval: time.Second,
+	}
+
+	output := captureStdout(t, func() {
+		printPlan(cfg)
+	})
+
+	for _, want := range []string{
+		"WS_UPGRADE_MODE: jittered",
+		"WS_CONTROL_JITTER: 100ms..1.5s",
+		"WS_MARKET_JITTER: 500ms..3s",
+		"WS_UPGRADE_BATCH: size=20 interval=1s",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("expected print plan to include %q; got:\n%s", want, output)
+		}
+	}
+}
+
 func TestPrintStageSummaryLabelsClientE2ELatency(t *testing.T) {
 	output := captureStdout(t, func() {
 		printStageSummary(StageSummary{
@@ -625,10 +924,14 @@ func TestPrintStageSummaryLabelsClientE2ELatency(t *testing.T) {
 			WSStreamMode:       wsStreamModeControlMarket,
 			ControlWSConnected: 10,
 			MarketWSConnected:  10,
+			WSConnectP95:       150 * time.Millisecond,
+			WSConnectP99:       250 * time.Millisecond,
 			P50:                100 * time.Millisecond,
 			P95:                200 * time.Millisecond,
 			P99:                300 * time.Millisecond,
 			Max:                400 * time.Millisecond,
+			WSReadProcessP95:   2 * time.Millisecond,
+			WSReadProcessP99:   5 * time.Millisecond,
 		})
 	})
 
@@ -636,6 +939,10 @@ func TestPrintStageSummaryLabelsClientE2ELatency(t *testing.T) {
 		"WS_STREAM_MODE:",
 		"CONTROL_WS_CONNECTED:",
 		"MARKET_WS_CONNECTED:",
+		"WS_CONNECT_P50:",
+		"WS_CONNECT_P95:",
+		"WS_CONNECT_P99:",
+		"WS_CONNECT_MAX:",
 		"CONTROL_TIME_SYNC_COUNT:",
 		"CONTROL_TIME_SYNC_ARRIVAL_DELAY_P50:",
 		"CONTROL_TIME_SYNC_ARRIVAL_DELAY_P95:",
@@ -647,6 +954,10 @@ func TestPrintStageSummaryLabelsClientE2ELatency(t *testing.T) {
 		"CLIENT_E2E_P95:",
 		"CLIENT_E2E_P99:",
 		"CLIENT_E2E_MAX:",
+		"WS_READ_PROCESS_P50:",
+		"WS_READ_PROCESS_P95:",
+		"WS_READ_PROCESS_P99:",
+		"WS_READ_PROCESS_MAX:",
 	} {
 		if !strings.Contains(output, label) {
 			t.Fatalf("expected output to include %s; got:\n%s", label, output)
@@ -655,6 +966,39 @@ func TestPrintStageSummaryLabelsClientE2ELatency(t *testing.T) {
 	for _, oldLabel := range []string{"\n  P50:", "\n  P95:", "\n  P99:", "\n  MAX:"} {
 		if strings.Contains(output, oldLabel) {
 			t.Fatalf("expected output to avoid ambiguous latency label %q; got:\n%s", oldLabel, output)
+		}
+	}
+}
+
+func TestHostDiagnosticsLineReportsNotSupportedWithoutSamples(t *testing.T) {
+	if got := hostDiagnosticsLine(hostSample{}, hostSample{}); got != "HOST_SAMPLE: not_supported" {
+		t.Fatalf("expected unsupported host sample, got %q", got)
+	}
+}
+
+func TestHostDiagnosticsLineComputesCPUAndNetworkRates(t *testing.T) {
+	before := hostSample{
+		Supported: true,
+		At:        time.Unix(100, 0),
+		CPU:       cpuTimes{Idle: 100, Total: 1000},
+		Net:       netCounters{RxBytes: 1000, TxBytes: 2000},
+	}
+	after := hostSample{
+		Supported: true,
+		At:        time.Unix(110, 0),
+		CPU:       cpuTimes{Idle: 150, Total: 1100},
+		Net:       netCounters{RxBytes: 3000, TxBytes: 5000},
+	}
+
+	got := hostDiagnosticsLine(before, after)
+	for _, want := range []string{
+		"HOST_SAMPLE:",
+		"cpu_percent=50.00",
+		"rx_bytes_per_sec=200.00",
+		"tx_bytes_per_sec=300.00",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected host diagnostics line to contain %q, got %q", want, got)
 		}
 	}
 }

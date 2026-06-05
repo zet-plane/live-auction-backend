@@ -25,24 +25,35 @@ const (
 	// support millisecond sync by default and switch streams automatically.
 	wsStreamModeAll           = "all"
 	wsStreamModeControlMarket = "control_market"
+
+	wsUpgradeModeImmediate        = "immediate"
+	wsUpgradeModeJittered         = "jittered"
+	wsUpgradeModePriorityJittered = "priority_jittered"
 )
 
 type Config struct {
-	BatchID              string
-	Environment          string
-	BaseURL              string
-	PrometheusURL        string
-	StopFile             string
-	HumanMonitor         string
-	RequestTimeout       time.Duration
-	WSConnectTimeout     time.Duration
-	WSConnectConcurrency int
-	WSConnectMaxAttempts int
-	WSStreamMode         string
-	ObservabilityStep    time.Duration
-	UserCount            int
-	CleanupOnly          bool
-	Stages               []StageConfig
+	BatchID                string
+	Environment            string
+	BaseURL                string
+	PrometheusURL          string
+	StopFile               string
+	HumanMonitor           string
+	RequestTimeout         time.Duration
+	WSConnectTimeout       time.Duration
+	WSConnectConcurrency   int
+	WSConnectMaxAttempts   int
+	WSStreamMode           string
+	WSUpgradeMode          string
+	WSControlJitterMin     time.Duration
+	WSControlJitterMax     time.Duration
+	WSMarketJitterMin      time.Duration
+	WSMarketJitterMax      time.Duration
+	WSUpgradeBatchSize     int
+	WSUpgradeBatchInterval time.Duration
+	ObservabilityStep      time.Duration
+	UserCount              int
+	CleanupOnly            bool
+	Stages                 []StageConfig
 }
 
 type StageConfig struct {
@@ -109,6 +120,10 @@ type StageSummary struct {
 	MarketWSConnected              int
 	WSConnectFails                 int
 	WSConnectErrors                map[string]int64
+	WSConnectP50                   time.Duration
+	WSConnectP95                   time.Duration
+	WSConnectP99                   time.Duration
+	WSConnectMax                   time.Duration
 	WSEventCounts                  map[string]int64
 	TimeSyncCount                  int64
 	ControlTimeSyncCount           int64
@@ -122,6 +137,11 @@ type StageSummary struct {
 	ControlTimeSyncIntervalP50     time.Duration
 	ControlTimeSyncIntervalP95     time.Duration
 	ControlTimeSyncIntervalP99     time.Duration
+	WSReadProcessP50               time.Duration
+	WSReadProcessP95               time.Duration
+	WSReadProcessP99               time.Duration
+	WSReadProcessMax               time.Duration
+	HostDiagnostics                string
 	StopReason                     string
 }
 
@@ -135,6 +155,7 @@ type WSStats struct {
 	controlTimeSyncLast                map[int]time.Time
 	controlTimeSyncArrivalDelaySamples []time.Duration
 	controlTimeSyncIntervalSamples     []time.Duration
+	readProcessSamples                 []time.Duration
 }
 
 type WSStatsSnapshot struct {
@@ -144,6 +165,7 @@ type WSStatsSnapshot struct {
 	ControlTimeSyncCount                 int64
 	ControlTimeSyncArrivalDelaySampleLen int
 	ControlTimeSyncIntervalSampleLen     int
+	ReadProcessSampleLen                 int
 }
 
 type websocketConn = websocket.Conn
@@ -151,8 +173,9 @@ type websocketConn = websocket.Conn
 type wsConnector func(context.Context, Config, *TestData, int, string) (*websocketConn, error)
 
 type wsConnectReport struct {
-	Failures int
-	Errors   map[string]int64
+	Failures  int
+	Errors    map[string]int64
+	Durations []time.Duration
 }
 
 type prometheusQuery struct {
@@ -217,6 +240,15 @@ func main() {
 		summary.MarketWSConnected = wsStreamConnectedCount(data, "market")
 		summary.WSConnectFails = wsReport.Failures
 		summary.WSConnectErrors = wsReport.Errors
+		sort.Slice(wsReport.Durations, func(i, j int) bool { return wsReport.Durations[i] < wsReport.Durations[j] })
+		summary.WSConnectP50 = percentile(wsReport.Durations, 0.50)
+		summary.WSConnectP95 = percentile(wsReport.Durations, 0.95)
+		summary.WSConnectP99 = percentile(wsReport.Durations, 0.99)
+		for _, duration := range wsReport.Durations {
+			if duration > summary.WSConnectMax {
+				summary.WSConnectMax = duration
+			}
+		}
 		if summary.StopReason == "" {
 			summary.StopReason = thresholdStopReason(summary)
 		}
@@ -246,23 +278,62 @@ func loadConfig() Config {
 		stages = customStages
 	}
 	stages = applyStageOverrides(filterStages(stages, envInt("PERF_START_QPS", 0), envInt("PERF_END_QPS", 0)), requestMix, envBool("PERF_DISABLE_WS", false), csvPositiveInts(os.Getenv("PERF_STAGE_WS")))
+	controlJitterMin, controlJitterMax := normalizeDurationRange(
+		envDuration("PERF_WS_CONTROL_JITTER_MIN", 0),
+		envDuration("PERF_WS_CONTROL_JITTER_MAX", 0),
+	)
+	marketJitterMin, marketJitterMax := normalizeDurationRange(
+		envDuration("PERF_WS_MARKET_JITTER_MIN", 0),
+		envDuration("PERF_WS_MARKET_JITTER_MAX", 0),
+	)
 	return Config{
-		BatchID:              batchID,
-		Environment:          getenv("PERF_ENVIRONMENT", "single_source_online"),
-		BaseURL:              strings.TrimRight(getenv("PERF_BASE_URL", "http://127.0.0.1:8080"), "/"),
-		PrometheusURL:        strings.TrimRight(os.Getenv("PERF_PROMETHEUS_URL"), "/"),
-		StopFile:             getenv("PERF_STOP_FILE", "docs/agent-testing/performance-runs/"+batchID+"/STOP"),
-		HumanMonitor:         getenv("PERF_HUMAN_MONITOR", "user"),
-		RequestTimeout:       envDuration("PERF_REQUEST_TIMEOUT", 10*time.Second),
-		WSConnectTimeout:     envDuration("PERF_WS_CONNECT_TIMEOUT", 15*time.Second),
-		WSConnectConcurrency: envInt("PERF_WS_CONNECT_CONCURRENCY", 8),
-		WSConnectMaxAttempts: envInt("PERF_WS_CONNECT_MAX_ATTEMPTS", 700),
-		WSStreamMode:         getenv("PERF_WS_STREAM_MODE", wsStreamModeAll),
-		ObservabilityStep:    envDuration("PERF_OBSERVABILITY_STEP", 30*time.Second),
-		UserCount:            envInt("PERF_USER_COUNT", 320),
-		CleanupOnly:          envBool("PERF_CLEANUP_ONLY", false),
-		Stages:               stages,
+		BatchID:                batchID,
+		Environment:            getenv("PERF_ENVIRONMENT", "single_source_online"),
+		BaseURL:                strings.TrimRight(getenv("PERF_BASE_URL", "http://127.0.0.1:8080"), "/"),
+		PrometheusURL:          strings.TrimRight(os.Getenv("PERF_PROMETHEUS_URL"), "/"),
+		StopFile:               getenv("PERF_STOP_FILE", "docs/agent-testing/performance-runs/"+batchID+"/STOP"),
+		HumanMonitor:           getenv("PERF_HUMAN_MONITOR", "user"),
+		RequestTimeout:         envDuration("PERF_REQUEST_TIMEOUT", 10*time.Second),
+		WSConnectTimeout:       envDuration("PERF_WS_CONNECT_TIMEOUT", 15*time.Second),
+		WSConnectConcurrency:   envInt("PERF_WS_CONNECT_CONCURRENCY", 8),
+		WSConnectMaxAttempts:   envInt("PERF_WS_CONNECT_MAX_ATTEMPTS", 700),
+		WSStreamMode:           getenv("PERF_WS_STREAM_MODE", wsStreamModeAll),
+		WSUpgradeMode:          normalizeWSUpgradeMode(getenv("PERF_WS_UPGRADE_MODE", wsUpgradeModeImmediate)),
+		WSControlJitterMin:     controlJitterMin,
+		WSControlJitterMax:     controlJitterMax,
+		WSMarketJitterMin:      marketJitterMin,
+		WSMarketJitterMax:      marketJitterMax,
+		WSUpgradeBatchSize:     envInt("PERF_WS_UPGRADE_BATCH_SIZE", 0),
+		WSUpgradeBatchInterval: envDuration("PERF_WS_UPGRADE_BATCH_INTERVAL", 0),
+		ObservabilityStep:      envDuration("PERF_OBSERVABILITY_STEP", 30*time.Second),
+		UserCount:              envInt("PERF_USER_COUNT", 320),
+		CleanupOnly:            envBool("PERF_CLEANUP_ONLY", false),
+		Stages:                 stages,
 	}
+}
+
+func normalizeWSUpgradeMode(raw string) string {
+	switch strings.TrimSpace(raw) {
+	case wsUpgradeModeJittered:
+		return wsUpgradeModeJittered
+	case wsUpgradeModePriorityJittered:
+		return wsUpgradeModePriorityJittered
+	default:
+		return wsUpgradeModeImmediate
+	}
+}
+
+func normalizeDurationRange(min, max time.Duration) (time.Duration, time.Duration) {
+	if min < 0 {
+		min = 0
+	}
+	if max < 0 {
+		max = 0
+	}
+	if min > max {
+		return max, min
+	}
+	return min, max
 }
 
 func defaultStages() []StageConfig {
@@ -485,33 +556,49 @@ func ensureWSConnectionsWith(ctx context.Context, cfg Config, data *TestData, ta
 		report.Errors["target_exceeds_user_count"] += int64(excess)
 		target = len(data.UserTokens)
 	}
-	pending := wsMissingTargets(data, target, streams)
-	if len(pending) == 0 {
-		return report
-	}
 	maxAttempts := cfg.WSConnectMaxAttempts
 	if maxAttempts <= 0 {
-		maxAttempts = len(pending) * 2
+		maxAttempts = target * len(streams) * 2
 	}
 	attempts := 0
-	for len(pending) > 0 && attempts < maxAttempts {
+	for attempts < maxAttempts {
 		if stopRequested(cfg.StopFile) {
 			break
 		}
-		remaining := maxAttempts - attempts
-		attemptList := pending
-		deferred := []wsConnectTarget(nil)
-		if len(attemptList) > remaining {
-			attemptList = pending[:remaining]
-			deferred = pending[remaining:]
+		if len(wsMissingTargets(data, target, streams)) == 0 {
+			break
 		}
-		attempts += len(attemptList)
-		batchReport := connectWSBatch(ctx, cfg, data, attemptList, connector)
-		report.Failures += batchReport.Failures
-		for reason, count := range batchReport.Errors {
-			report.Errors[reason] += count
+		madeProgress := false
+		lastWaveDelays := map[string]time.Duration{}
+		for _, wave := range wsConnectWaves(cfg, data, target) {
+			if attempts >= maxAttempts || stopRequested(cfg.StopFile) {
+				break
+			}
+			if err := waitWSConnectWave(ctx, wsConnectWaveSleepDelay(wave, lastWaveDelays)); err != nil {
+				return report
+			}
+			attemptList := filterStillMissingWSTargets(data, wave.Targets)
+			if len(attemptList) == 0 {
+				continue
+			}
+			remaining := maxAttempts - attempts
+			if len(attemptList) > remaining {
+				attemptList = attemptList[:remaining]
+			}
+			attempts += len(attemptList)
+			batchReport := connectWSBatch(ctx, cfg, data, attemptList, connector)
+			report.Failures += batchReport.Failures
+			report.Durations = append(report.Durations, batchReport.Durations...)
+			for reason, count := range batchReport.Errors {
+				report.Errors[reason] += count
+			}
+			if batchReport.Failures < len(attemptList) {
+				madeProgress = true
+			}
 		}
-		pending = append(batchReport.FailedTargets, deferred...)
+		if !madeProgress && normalizeWSUpgradeMode(cfg.WSUpgradeMode) != wsUpgradeModeImmediate {
+			continue
+		}
 	}
 	return report
 }
@@ -520,11 +607,18 @@ type wsConnectBatchReport struct {
 	FailedTargets []wsConnectTarget
 	Failures      int
 	Errors        map[string]int64
+	Durations     []time.Duration
 }
 
 type wsConnectTarget struct {
 	UserIndex int
 	Stream    string
+}
+
+type wsConnectWave struct {
+	Name    string
+	Delay   time.Duration
+	Targets []wsConnectTarget
 }
 
 func connectWSBatch(ctx context.Context, cfg Config, data *TestData, targets []wsConnectTarget, connector wsConnector) wsConnectBatchReport {
@@ -540,6 +634,7 @@ func connectWSBatch(ctx context.Context, cfg Config, data *TestData, targets []w
 	}
 	jobs := make(chan wsConnectTarget)
 	failed := make(chan wsConnectFailure, len(targets))
+	durations := make(chan time.Duration, len(targets))
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 
@@ -558,7 +653,9 @@ func connectWSBatch(ctx context.Context, cfg Config, data *TestData, targets []w
 				if alreadyConnected {
 					continue
 				}
+				started := time.Now()
 				conn, err := connector(ctx, cfg, data, target.UserIndex, target.Stream)
+				durations <- time.Since(started)
 				if err != nil {
 					failed <- wsConnectFailure{Target: target, Reason: classifyWSError(err)}
 					continue
@@ -582,9 +679,13 @@ func connectWSBatch(ctx context.Context, cfg Config, data *TestData, targets []w
 	close(jobs)
 	wg.Wait()
 	close(failed)
+	close(durations)
 
 	var failedTargets []wsConnectTarget
 	report := wsConnectBatchReport{Errors: map[string]int64{}}
+	for duration := range durations {
+		report.Durations = append(report.Durations, duration)
+	}
 	for failure := range failed {
 		report.Failures++
 		report.Errors[failure.Reason]++
@@ -718,6 +819,140 @@ func wsMissingTargets(data *TestData, target int, streams []string) []wsConnectT
 	return missing
 }
 
+func wsConnectWaves(cfg Config, data *TestData, target int) []wsConnectWave {
+	streams := wsTargetStreams(cfg)
+	pending := wsMissingTargets(data, target, streams)
+	if len(pending) == 0 {
+		return nil
+	}
+	upgradeMode := normalizeWSUpgradeMode(cfg.WSUpgradeMode)
+	if cfg.WSStreamMode != wsStreamModeControlMarket || upgradeMode == wsUpgradeModeImmediate {
+		return []wsConnectWave{{Name: wsUpgradeModeImmediate, Targets: pending}}
+	}
+	return splitUpgradeWaves(cfg, pending, target)
+}
+
+func splitUpgradeWaves(cfg Config, targets []wsConnectTarget, targetUsers int) []wsConnectWave {
+	controlTargets := filterWSTargetsByStream(targets, "control")
+	marketTargets := filterWSTargetsByStream(targets, "market")
+	if normalizeWSUpgradeMode(cfg.WSUpgradeMode) == wsUpgradeModePriorityJittered {
+		controlTargets = priorityOrderWSTargets(controlTargets, targetUsers)
+		marketTargets = priorityOrderWSTargets(marketTargets, targetUsers)
+	}
+	waves := wsBatchedWaves("control", controlTargets, cfg.WSControlJitterMin, cfg.WSUpgradeBatchSize, cfg.WSUpgradeBatchInterval)
+	waves = append(waves, wsBatchedWaves("market", marketTargets, cfg.WSMarketJitterMin, cfg.WSUpgradeBatchSize, cfg.WSUpgradeBatchInterval)...)
+	return waves
+}
+
+func wsBatchedWaves(name string, targets []wsConnectTarget, baseDelay time.Duration, batchSize int, interval time.Duration) []wsConnectWave {
+	if len(targets) == 0 {
+		return nil
+	}
+	if baseDelay < 0 {
+		baseDelay = 0
+	}
+	if interval < 0 {
+		interval = 0
+	}
+	if batchSize <= 0 {
+		return []wsConnectWave{{Name: name, Delay: baseDelay, Targets: targets}}
+	}
+	waves := make([]wsConnectWave, 0, (len(targets)+batchSize-1)/batchSize)
+	for start := 0; start < len(targets); start += batchSize {
+		end := minInt(start+batchSize, len(targets))
+		waves = append(waves, wsConnectWave{
+			Name:    fmt.Sprintf("%s_%d", name, len(waves)+1),
+			Delay:   baseDelay + time.Duration(len(waves))*interval,
+			Targets: targets[start:end],
+		})
+	}
+	return waves
+}
+
+func filterWSTargetsByStream(targets []wsConnectTarget, stream string) []wsConnectTarget {
+	filtered := make([]wsConnectTarget, 0, len(targets))
+	for _, target := range targets {
+		if target.Stream == stream {
+			filtered = append(filtered, target)
+		}
+	}
+	return filtered
+}
+
+func priorityOrderWSTargets(targets []wsConnectTarget, targetUsers int) []wsConnectTarget {
+	ordered := append([]wsConnectTarget(nil), targets...)
+	priorityUsers := minInt(targetUsers, int(math.Ceil(float64(targetUsers)*0.2)))
+	sort.SliceStable(ordered, func(i, j int) bool {
+		leftPriority := ordered[i].UserIndex < priorityUsers
+		rightPriority := ordered[j].UserIndex < priorityUsers
+		if leftPriority != rightPriority {
+			return leftPriority
+		}
+		if ordered[i].UserIndex == ordered[j].UserIndex {
+			return ordered[i].Stream < ordered[j].Stream
+		}
+		return ordered[i].UserIndex < ordered[j].UserIndex
+	})
+	return ordered
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func waitWSConnectWave(ctx context.Context, delay time.Duration) error {
+	if delay <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func wsConnectWaveSleepDelay(wave wsConnectWave, lastDelays map[string]time.Duration) time.Duration {
+	group := waveDelayGroup(wave)
+	previous := lastDelays[group]
+	lastDelays[group] = wave.Delay
+	delay := wave.Delay - previous
+	if delay < 0 {
+		return 0
+	}
+	return delay
+}
+
+func waveDelayGroup(wave wsConnectWave) string {
+	if len(wave.Targets) > 0 {
+		return wave.Targets[0].Stream
+	}
+	if name, _, ok := strings.Cut(wave.Name, "_"); ok {
+		return name
+	}
+	return wave.Name
+}
+
+func filterStillMissingWSTargets(data *TestData, targets []wsConnectTarget) []wsConnectTarget {
+	missing := make([]wsConnectTarget, 0, len(targets))
+	for _, target := range targets {
+		if !wsTargetConnected(data, target) {
+			missing = append(missing, target)
+		}
+	}
+	return missing
+}
+
+func wsTargetConnected(data *TestData, target wsConnectTarget) bool {
+	ensureWSConnectionMaps(data)
+	return wsTargetConnectedLocked(data, target)
+}
+
 func wsConnectedCount(data *TestData) int {
 	ensureWSConnectionMaps(data)
 	return len(data.WSUsers) + wsStreamConnectedCount(data, "control") + wsStreamConnectedCount(data, "market")
@@ -774,7 +1009,9 @@ func drainWS(data *TestData, userIndex int, stream string, conn *websocket.Conn)
 			return
 		}
 		if data != nil && data.WSStats != nil {
-			data.WSStats.recordStream(userIndex, stream, payload)
+			receivedAt := time.Now()
+			data.WSStats.recordStreamAt(userIndex, stream, payload, receivedAt)
+			data.WSStats.recordReadProcess(time.Since(receivedAt))
 		}
 	}
 }
@@ -784,6 +1021,10 @@ func (s *WSStats) record(userIndex int, payload []byte) {
 }
 
 func (s *WSStats) recordStream(userIndex int, stream string, payload []byte) {
+	s.recordStreamAt(userIndex, stream, payload, time.Now())
+}
+
+func (s *WSStats) recordStreamAt(userIndex int, stream string, payload []byte, receivedAt time.Time) {
 	var event struct {
 		Type    string `json:"type"`
 		Payload struct {
@@ -793,7 +1034,6 @@ func (s *WSStats) recordStream(userIndex int, stream string, payload []byte) {
 	if err := json.Unmarshal(payload, &event); err != nil || event.Type == "" {
 		return
 	}
-	now := time.Now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.eventCounts[event.Type]++
@@ -802,20 +1042,26 @@ func (s *WSStats) recordStream(userIndex int, stream string, payload []byte) {
 	}
 	s.timeSyncCount++
 	if last, ok := s.timeSyncLast[userIndex]; ok {
-		s.timeSyncSamples = append(s.timeSyncSamples, now.Sub(last))
+		s.timeSyncSamples = append(s.timeSyncSamples, receivedAt.Sub(last))
 	}
-	s.timeSyncLast[userIndex] = now
+	s.timeSyncLast[userIndex] = receivedAt
 	if stream != "control" {
 		return
 	}
 	s.controlTimeSyncCount++
 	if event.Payload.ServerTimeUnixMS > 0 {
-		s.controlTimeSyncArrivalDelaySamples = append(s.controlTimeSyncArrivalDelaySamples, now.Sub(time.UnixMilli(event.Payload.ServerTimeUnixMS)))
+		s.controlTimeSyncArrivalDelaySamples = append(s.controlTimeSyncArrivalDelaySamples, receivedAt.Sub(time.UnixMilli(event.Payload.ServerTimeUnixMS)))
 	}
 	if last, ok := s.controlTimeSyncLast[userIndex]; ok {
-		s.controlTimeSyncIntervalSamples = append(s.controlTimeSyncIntervalSamples, now.Sub(last))
+		s.controlTimeSyncIntervalSamples = append(s.controlTimeSyncIntervalSamples, receivedAt.Sub(last))
 	}
-	s.controlTimeSyncLast[userIndex] = now
+	s.controlTimeSyncLast[userIndex] = receivedAt
+}
+
+func (s *WSStats) recordReadProcess(duration time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.readProcessSamples = append(s.readProcessSamples, duration)
 }
 
 func (s *WSStats) snapshot() WSStatsSnapshot {
@@ -835,12 +1081,13 @@ func (s *WSStats) snapshot() WSStatsSnapshot {
 		ControlTimeSyncCount:                 s.controlTimeSyncCount,
 		ControlTimeSyncArrivalDelaySampleLen: len(s.controlTimeSyncArrivalDelaySamples),
 		ControlTimeSyncIntervalSampleLen:     len(s.controlTimeSyncIntervalSamples),
+		ReadProcessSampleLen:                 len(s.readProcessSamples),
 	}
 }
 
-func (s *WSStats) deltaSince(snapshot WSStatsSnapshot) (map[string]int64, int64, int64, []time.Duration, []time.Duration, []time.Duration) {
+func (s *WSStats) deltaSince(snapshot WSStatsSnapshot) (map[string]int64, int64, int64, []time.Duration, []time.Duration, []time.Duration, []time.Duration) {
 	if s == nil {
-		return map[string]int64{}, 0, 0, nil, nil, nil
+		return map[string]int64{}, 0, 0, nil, nil, nil, nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -860,13 +1107,18 @@ func (s *WSStats) deltaSince(snapshot WSStatsSnapshot) (map[string]int64, int64,
 	if snapshot.ControlTimeSyncIntervalSampleLen > len(s.controlTimeSyncIntervalSamples) {
 		snapshot.ControlTimeSyncIntervalSampleLen = len(s.controlTimeSyncIntervalSamples)
 	}
+	if snapshot.ReadProcessSampleLen > len(s.readProcessSamples) {
+		snapshot.ReadProcessSampleLen = len(s.readProcessSamples)
+	}
 	controlArrivalDelaySamples := append([]time.Duration(nil), s.controlTimeSyncArrivalDelaySamples[snapshot.ControlTimeSyncArrivalDelaySampleLen:]...)
 	controlIntervalSamples := append([]time.Duration(nil), s.controlTimeSyncIntervalSamples[snapshot.ControlTimeSyncIntervalSampleLen:]...)
-	return counts, timeSyncCount, controlTimeSyncCount, samples, controlArrivalDelaySamples, controlIntervalSamples
+	readProcessSamples := append([]time.Duration(nil), s.readProcessSamples[snapshot.ReadProcessSampleLen:]...)
+	return counts, timeSyncCount, controlTimeSyncCount, samples, controlArrivalDelaySamples, controlIntervalSamples, readProcessSamples
 }
 
 func runStage(ctx context.Context, cfg Config, data *TestData, stage StageConfig) StageSummary {
 	start := time.Now()
+	hostBefore := readHostSample()
 	wsSnapshot := data.WSStats.snapshot()
 	stageCtx, cancel := context.WithTimeout(ctx, stage.Duration)
 	defer cancel()
@@ -941,10 +1193,12 @@ func runStage(ctx context.Context, cfg Config, data *TestData, stage StageConfig
 		}
 	}
 	summary.End = time.Now()
-	wsEventCounts, timeSyncCount, controlTimeSyncCount, timeSyncSamples, controlArrivalDelaySamples, controlIntervalSamples := data.WSStats.deltaSince(wsSnapshot)
+	hostAfter := readHostSample()
+	wsEventCounts, timeSyncCount, controlTimeSyncCount, timeSyncSamples, controlArrivalDelaySamples, controlIntervalSamples, readProcessSamples := data.WSStats.deltaSince(wsSnapshot)
 	summary.WSEventCounts = wsEventCounts
 	summary.TimeSyncCount = timeSyncCount
 	summary.ControlTimeSyncCount = controlTimeSyncCount
+	summary.HostDiagnostics = hostDiagnosticsLine(hostBefore, hostAfter)
 	elapsed := summary.End.Sub(summary.Start).Seconds()
 	if elapsed > 0 {
 		summary.ActualQPS = float64(summary.Total) / elapsed
@@ -965,6 +1219,15 @@ func runStage(ctx context.Context, cfg Config, data *TestData, stage StageConfig
 	summary.ControlTimeSyncIntervalP50 = percentile(controlIntervalSamples, 0.50)
 	summary.ControlTimeSyncIntervalP95 = percentile(controlIntervalSamples, 0.95)
 	summary.ControlTimeSyncIntervalP99 = percentile(controlIntervalSamples, 0.99)
+	sort.Slice(readProcessSamples, func(i, j int) bool { return readProcessSamples[i] < readProcessSamples[j] })
+	summary.WSReadProcessP50 = percentile(readProcessSamples, 0.50)
+	summary.WSReadProcessP95 = percentile(readProcessSamples, 0.95)
+	summary.WSReadProcessP99 = percentile(readProcessSamples, 0.99)
+	for _, sample := range readProcessSamples {
+		if sample > summary.WSReadProcessMax {
+			summary.WSReadProcessMax = sample
+		}
+	}
 	for _, sample := range timeSyncSamples {
 		if sample > summary.TimeSyncMax {
 			summary.TimeSyncMax = sample
@@ -1319,6 +1582,10 @@ func printPlan(cfg Config) {
 	fmt.Printf("  USER_COUNT: %d\n", cfg.UserCount)
 	fmt.Printf("  WS_CONNECT: concurrency=%d timeout=%s max_attempts=%d\n", cfg.WSConnectConcurrency, cfg.WSConnectTimeout, cfg.WSConnectMaxAttempts)
 	fmt.Printf("  WS_STREAM_MODE: %s\n", cfg.WSStreamMode)
+	fmt.Printf("  WS_UPGRADE_MODE: %s\n", cfg.WSUpgradeMode)
+	fmt.Printf("  WS_CONTROL_JITTER: %s..%s\n", cfg.WSControlJitterMin, cfg.WSControlJitterMax)
+	fmt.Printf("  WS_MARKET_JITTER: %s..%s\n", cfg.WSMarketJitterMin, cfg.WSMarketJitterMax)
+	fmt.Printf("  WS_UPGRADE_BATCH: size=%d interval=%s\n", cfg.WSUpgradeBatchSize, cfg.WSUpgradeBatchInterval)
 	fmt.Printf("  OBSERVABILITY_STEP: %s\n", cfg.ObservabilityStep)
 	for _, s := range cfg.Stages {
 		fmt.Printf("  STAGE_CONFIG: name=%s qps=%.2f ws=%d concurrency=%d duration=%s mix=%s\n", s.Name, s.TargetQPS, s.TargetWS, s.Concurrency, s.Duration, s.RequestMix)
@@ -1358,6 +1625,10 @@ func printStageSummary(s StageSummary) {
 	fmt.Printf("  MARKET_WS_CONNECTED: %d\n", s.MarketWSConnected)
 	fmt.Printf("  WS_CONNECT_FAILS: %d\n", s.WSConnectFails)
 	fmt.Printf("  WS_CONNECT_ERRORS: %s\n", jsonLine(s.WSConnectErrors))
+	fmt.Printf("  WS_CONNECT_P50: %s\n", s.WSConnectP50)
+	fmt.Printf("  WS_CONNECT_P95: %s\n", s.WSConnectP95)
+	fmt.Printf("  WS_CONNECT_P99: %s\n", s.WSConnectP99)
+	fmt.Printf("  WS_CONNECT_MAX: %s\n", s.WSConnectMax)
 	fmt.Printf("  WS_EVENT_COUNTS: %s\n", jsonLine(s.WSEventCounts))
 	fmt.Printf("  TIME_SYNC_COUNT: %d\n", s.TimeSyncCount)
 	fmt.Printf("  CONTROL_TIME_SYNC_COUNT: %d\n", s.ControlTimeSyncCount)
@@ -1371,6 +1642,13 @@ func printStageSummary(s StageSummary) {
 	fmt.Printf("  CONTROL_TIME_SYNC_INTERVAL_P50: %s\n", s.ControlTimeSyncIntervalP50)
 	fmt.Printf("  CONTROL_TIME_SYNC_INTERVAL_P95: %s\n", s.ControlTimeSyncIntervalP95)
 	fmt.Printf("  CONTROL_TIME_SYNC_INTERVAL_P99: %s\n", s.ControlTimeSyncIntervalP99)
+	fmt.Printf("  WS_READ_PROCESS_P50: %s\n", s.WSReadProcessP50)
+	fmt.Printf("  WS_READ_PROCESS_P95: %s\n", s.WSReadProcessP95)
+	fmt.Printf("  WS_READ_PROCESS_P99: %s\n", s.WSReadProcessP99)
+	fmt.Printf("  WS_READ_PROCESS_MAX: %s\n", s.WSReadProcessMax)
+	if s.HostDiagnostics != "" {
+		fmt.Printf("  %s\n", s.HostDiagnostics)
+	}
 	fmt.Printf("  CONCURRENCY: %d\n", s.Concurrency)
 	fmt.Printf("  TOTAL: %d\n", s.Total)
 	fmt.Printf("  SUCCESS: %d\n", s.Success)
@@ -1586,6 +1864,118 @@ func formatPromValue(value float64) string {
 		return "n/a"
 	}
 	return strconv.FormatFloat(value, 'f', 6, 64)
+}
+
+type cpuTimes struct {
+	Idle  uint64
+	Total uint64
+}
+
+type netCounters struct {
+	RxBytes uint64
+	TxBytes uint64
+}
+
+type hostSample struct {
+	Supported bool
+	At        time.Time
+	CPU       cpuTimes
+	Net       netCounters
+}
+
+func readHostSample() hostSample {
+	cpu, cpuOK := readProcCPU()
+	net, netOK := readProcNet()
+	if !cpuOK || !netOK {
+		return hostSample{}
+	}
+	return hostSample{Supported: true, At: time.Now(), CPU: cpu, Net: net}
+}
+
+func readProcCPU() (cpuTimes, bool) {
+	raw, err := os.ReadFile("/proc/stat")
+	if err != nil {
+		return cpuTimes{}, false
+	}
+	lines := strings.Split(string(raw), "\n")
+	if len(lines) == 0 || !strings.HasPrefix(lines[0], "cpu ") {
+		return cpuTimes{}, false
+	}
+	parts := strings.Fields(lines[0])
+	if len(parts) < 5 {
+		return cpuTimes{}, false
+	}
+	var values []uint64
+	for _, part := range parts[1:] {
+		value, err := strconv.ParseUint(part, 10, 64)
+		if err != nil {
+			return cpuTimes{}, false
+		}
+		values = append(values, value)
+	}
+	var total uint64
+	for _, value := range values {
+		total += value
+	}
+	idle := values[3]
+	if len(values) > 4 {
+		idle += values[4]
+	}
+	return cpuTimes{Idle: idle, Total: total}, true
+}
+
+func readProcNet() (netCounters, bool) {
+	raw, err := os.ReadFile("/proc/net/dev")
+	if err != nil {
+		return netCounters{}, false
+	}
+	var counters netCounters
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || !strings.Contains(line, ":") {
+			continue
+		}
+		nameAndValues := strings.SplitN(line, ":", 2)
+		iface := strings.TrimSpace(nameAndValues[0])
+		if iface == "lo" {
+			continue
+		}
+		fields := strings.Fields(nameAndValues[1])
+		if len(fields) < 16 {
+			continue
+		}
+		rx, rxErr := strconv.ParseUint(fields[0], 10, 64)
+		tx, txErr := strconv.ParseUint(fields[8], 10, 64)
+		if rxErr != nil || txErr != nil {
+			return netCounters{}, false
+		}
+		counters.RxBytes += rx
+		counters.TxBytes += tx
+	}
+	return counters, true
+}
+
+func hostDiagnosticsLine(before, after hostSample) string {
+	if !before.Supported || !after.Supported || !after.At.After(before.At) || after.CPU.Total <= before.CPU.Total {
+		return "HOST_SAMPLE: not_supported"
+	}
+	elapsed := after.At.Sub(before.At).Seconds()
+	totalDelta := after.CPU.Total - before.CPU.Total
+	idleDelta := after.CPU.Idle - before.CPU.Idle
+	cpuPercent := 0.0
+	if totalDelta > 0 && idleDelta <= totalDelta {
+		cpuPercent = (1 - float64(idleDelta)/float64(totalDelta)) * 100
+	}
+	rxRate := float64(deltaUint64(after.Net.RxBytes, before.Net.RxBytes)) / elapsed
+	txRate := float64(deltaUint64(after.Net.TxBytes, before.Net.TxBytes)) / elapsed
+	return fmt.Sprintf("HOST_SAMPLE: cpu_percent=%.2f rx_bytes_per_sec=%.2f tx_bytes_per_sec=%.2f", cpuPercent, rxRate, txRate)
+}
+
+func deltaUint64(after, before uint64) uint64 {
+	if after < before {
+		return 0
+	}
+	return after - before
 }
 
 func printSummary(cfg Config, summaries []StageSummary) {
