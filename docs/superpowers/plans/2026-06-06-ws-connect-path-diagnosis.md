@@ -72,13 +72,13 @@ Do not modify online Kubernetes resources, restart workloads, scale deployments,
 **Files:**
 - Modify: `docs/agent-testing/performance-runs/agent_ws_connect_path_diagnosis_20260606/evidence-redacted.md`
 
-- [ ] **Step 1: Request approval**
+- [x] **Step 1: Request approval**
 
 Ask the user to approve the online diagnosis scope described above.
 
 Expected: user explicitly says approval is granted.
 
-- [ ] **Step 2: Verify deployment and health**
+- [x] **Step 2: Verify deployment and health**
 
 Run:
 
@@ -94,7 +94,7 @@ Expected:
 - ready replicas are `1/1`.
 - health returns code `0` and MySQL/Redis status `ok`.
 
-- [ ] **Step 3: Capture pre-test resource and error baseline**
+- [x] **Step 3: Capture pre-test resource and error baseline**
 
 Run:
 
@@ -110,7 +110,7 @@ Expected:
 - strict error marker count is 0.
 - `ws_connection_active` is 0 or otherwise explained before test.
 
-- [ ] **Step 4: Append redacted baseline evidence**
+- [x] **Step 4: Append redacted baseline evidence**
 
 Append to `evidence-redacted.md`:
 
@@ -234,7 +234,7 @@ rtk env GOCACHE=/tmp/live-auction-go-cache go test ./docs/agent-testing/performa
 
 Expected: package compiles.
 
-- [ ] **Step 5: Commit runner**
+- [x] **Step 5: Commit runner**
 
 Run:
 
@@ -248,7 +248,7 @@ rtk git commit -m "test: add ws connect path diagnosis runner"
 **Files:**
 - Modify: `docs/agent-testing/performance-runs/agent_ws_connect_path_diagnosis_20260606/evidence-redacted.md`
 
-- [ ] **Step 1: Run minimal public WSS probe**
+- [x] **Step 1: Run minimal public WSS probe**
 
 Run:
 
@@ -270,7 +270,7 @@ Expected:
 - cleanup succeeds.
 - output includes ticket P95/P99 and dial P95/P99.
 
-- [ ] **Step 2: Run full runner connection-only-ish comparison**
+- [x] **Step 2: Run full runner connection-only-ish comparison**
 
 Run a low-QPS item-only split-stream run to compare with the existing runner:
 
@@ -297,7 +297,7 @@ Expected:
 - cleanup succeeds.
 - compare full-runner WS connect P95/P99 against minimal probe dial P95/P99.
 
-- [ ] **Step 3: Interpret local probe comparison**
+- [x] **Step 3: Interpret local probe comparison**
 
 Decision:
 
@@ -311,13 +311,13 @@ Append result to `evidence-redacted.md`.
 **Files:**
 - Modify: `docs/agent-testing/performance-runs/agent_ws_connect_path_diagnosis_20260606/evidence-redacted.md`
 
-- [ ] **Step 1: Copy probe to `/private/tmp` or run through repo command from local if available**
+- [x] **Step 1: Copy probe to `/private/tmp` or run through repo command from local if available**
 
 Preferred: run the committed probe locally against public WSS first. If local/public remains slow, run the same binary from the online host using a temporary copy that contains no secrets.
 
 Do not copy credentials or kubeconfig.
 
-- [ ] **Step 2: Run public WSS probe from online host**
+- [x] **Step 2: Run public WSS probe from online host**
 
 Run from online host with the same public endpoint:
 
@@ -330,7 +330,7 @@ Expected:
 - cleanup succeeds.
 - host-side public WSS timings are captured.
 
-- [ ] **Step 3: Interpret local versus host public WSS**
+- [x] **Step 3: Interpret local versus host public WSS**
 
 Decision:
 
@@ -344,7 +344,7 @@ Append result to `evidence-redacted.md`.
 **Files:**
 - Modify: `docs/agent-testing/performance-runs/agent_ws_connect_path_diagnosis_20260606/evidence-redacted.md`
 
-- [ ] **Step 1: Run probe from online host against service path**
+- [x] **Step 1: Run probe from online host against service path**
 
 Use service entry if reachable from host through port-forward or in-cluster execution. Prefer a temporary Kubernetes Job only if explicitly approved; otherwise use `kubectl port-forward` to backend service on the online host.
 
@@ -367,7 +367,7 @@ Expected:
 - service path probe cleanup succeeds.
 - service path connect P95/P99 captured.
 
-- [ ] **Step 2: Interpret service path**
+- [x] **Step 2: Interpret service path**
 
 Decision:
 
@@ -381,7 +381,7 @@ Append result to `evidence-redacted.md`.
 **Files:**
 - Modify: `docs/agent-testing/performance-runs/agent_ws_connect_path_diagnosis_20260606/evidence-redacted.md`
 
-- [ ] **Step 1: Sweep public WSS concurrency**
+- [x] **Step 1: Sweep public WSS concurrency**
 
 Run minimal probe for concurrency levels `1, 4, 8, 16, 32` with target WS `80`:
 
@@ -405,7 +405,7 @@ Expected:
 - cleanup succeeds for each batch.
 - connect P95/P99 curve by concurrency is captured.
 
-- [ ] **Step 2: Capture read-only node/ingress indicators during sweep**
+- [x] **Step 2: Capture read-only node/ingress indicators during sweep**
 
 Before and after the sweep, run:
 
@@ -420,7 +420,7 @@ Expected:
 - no restarts.
 - strict error marker 0.
 
-- [ ] **Step 3: Interpret concurrency threshold**
+- [x] **Step 3: Interpret concurrency threshold**
 
 Decision:
 
@@ -435,7 +435,7 @@ Append result to `evidence-redacted.md`.
 **Files:**
 - Create: `docs/agent-testing/reports/20260606-ws-connect-path-diagnosis.md`
 
-- [ ] **Step 1: Write report**
+- [x] **Step 1: Write report**
 
 Create report with:
 
@@ -469,7 +469,7 @@ Create report with:
 ## 清理结果
 ```
 
-- [ ] **Step 2: State bottleneck classification**
+- [x] **Step 2: State bottleneck classification**
 
 Use one of:
 
@@ -481,7 +481,7 @@ Use one of:
 
 Include evidence for why.
 
-- [ ] **Step 3: Commit evidence and report**
+- [x] **Step 3: Commit evidence and report**
 
 Run:
 
@@ -496,7 +496,7 @@ rtk git commit -m "test: diagnose ws connect path"
 - Modify only if writing a follow-up plan:
   - `docs/superpowers/plans/YYYY-MM-DD-ws-multi-instance-validation.md`
 
-- [ ] **Step 1: Decide whether multi-instance is justified**
+- [x] **Step 1: Decide whether multi-instance is justified**
 
 Proceed to multi-instance only if report classification is `service_or_backend_likely` and evidence shows:
 
@@ -507,7 +507,9 @@ Proceed to multi-instance only if report classification is `service_or_backend_l
 
 Do not proceed to multi-instance if classification is `client_or_public_network_likely` or `public_ingress_tls_likely`.
 
-- [ ] **Step 2: Write follow-up plan if justified**
+- [x] **Step 2: Write follow-up plan if justified**
+
+Decision: not justified. Report classification is `client_or_public_network_likely`; no multi-instance follow-up plan was written.
 
 If justified, write a separate plan for:
 
