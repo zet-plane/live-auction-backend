@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -128,6 +129,16 @@ func TestLoadConfigCanRunCleanupOnly(t *testing.T) {
 
 	if !cfg.CleanupOnly {
 		t.Fatal("expected cleanup-only mode to be enabled")
+	}
+}
+
+func TestLoadConfigCanUseWebSocketStreamMode(t *testing.T) {
+	t.Setenv("PERF_WS_STREAM_MODE", wsStreamModeControlMarket)
+
+	cfg := loadConfig()
+
+	if cfg.WSStreamMode != wsStreamModeControlMarket {
+		t.Fatalf("expected websocket stream mode %s, got %q", wsStreamModeControlMarket, cfg.WSStreamMode)
 	}
 }
 
@@ -289,9 +300,55 @@ func TestWSStatsRecordsTimeSyncIntervals(t *testing.T) {
 	if snapshot.TimeSyncCount != 2 {
 		t.Fatalf("expected two time_sync events, got %d", snapshot.TimeSyncCount)
 	}
-	_, count, samples := stats.deltaSince(WSStatsSnapshot{})
+	_, count, _, samples, _, _ := stats.deltaSince(WSStatsSnapshot{})
 	if count != 2 || len(samples) != 1 || samples[0] <= 0 {
 		t.Fatalf("expected time_sync count and interval sample, got count=%d samples=%v", count, samples)
+	}
+}
+
+func TestWSStatsRecordsControlTimeSyncDiagnostics(t *testing.T) {
+	stats := newWSStats()
+	serverTime := time.Now().Add(-10 * time.Millisecond).UnixMilli()
+	stats.recordStream(1, "control", []byte(`{"type":"time_sync","payload":{"server_time_unix_ms":`+strconv.FormatInt(serverTime, 10)+`}}`))
+	time.Sleep(time.Millisecond)
+	stats.recordStream(1, "control", []byte(`{"type":"time_sync","payload":{"server_time_unix_ms":`+strconv.FormatInt(serverTime, 10)+`}}`))
+
+	_, _, controlCount, _, arrivalDelays, intervals := stats.deltaSince(WSStatsSnapshot{})
+	if controlCount != 2 {
+		t.Fatalf("expected two control time_sync events, got %d", controlCount)
+	}
+	if len(arrivalDelays) != 2 {
+		t.Fatalf("expected two control arrival delay samples, got %d", len(arrivalDelays))
+	}
+	if len(intervals) != 1 || intervals[0] <= 0 {
+		t.Fatalf("expected one positive control interval sample, got %v", intervals)
+	}
+}
+
+func TestWSURLIncludesSplitStreamQuery(t *testing.T) {
+	controlURL := wsURL("https://example.test/base", "room 1", "ticket 1", "control")
+	marketURL := wsURL("http://example.test", "room/2", "ticket/2", "market")
+
+	if !strings.HasPrefix(controlURL, "wss://example.test/ws/v1/rooms/room%201?") {
+		t.Fatalf("expected https base to produce wss room URL, got %s", controlURL)
+	}
+	if !strings.Contains(controlURL, "ticket=ticket+1") || !strings.Contains(controlURL, "stream=control") {
+		t.Fatalf("expected control URL to include ticket and stream query, got %s", controlURL)
+	}
+	if !strings.HasPrefix(marketURL, "ws://example.test/ws/v1/rooms/room%2F2?") {
+		t.Fatalf("expected http base to produce ws room URL, got %s", marketURL)
+	}
+	if !strings.Contains(marketURL, "ticket=ticket%2F2") || !strings.Contains(marketURL, "stream=market") {
+		t.Fatalf("expected market URL to include ticket and stream query, got %s", marketURL)
+	}
+}
+
+func TestWSURLOmitsStreamQueryForAllMode(t *testing.T) {
+	for _, stream := range []string{"", "all"} {
+		got := wsURL("http://example.test", "room", "ticket", stream)
+		if strings.Contains(got, "stream=") {
+			t.Fatalf("expected all-mode stream %q to omit stream query, got %s", stream, got)
+		}
 	}
 }
 
@@ -313,7 +370,10 @@ func TestEnsureWSConnectionsUsesOneUserPerConnectionAndRunsInParallel(t *testing
 		data.UserTokens[i] = "token"
 	}
 
-	report := ensureWSConnectionsWith(context.Background(), cfg, data, 8, func(ctx context.Context, cfg Config, data *TestData, userIndex int) (*websocketConn, error) {
+	report := ensureWSConnectionsWith(context.Background(), cfg, data, 8, func(ctx context.Context, cfg Config, data *TestData, userIndex int, stream string) (*websocketConn, error) {
+		if stream != "all" {
+			t.Fatalf("expected default connector stream all, got %q", stream)
+		}
 		current := inFlight.Add(1)
 		for {
 			previous := maxInFlight.Load()
@@ -343,6 +403,80 @@ func TestEnsureWSConnectionsUsesOneUserPerConnectionAndRunsInParallel(t *testing
 	}
 }
 
+func TestEnsureWSConnectionsUsesControlAndMarketStreamsInSplitMode(t *testing.T) {
+	var seenMu sync.Mutex
+	seen := make(map[int]map[string]int)
+
+	cfg := Config{
+		WSConnectConcurrency: 4,
+		WSConnectMaxAttempts: 8,
+		WSStreamMode:         wsStreamModeControlMarket,
+	}
+	data := &TestData{
+		UserTokens: make([]string, 3),
+	}
+
+	report := ensureWSConnectionsWith(context.Background(), cfg, data, 3, func(ctx context.Context, cfg Config, data *TestData, userIndex int, stream string) (*websocketConn, error) {
+		seenMu.Lock()
+		if seen[userIndex] == nil {
+			seen[userIndex] = make(map[string]int)
+		}
+		seen[userIndex][stream]++
+		seenMu.Unlock()
+		return nil, nil
+	})
+
+	if report.Failures != 0 {
+		t.Fatalf("expected no websocket connection failures, got %d", report.Failures)
+	}
+	if got := wsConnectedCount(data); got != 6 {
+		t.Fatalf("expected 6 physical websocket connections, got %d", got)
+	}
+	if got := wsStreamConnectedCount(data, "control"); got != 3 {
+		t.Fatalf("expected 3 control websocket connections, got %d", got)
+	}
+	if got := wsStreamConnectedCount(data, "market"); got != 3 {
+		t.Fatalf("expected 3 market websocket connections, got %d", got)
+	}
+	for userIndex := 0; userIndex < 3; userIndex++ {
+		if seen[userIndex]["control"] != 1 || seen[userIndex]["market"] != 1 || seen[userIndex]["all"] != 0 {
+			t.Fatalf("expected user %d to open exactly control and market streams, got %#v", userIndex, seen[userIndex])
+		}
+	}
+}
+
+func TestEnsureWSConnectionsAttemptsMissingSplitTargetDespiteAggregateCount(t *testing.T) {
+	var attempted []wsConnectTarget
+	cfg := Config{
+		WSConnectConcurrency: 1,
+		WSConnectMaxAttempts: 4,
+		WSStreamMode:         wsStreamModeControlMarket,
+	}
+	data := &TestData{
+		UserTokens: make([]string, 2),
+		WSUsers:    map[int]bool{9: true},
+		WSStreamUsers: map[string]map[int]bool{
+			"control": {0: true, 1: true},
+			"market":  {0: true},
+		},
+	}
+
+	report := ensureWSConnectionsWith(context.Background(), cfg, data, 2, func(ctx context.Context, cfg Config, data *TestData, userIndex int, stream string) (*websocketConn, error) {
+		attempted = append(attempted, wsConnectTarget{UserIndex: userIndex, Stream: stream})
+		return nil, nil
+	})
+
+	if report.Failures != 0 {
+		t.Fatalf("expected no websocket connection failures, got %d", report.Failures)
+	}
+	if len(attempted) != 1 {
+		t.Fatalf("expected exactly one missing target attempt, got %#v", attempted)
+	}
+	if attempted[0] != (wsConnectTarget{UserIndex: 1, Stream: "market"}) {
+		t.Fatalf("expected missing user 1 market stream to be attempted, got %#v", attempted[0])
+	}
+}
+
 func TestEnsureWSConnectionsStopsAtRetryBudget(t *testing.T) {
 	cfg := Config{
 		WSConnectConcurrency: 4,
@@ -354,7 +488,7 @@ func TestEnsureWSConnectionsStopsAtRetryBudget(t *testing.T) {
 	}
 	var attempts atomic.Int64
 
-	report := ensureWSConnectionsWith(context.Background(), cfg, data, 8, func(ctx context.Context, cfg Config, data *TestData, userIndex int) (*websocketConn, error) {
+	report := ensureWSConnectionsWith(context.Background(), cfg, data, 8, func(ctx context.Context, cfg Config, data *TestData, userIndex int, stream string) (*websocketConn, error) {
 		attempts.Add(1)
 		return nil, errors.New("dial failed")
 	})
@@ -401,20 +535,114 @@ func TestThresholdStopReasonDoesNotStopOnClientE2EP99(t *testing.T) {
 	}
 }
 
+func TestThresholdStopReasonRequiresBothSplitStreams(t *testing.T) {
+	summary := StageSummary{
+		WSStreamMode:               wsStreamModeControlMarket,
+		TargetWS:                   100,
+		WSConnected:                190,
+		ControlWSConnected:         100,
+		MarketWSConnected:          90,
+		ControlTimeSyncCount:       10000,
+		TimeSyncCount:              10000,
+		TimeSyncP95:                time.Second,
+		ControlTimeSyncIntervalP95: time.Second,
+	}
+
+	if reason := thresholdStopReason(summary); reason != "ws_connection_success_lt_95_percent" {
+		t.Fatalf("expected partial split stream connections to fail threshold, got %q", reason)
+	}
+}
+
+func TestThresholdStopReasonPassesBalancedSplitStreams(t *testing.T) {
+	start := time.Unix(100, 0).UTC()
+	summary := StageSummary{
+		WSStreamMode:               wsStreamModeControlMarket,
+		TargetWS:                   100,
+		WSConnected:                190,
+		ControlWSConnected:         95,
+		MarketWSConnected:          95,
+		Start:                      start,
+		End:                        start.Add(10 * time.Second),
+		ControlTimeSyncCount:       500,
+		ControlTimeSyncIntervalP95: time.Second,
+		TimeSyncCount:              0,
+		TimeSyncP95:                10 * time.Second,
+	}
+
+	if reason := thresholdStopReason(summary); reason != "" {
+		t.Fatalf("expected balanced split streams to pass threshold, got %q", reason)
+	}
+}
+
+func TestThresholdStopReasonUsesControlTimeSyncInSplitMode(t *testing.T) {
+	start := time.Unix(100, 0).UTC()
+	summary := StageSummary{
+		WSStreamMode:               wsStreamModeControlMarket,
+		TargetWS:                   10,
+		WSConnected:                20,
+		ControlWSConnected:         10,
+		MarketWSConnected:          10,
+		Start:                      start,
+		End:                        start.Add(10 * time.Second),
+		ControlTimeSyncCount:       1000,
+		TimeSyncCount:              1000,
+		TimeSyncP95:                time.Second,
+		ControlTimeSyncIntervalP95: 4 * time.Second,
+	}
+
+	if reason := thresholdStopReason(summary); reason != "time_sync_p95_interval_gt_3s" {
+		t.Fatalf("expected split mode to use control time_sync interval threshold, got %q", reason)
+	}
+}
+
+func TestThresholdStopReasonUsesControlTimeSyncCountInSplitMode(t *testing.T) {
+	start := time.Unix(100, 0).UTC()
+	summary := StageSummary{
+		WSStreamMode:               wsStreamModeControlMarket,
+		TargetWS:                   10,
+		WSConnected:                20,
+		ControlWSConnected:         10,
+		MarketWSConnected:          10,
+		Start:                      start,
+		End:                        start.Add(10 * time.Second),
+		TimeSyncCount:              1000,
+		TimeSyncP95:                time.Second,
+		ControlTimeSyncCount:       1,
+		ControlTimeSyncIntervalP95: time.Second,
+	}
+
+	if reason := thresholdStopReason(summary); reason != "time_sync_missing_or_low_rate" {
+		t.Fatalf("expected split mode to use control time_sync count threshold, got %q", reason)
+	}
+}
+
 func TestPrintStageSummaryLabelsClientE2ELatency(t *testing.T) {
 	output := captureStdout(t, func() {
 		printStageSummary(StageSummary{
-			Name:  "stage_test",
-			Start: time.Unix(100, 0).UTC(),
-			End:   time.Unix(160, 0).UTC(),
-			P50:   100 * time.Millisecond,
-			P95:   200 * time.Millisecond,
-			P99:   300 * time.Millisecond,
-			Max:   400 * time.Millisecond,
+			Name:               "stage_test",
+			Start:              time.Unix(100, 0).UTC(),
+			End:                time.Unix(160, 0).UTC(),
+			WSStreamMode:       wsStreamModeControlMarket,
+			ControlWSConnected: 10,
+			MarketWSConnected:  10,
+			P50:                100 * time.Millisecond,
+			P95:                200 * time.Millisecond,
+			P99:                300 * time.Millisecond,
+			Max:                400 * time.Millisecond,
 		})
 	})
 
 	for _, label := range []string{
+		"WS_STREAM_MODE:",
+		"CONTROL_WS_CONNECTED:",
+		"MARKET_WS_CONNECTED:",
+		"CONTROL_TIME_SYNC_COUNT:",
+		"CONTROL_TIME_SYNC_ARRIVAL_DELAY_P50:",
+		"CONTROL_TIME_SYNC_ARRIVAL_DELAY_P95:",
+		"CONTROL_TIME_SYNC_ARRIVAL_DELAY_P99:",
+		"CONTROL_TIME_SYNC_INTERVAL_P50:",
+		"CONTROL_TIME_SYNC_INTERVAL_P95:",
+		"CONTROL_TIME_SYNC_INTERVAL_P99:",
 		"CLIENT_E2E_P50:",
 		"CLIENT_E2E_P95:",
 		"CLIENT_E2E_P99:",

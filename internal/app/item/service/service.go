@@ -372,6 +372,7 @@ func (s *Service) StartItem(ctx context.Context, current *usermodel.User, itemID
 				EndTime:          rule.EndTime,
 				ServerTimeUnixMS: now.UnixMilli(),
 				EndTimeUnixMS:    rule.EndTime.UnixMilli(),
+				AuctionVersion:   0,
 			},
 		})
 	}
@@ -395,6 +396,7 @@ func (s *Service) CancelItem(ctx context.Context, current *usermodel.User, itemI
 	if err := s.store.ClearRoomCurrentItem(item.RoomID, item.ID); err != nil {
 		return err
 	}
+	auctionVersion := s.auctionVersionFromCache(ctx, item.ID)
 	if s.cache != nil {
 		_ = s.cache.RemoveFromRoomQueue(ctx, item.RoomID, item.ID)
 		_ = s.cache.UnscheduleAuctionEnd(ctx, item.ID)
@@ -404,10 +406,21 @@ func (s *Service) CancelItem(ctx context.Context, current *usermodel.User, itemI
 	if s.broadcaster != nil {
 		_ = s.broadcaster.Fanout(wsevent.RoomTopic(item.RoomID), wsevent.Event{
 			Type:    dto.EventAuctionCancelled,
-			Payload: dto.AuctionCancelledPayload{ItemID: item.ID},
+			Payload: dto.AuctionCancelledPayload{ItemID: item.ID, AuctionVersion: auctionVersion},
 		})
 	}
 	return nil
+}
+
+func (s *Service) auctionVersionFromCache(ctx context.Context, itemID string) int64 {
+	if s.cache == nil {
+		return 0
+	}
+	state, ok, err := s.cache.GetAuctionState(ctx, itemID)
+	if err != nil || !ok || state == nil {
+		return 0
+	}
+	return int64(state.BidCount)
 }
 
 func (s *Service) findMerchantItem(current *usermodel.User, itemID string) (*model.AuctionItem, *model.AuctionRule, error) {
@@ -664,6 +677,7 @@ func (s *Service) BroadcastTimeSync(ctx context.Context) {
 				ServerTimeUnixMS: serverUnixMS,
 				EndTimeUnixMS:    endUnixMS,
 				Status:           state.Status,
+				AuctionVersion:   int64(state.BidCount),
 			},
 		})
 	}
@@ -720,6 +734,7 @@ func (s *Service) persistSettledAuction(ctx context.Context, result itemcache.Se
 				ServerTimeUnixMS: s.now().UnixMilli(),
 				EndedAtUnixMS:    result.EndedAtUnixMS,
 				EndReason:        result.EndReason,
+				AuctionVersion:   result.AuctionVersion,
 			},
 		})
 	}
@@ -735,10 +750,11 @@ func (s *Service) persistSettledAuction(ctx context.Context, result itemcache.Se
 			orderEvt := wsevent.Event{
 				Type: dto.EventOrderCreated,
 				Payload: dto.OrderCreatedPayload{
-					ItemID:    item.ID,
-					OrderID:   orderID,
-					WinnerID:  result.LeaderUserID,
-					DealPrice: result.DealPrice,
+					ItemID:         item.ID,
+					OrderID:        orderID,
+					WinnerID:       result.LeaderUserID,
+					DealPrice:      result.DealPrice,
+					AuctionVersion: result.AuctionVersion,
 				},
 			}
 			_ = s.broadcaster.Unicast(wsevent.UserAddr(result.LeaderUserID), orderEvt)
@@ -759,6 +775,7 @@ func auctionSnapshotFromState(itemID string, state *itemcache.AuctionState, now 
 		BidCount:         state.BidCount,
 		ParticipantCount: state.ParticipantCount,
 		EndReason:        state.EndReason,
+		AuctionVersion:   int64(state.BidCount),
 	}
 }
 
@@ -774,6 +791,7 @@ func auctionSnapshotFromStore(item *model.AuctionItem, rule *model.AuctionRule, 
 		EndTimeUnixMS:    rule.EndTime.UnixMilli(),
 		LeaderUserID:     item.WinnerID,
 		DealPrice:        dealPrice,
+		AuctionVersion:   0,
 	}
 }
 

@@ -21,6 +21,7 @@ type AuctionStartedPayload struct {
 	EndTime          time.Time `json:"end_time"`
 	ServerTimeUnixMS int64     `json:"server_time_unix_ms"`
 	EndTimeUnixMS    int64     `json:"end_time_unix_ms"`
+	AuctionVersion   int64     `json:"auction_version"`
 }
 
 type BidSuccessPayload struct {
@@ -32,6 +33,8 @@ type BidSuccessPayload struct {
 	EndTime          time.Time `json:"end_time"`
 	ServerTimeUnixMS int64     `json:"server_time_unix_ms"`
 	EndTimeUnixMS    int64     `json:"end_time_unix_ms"`
+	AuctionVersion   int64     `json:"auction_version"`
+	CoalescedBids    int64     `json:"coalesced_bids,omitempty"`
 }
 
 type AuctionExtendedPayload struct {
@@ -42,6 +45,7 @@ type AuctionExtendedPayload struct {
 	ServerTimeUnixMS int64     `json:"server_time_unix_ms"`
 	OldEndTimeUnixMS int64     `json:"old_end_time_unix_ms,omitempty"`
 	NewEndTimeUnixMS int64     `json:"new_end_time_unix_ms"`
+	AuctionVersion   int64     `json:"auction_version"`
 }
 
 type TimeSyncPayload struct {
@@ -49,6 +53,7 @@ type TimeSyncPayload struct {
 	ServerTimeUnixMS int64  `json:"server_time_unix_ms"`
 	EndTimeUnixMS    int64  `json:"end_time_unix_ms"`
 	Status           string `json:"status"`
+	AuctionVersion   int64  `json:"auction_version"`
 }
 
 type AuctionSnapshotPayload struct {
@@ -62,6 +67,7 @@ type AuctionSnapshotPayload struct {
 	BidCount         int    `json:"bid_count"`
 	ParticipantCount int    `json:"participant_count"`
 	EndReason        string `json:"end_reason,omitempty"`
+	AuctionVersion   int64  `json:"auction_version"`
 }
 
 type UserOutbidPayload struct {
@@ -70,6 +76,7 @@ type UserOutbidPayload struct {
 	CurrentPrice     int64  `json:"current_price"`
 	ServerTimeUnixMS int64  `json:"server_time_unix_ms"`
 	EndTimeUnixMS    int64  `json:"end_time_unix_ms"`
+	AuctionVersion   int64  `json:"auction_version"`
 }
 
 type AuctionEndedPayload struct {
@@ -80,15 +87,18 @@ type AuctionEndedPayload struct {
 	ServerTimeUnixMS int64  `json:"server_time_unix_ms"`
 	EndedAtUnixMS    int64  `json:"ended_at_unix_ms,omitempty"`
 	EndReason        string `json:"end_reason,omitempty"`
+	AuctionVersion   int64  `json:"auction_version"`
 }
 
 type AuctionCancelledPayload struct {
-	ItemID string `json:"item_id"`
+	ItemID         string `json:"item_id"`
+	AuctionVersion int64  `json:"auction_version"`
 }
 
 type OrderCreatedPayload struct {
-	ItemID    string `json:"item_id"`
-	OrderID   string `json:"order_id"`
-	WinnerID  string `json:"winner_user_id"`
-	DealPrice int64  `json:"deal_price"`
+	ItemID         string `json:"item_id"`
+	OrderID        string `json:"order_id"`
+	WinnerID       string `json:"winner_user_id"`
+	DealPrice      int64  `json:"deal_price"`
+	AuctionVersion int64  `json:"auction_version"`
 }

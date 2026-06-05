@@ -61,7 +61,8 @@ func ServeWS(c flamego.Context, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	conn := wshub.NewConn("conn_"+snowflake.MakeUUID(), userID, roomID, wsConn, hub)
+	stream := wshub.ParseConnStream(r.URL.Query().Get("stream"))
+	conn := wshub.NewConnWithStream("conn_"+snowflake.MakeUUID(), userID, roomID, wsConn, hub, stream)
 	hub.Register(conn)
 	go conn.StartReadLoop()
 	go conn.StartWriteLoop()

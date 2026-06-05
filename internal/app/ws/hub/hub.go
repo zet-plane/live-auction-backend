@@ -55,7 +55,7 @@ func (h *Hub) Register(c *Conn) {
 	}
 	var replaced []*Conn
 	for connID, existing := range h.rooms[c.roomID] {
-		if existing.userID != c.userID || existing.id == c.id {
+		if existing.userID != c.userID || existing.stream != c.stream || existing.id == c.id {
 			continue
 		}
 		delete(h.rooms[c.roomID], connID)
@@ -87,6 +87,10 @@ func (h *Hub) Register(c *Conn) {
 		go h.syncPresenceOnJoin(c.roomID, c.userID)
 	}
 
+	if !streamAccepts(c.stream, streamControl) {
+		return
+	}
+
 	h.mu.RLock()
 	provider := h.snapshotProvider
 	h.mu.RUnlock()
@@ -97,16 +101,26 @@ func (h *Hub) Register(c *Conn) {
 	if err != nil || !ok || event == nil {
 		return
 	}
+	if !streamAccepts(c.stream, classifyEventStream(event.Type)) {
+		return
+	}
 	h.deliver(c, *event)
 }
 
 func (h *Hub) Remove(c *Conn) {
 	removed := false
+	userRoomStillActive := false
 	h.mu.Lock()
 	if room, ok := h.rooms[c.roomID]; ok {
 		if current, ok := room[c.id]; ok && current == c {
 			delete(room, c.id)
 			removed = true
+			for _, existing := range room {
+				if existing.userID == c.userID {
+					userRoomStillActive = true
+					break
+				}
+			}
 			if len(room) == 0 {
 				delete(h.rooms, c.roomID)
 			}
@@ -115,7 +129,7 @@ func (h *Hub) Remove(c *Conn) {
 	h.removeUserConnLocked(c)
 	h.mu.Unlock()
 
-	if removed && h.presence != nil {
+	if removed && !userRoomStillActive && h.presence != nil {
 		go h.syncPresenceOnLeave(c.roomID, c.userID)
 	}
 	if removed {
@@ -160,7 +174,11 @@ func (h *Hub) SendToRoom(roomID string, event wsevent.Event) {
 
 	var delivered int64
 	var dropped int64
+	eventStream := classifyEventStream(event.Type)
 	for _, c := range conns {
+		if !streamAccepts(c.stream, eventStream) {
+			continue
+		}
 		if h.deliver(c, event) {
 			delivered++
 		} else {
@@ -189,7 +207,11 @@ func (h *Hub) Unicast(addr string, event wsevent.Event) error {
 
 	var delivered int64
 	var dropped int64
+	eventStream := classifyEventStream(event.Type)
 	for _, c := range conns {
+		if !streamAccepts(c.stream, eventStream) {
+			continue
+		}
 		if h.deliver(c, event) {
 			delivered++
 		} else {

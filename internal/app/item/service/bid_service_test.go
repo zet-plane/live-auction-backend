@@ -290,6 +290,54 @@ func TestPlaceBidSuccessfulBidDoesNotCallSeparateBidLogAppend(t *testing.T) {
 	}
 }
 
+func TestPlaceBidUsesLuaBidCountAsAuctionVersion(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	fb := &fakeBroadcaster{}
+	itemID := "item_version"
+	fc.states[itemID] = &itemcache.AuctionState{
+		Status:            "ongoing",
+		RoomID:            "room_1",
+		CurrentPrice:      1000,
+		DealPrice:         1000,
+		EndTimeUnixMS:     time.Now().Add(time.Minute).UnixMilli(),
+		BidIncrement:      100,
+		ExtendTriggerSec:  testPolicy.ExtendTriggerSec,
+		AutoExtendSec:     testPolicy.AutoExtendSec,
+		MaxExtendCount:    testPolicy.MaxExtendCount,
+		MaxTotalExtendSec: testPolicy.MaxTotalExtendSec,
+	}
+	fc.bidLuaResult = &itemcache.BidLuaResult{
+		Code:           0,
+		BidID:          "bid_1",
+		CurrentPrice:   1100,
+		LeaderUserID:   "user_1",
+		EndTimeUnix:    time.Now().Add(time.Minute).Unix(),
+		EndTimeUnixMS:  time.Now().Add(time.Minute).UnixMilli(),
+		AuctionVersion: 7,
+		Status:         "ongoing",
+	}
+	svc := NewService(store, testPolicy, fc, nil, nil, fb)
+	svc.bidBroadcastDelay = time.Millisecond
+
+	_, err := svc.PlaceBid(context.Background(), &usermodel.User{ID: "user_1", Name: "Alice"}, itemID, itemdto.PlaceBidInput{
+		Price:          1100,
+		IdempotencyKey: "idem_version",
+		UserName:       "Alice",
+	})
+	if err != nil {
+		t.Fatalf("PlaceBid failed: %v", err)
+	}
+	fanouts := waitForBidFanouts(t, fb, 1)
+	payload, ok := fanouts[0].event.Payload.(itemdto.BidSuccessPayload)
+	if !ok {
+		t.Fatalf("expected BidSuccessPayload, got %T", fanouts[0].event.Payload)
+	}
+	if payload.AuctionVersion != 7 {
+		t.Fatalf("auction_version = %d, want 7", payload.AuctionVersion)
+	}
+}
+
 func TestPlaceBidIdempotentResultDoesNotAppendBidLogEvent(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()
@@ -851,6 +899,9 @@ func TestPlaceBidPriceCapEmitsSingleOrderCreatedToWinner(t *testing.T) {
 	if payload.ItemID != itemID || payload.WinnerID != "user_1" || payload.DealPrice != 500 || payload.OrderID == "" {
 		t.Fatalf("unexpected order_created payload: %+v", payload)
 	}
+	if payload.AuctionVersion != 1 {
+		t.Fatalf("expected order_created auction_version 1, got %d", payload.AuctionVersion)
+	}
 }
 
 type fakeDepositChecker struct {
@@ -1352,6 +1403,13 @@ func TestPlaceBidBroadcastsUserOutbid(t *testing.T) {
 	found := false
 	for _, u := range fb.unicastSnapshot() {
 		if u.event.Type == itemdto.EventUserOutbid && u.addr == wsevent.UserAddr("user_1") {
+			payload, ok := u.event.Payload.(itemdto.UserOutbidPayload)
+			if !ok {
+				t.Fatalf("expected UserOutbidPayload, got %T", u.event.Payload)
+			}
+			if payload.AuctionVersion != 2 {
+				t.Fatalf("expected auction_version 2, got %d", payload.AuctionVersion)
+			}
 			found = true
 		}
 	}
@@ -1397,6 +1455,12 @@ func TestPlaceBidCoalescesBidSuccessFanout(t *testing.T) {
 	}
 	if payload.CurrentPrice != 300 || payload.LeaderUserID != "user_3" {
 		t.Fatalf("expected latest bid payload user_3/300, got %+v", payload)
+	}
+	if payload.AuctionVersion != 3 {
+		t.Fatalf("expected latest auction_version 3, got %d", payload.AuctionVersion)
+	}
+	if payload.CoalescedBids != 3 {
+		t.Fatalf("expected coalesced_bids 3, got %d", payload.CoalescedBids)
 	}
 	if payload.ServerTimeUnixMS != now.UnixMilli() || payload.EndTimeUnixMS != endTime.UnixMilli() {
 		t.Fatalf("expected clock fields server=%d end=%d, got %+v", now.UnixMilli(), endTime.UnixMilli(), payload)

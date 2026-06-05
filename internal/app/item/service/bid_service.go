@@ -151,6 +151,7 @@ func (s *Service) PlaceBid(ctx context.Context, current *usermodel.User, itemID 
 			EndTime:          endTime,
 			ServerTimeUnixMS: now.UnixMilli(),
 			EndTimeUnixMS:    endTimeUnixMS,
+			AuctionVersion:   luaResult.AuctionVersion,
 		})
 		if luaResult.PrevLeaderUserID != "" && luaResult.PrevLeaderUserID != luaResult.LeaderUserID {
 			_ = s.broadcaster.Unicast(wsevent.UserAddr(luaResult.PrevLeaderUserID), wsevent.Event{
@@ -161,6 +162,7 @@ func (s *Service) PlaceBid(ctx context.Context, current *usermodel.User, itemID 
 					CurrentPrice:     luaResult.CurrentPrice,
 					ServerTimeUnixMS: now.UnixMilli(),
 					EndTimeUnixMS:    endTimeUnixMS,
+					AuctionVersion:   luaResult.AuctionVersion,
 				},
 			})
 		}
@@ -173,6 +175,7 @@ func (s *Service) PlaceBid(ctx context.Context, current *usermodel.User, itemID 
 					ExtendSeconds:    hot.AutoExtendSec,
 					ServerTimeUnixMS: now.UnixMilli(),
 					NewEndTimeUnixMS: endTimeUnixMS,
+					AuctionVersion:   luaResult.AuctionVersion,
 				},
 			})
 		}
@@ -225,16 +228,18 @@ func (s *Service) PlaceBid(ctx context.Context, current *usermodel.User, itemID 
 					ServerTimeUnixMS: endedAtUnixMS,
 					EndedAtUnixMS:    endedAtUnixMS,
 					EndReason:        "price_cap",
+					AuctionVersion:   luaResult.AuctionVersion,
 				},
 			})
 			if orderID != "" {
 				orderEvt := wsevent.Event{
 					Type: dto.EventOrderCreated,
 					Payload: dto.OrderCreatedPayload{
-						ItemID:    item.ID,
-						OrderID:   orderID,
-						WinnerID:  current.ID,
-						DealPrice: input.Price,
+						ItemID:         item.ID,
+						OrderID:        orderID,
+						WinnerID:       current.ID,
+						DealPrice:      input.Price,
+						AuctionVersion: luaResult.AuctionVersion,
 					},
 				}
 				_ = s.broadcaster.Unicast(wsevent.UserAddr(current.ID), orderEvt)
