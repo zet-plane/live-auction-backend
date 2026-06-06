@@ -13,6 +13,7 @@ import (
 	usermodel "github.com/zet-plane/live-auction-backend/internal/app/user/model"
 	"github.com/zet-plane/live-auction-backend/internal/core/observability"
 	"github.com/zet-plane/live-auction-backend/pkg/errorx"
+	"github.com/zet-plane/live-auction-backend/pkg/logx"
 	"github.com/zet-plane/live-auction-backend/pkg/snowflake"
 	"github.com/zet-plane/live-auction-backend/pkg/wsevent"
 )
@@ -197,6 +198,7 @@ func (s *Service) PlaceBid(ctx context.Context, current *usermodel.User, itemID 
 			bidReason = "db_error"
 			return nil, err
 		}
+		s.cacheItemDetail(ctx, item, rule)
 		if err := s.store.ClearRoomCurrentItem(item.RoomID, item.ID); err != nil {
 			bidResult = "error"
 			bidReason = "db_error"
@@ -294,7 +296,7 @@ func (s *Service) bidHotConfig(ctx context.Context, itemID string) (*itemcache.A
 		existing = state
 	}
 
-	item, rule, err := s.store.FindItemWithRule(itemID)
+	item, rule, err := s.getItemDetailSource(ctx, itemID)
 	if err != nil {
 		result = "error"
 		return nil, err
@@ -408,11 +410,24 @@ func (s *Service) GetRanking(ctx context.Context, itemID string, page, pageSize 
 		var err error
 		entries, err = s.cache.GetRanking(ctx, itemID, offset, pageSize)
 		if err != nil {
-			entries = nil // degrade to MySQL fallback; read errors are non-fatal
+			logx.Warnw("item.GetRanking get redis ranking failed", "item_id", itemID, "err", err)
+			entries = nil
+		}
+		if len(entries) == 0 && s.shouldRebuildRanking(ctx, itemID) {
+			rebuilt, err := s.rebuildRankingOnce(ctx, itemID, offset+pageSize)
+			if err != nil {
+				return nil, err
+			}
+			if offset < len(rebuilt) {
+				entries = rebuilt[offset:]
+			}
+			if len(entries) > pageSize {
+				entries = entries[:pageSize]
+			}
 		}
 	}
 
-	if len(entries) == 0 {
+	if len(entries) == 0 && s.cache == nil {
 		// TODO: ListBidRanking takes a single limit; we pass offset+pageSize and slice in Go.
 		// For large page numbers this is an O(page) query — acceptable given leaderboard caps.
 		all, err := s.store.ListBidRanking(itemID, offset+pageSize)
@@ -446,6 +461,41 @@ func (s *Service) GetRanking(ctx context.Context, itemID string, page, pageSize 
 	return ranking, nil
 }
 
+func (s *Service) shouldRebuildRanking(ctx context.Context, itemID string) bool {
+	if s.cache == nil {
+		return false
+	}
+	state, ok, err := s.cache.GetAuctionState(ctx, itemID)
+	if err != nil {
+		logx.Warnw("item.GetRanking get auction state failed", "item_id", itemID, "err", err)
+		return true
+	}
+	return !ok || state.BidCount > 0
+}
+
+func (s *Service) rebuildRankingOnce(ctx context.Context, itemID string, limit int) ([]dto.BidderPrice, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	value, err, _ := s.rankingRebuilds.Do("ranking:"+itemID, func() (any, error) {
+		entries, err := s.store.ListBidRanking(itemID, limit)
+		if err != nil {
+			return nil, err
+		}
+		if s.cache != nil && len(entries) > 0 {
+			if err := s.cache.SetRanking(ctx, itemID, entries); err != nil {
+				logx.Warnw("item.GetRanking set rebuilt redis ranking failed", "item_id", itemID, "err", err)
+			}
+		}
+		return entries, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	entries, _ := value.([]dto.BidderPrice)
+	return entries, nil
+}
+
 func firstCurrentUser(users []*usermodel.User) *usermodel.User {
 	if len(users) == 0 {
 		return nil
@@ -457,11 +507,13 @@ func (s *Service) currentUserRanking(ctx context.Context, itemID, userID string)
 	if s.cache != nil {
 		result, err := s.cache.GetUserRanking(ctx, itemID, userID)
 		if err != nil {
-			return nil, err
+			logx.Warnw("item.GetRanking get redis user ranking failed", "item_id", itemID, "user_id", userID, "err", err)
+			return &dto.CurrentUserRanking{UserID: userID}, nil
 		}
 		if result != nil {
 			return result, nil
 		}
+		return &dto.CurrentUserRanking{UserID: userID}, nil
 	}
 	result, err := s.store.GetUserRanking(itemID, userID)
 	if err != nil {

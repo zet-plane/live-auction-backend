@@ -262,6 +262,32 @@ func (c *RedisCache) GetRanking(ctx context.Context, itemID string, offset, limi
 	return entries, nil
 }
 
+func (c *RedisCache) SetRanking(ctx context.Context, itemID string, entries []dto.BidderPrice) error {
+	rankingKey := rankingKey(itemID)
+	namesKey := bidderNamesKey(itemID)
+	pipe := c.client.Pipeline()
+	pipe.Del(ctx, rankingKey, namesKey)
+	if len(entries) > 0 {
+		zs := make([]redis.Z, 0, len(entries))
+		names := make([]any, 0, len(entries)*2)
+		for _, entry := range entries {
+			if entry.UserID == "" {
+				continue
+			}
+			zs = append(zs, redis.Z{Score: float64(entry.Price), Member: entry.UserID})
+			names = append(names, entry.UserID, entry.UserName)
+		}
+		if len(zs) > 0 {
+			pipe.ZAdd(ctx, rankingKey, zs...)
+		}
+		if len(names) > 0 {
+			pipe.HSet(ctx, namesKey, names...)
+		}
+	}
+	_, err := pipe.Exec(ctx)
+	return err
+}
+
 func (c *RedisCache) GetUserRanking(ctx context.Context, itemID, userID string) (*dto.CurrentUserRanking, error) {
 	rank, err := c.client.ZRevRank(ctx, rankingKey(itemID), userID).Result()
 	if err == redis.Nil {

@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"github.com/zet-plane/live-auction-backend/internal/app/item/dto"
+	"github.com/zet-plane/live-auction-backend/internal/app/item/model"
 )
 
 type AuctionState struct {
@@ -47,6 +49,11 @@ type AuctionHotConfig struct {
 	MaxExtendCount    int
 	MaxTotalExtendSec int
 	EndTimeUnixMS     int64
+}
+
+type ItemDetailCache struct {
+	Item *model.AuctionItem `json:"item"`
+	Rule *model.AuctionRule `json:"rule"`
 }
 
 type BidLuaArgs struct {
@@ -104,9 +111,15 @@ type SettlementResult struct {
 	AuctionVersion int64
 }
 
-const FinalSnapshotTTL = 24 * time.Hour
+const (
+	FinalSnapshotTTL = 24 * time.Hour
+	ItemDetailTTL    = 24 * time.Hour
+)
 
 type Cache interface {
+	SetItemDetail(ctx context.Context, itemID string, detail ItemDetailCache) error
+	GetItemDetail(ctx context.Context, itemID string) (*ItemDetailCache, bool, error)
+	DeleteItemDetail(ctx context.Context, itemID string) error
 	InitAuctionState(ctx context.Context, itemID string, state AuctionState) error
 	GetAuctionState(ctx context.Context, itemID string) (*AuctionState, bool, error)
 	GetAuctionHotConfig(ctx context.Context, itemID string) (*AuctionHotConfig, bool, error)
@@ -126,6 +139,7 @@ type Cache interface {
 	PlaceBidLua(ctx context.Context, itemID string, args BidLuaArgs) (*BidLuaResult, error)
 	AppendBidLogEvent(ctx context.Context, event BidLogEvent) error
 	GetRanking(ctx context.Context, itemID string, offset, limit int) ([]dto.BidderPrice, error)
+	SetRanking(ctx context.Context, itemID string, entries []dto.BidderPrice) error
 	GetUserRanking(ctx context.Context, itemID, userID string) (*dto.CurrentUserRanking, error)
 }
 
@@ -137,8 +151,45 @@ func NewRedisCache(client *redis.Client) *RedisCache {
 	return &RedisCache{client: client}
 }
 
+func (c *RedisCache) SetItemDetail(ctx context.Context, itemID string, detail ItemDetailCache) error {
+	if detail.Item == nil || detail.Rule == nil {
+		return errors.New("item detail cache requires item and rule")
+	}
+	raw, err := json.Marshal(detail)
+	if err != nil {
+		return err
+	}
+	return c.client.Set(ctx, itemDetailKey(itemID), raw, ItemDetailTTL).Err()
+}
+
+func (c *RedisCache) GetItemDetail(ctx context.Context, itemID string) (*ItemDetailCache, bool, error) {
+	raw, err := c.client.Get(ctx, itemDetailKey(itemID)).Bytes()
+	if err == redis.Nil {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	var detail ItemDetailCache
+	if err := json.Unmarshal(raw, &detail); err != nil {
+		return nil, false, err
+	}
+	if detail.Item == nil || detail.Rule == nil {
+		return nil, false, errors.New("invalid item detail cache")
+	}
+	return &detail, true, nil
+}
+
+func (c *RedisCache) DeleteItemDetail(ctx context.Context, itemID string) error {
+	return c.client.Del(ctx, itemDetailKey(itemID)).Err()
+}
+
 func itemStateKey(itemID string) string {
 	return "auction:item:" + itemID + ":state"
+}
+
+func itemDetailKey(itemID string) string {
+	return "auction:item:" + itemID + ":detail"
 }
 
 func roomQueueKey(roomID string) string {
