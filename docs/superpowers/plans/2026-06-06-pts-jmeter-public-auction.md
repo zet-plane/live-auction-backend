@@ -43,17 +43,10 @@ The JMX must contain:
 - JSON extractor for `data.token`.
 - HTTP ticket sampler: `POST /api/v1/ws-ticket`.
 - JSON extractor for `data.ticket`.
-- Open WebSocket sampler using:
-  - testclass `eu.luminis.jmeter.wssampler.OpenWebSocketSampler`
-  - guiclass `eu.luminis.jmeter.wssampler.OpenWebSocketSamplerGui`
-  - `server=${BASE_HOST}`
-  - `port=${BASE_PORT}`
-  - `path=/ws/v1/rooms/${room_id}?ticket=${ticket}&stream=${STREAM}`
-  - `TLS=true`
-  - `connectTimeout=${CONNECT_TIMEOUT_MS}`
-  - `readTimeout=${REQUEST_TIMEOUT_MS}`
-- Single Read WebSocket sampler for first message.
-- Close WebSocket sampler.
+- WebSocket connect + first-message check implemented as a JSR223/Groovy sampler using Java 11 `java.net.http.WebSocket` (no `eu.luminis.*` plugin samplers).
+  - Build URI: `/ws/v1/rooms/${room_id}?ticket=${ticket}&stream=${STREAM}`
+  - Enforce `CONNECT_TIMEOUT_MS` and `REQUEST_TIMEOUT_MS` in the sampler.
+  - Mark the sample failed if open or first message times out.
 
 - [ ] **Step 4: Verify XML and sensitive scan**
 
