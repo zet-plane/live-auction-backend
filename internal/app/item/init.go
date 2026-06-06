@@ -24,6 +24,13 @@ import (
 
 var ErrEmptyDatabase = errors.New("database pointer is nil")
 
+type Reader interface {
+	ListItemsByIDs(ctx context.Context, itemIDs []string) ([]dto.ItemListDTO, error)
+}
+
+// ItemReader is the package-level contract exported for room feed enrichment.
+var ItemReader Reader
+
 type Item struct {
 	Name string
 	svc  *service.Service
@@ -68,11 +75,13 @@ func (i *Item) Load(engine *kernel.Engine) error {
 	}
 	svc := service.NewService(store, policy, c, orderapp.Svc, depositapp.Svc, wsapp.Hub)
 	i.svc = svc
+	ItemReader = svc
 	handler.Init(svc)
 	router.RegisterRoutes(engine.Flame)
 	if setter, ok := wsapp.Hub.(interface{ SetSnapshotProvider(wshub.SnapshotProvider) }); ok {
 		setter.SetSnapshotProvider(svc)
 	}
+	engine.Cron.AddFunc("@every 1s", observability.WrapCron("item.start_due_auctions", svc.StartDueAuctions))
 	engine.Cron.AddFunc("@every 1s", observability.WrapCron("item.settle_due_auctions", svc.SettleDueAuctions))
 	engine.Cron.AddFunc("@every 1s", observability.WrapCron("item.broadcast_time_sync", svc.BroadcastTimeSync))
 	engine.Cron.AddFunc("@every 1m", observability.WrapCron("item.end_expired_auctions_fallback", svc.EndExpiredAuctions))

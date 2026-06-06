@@ -20,6 +20,12 @@ type Service struct {
 	now   func() time.Time
 }
 
+type SettlementSummary struct {
+	Refunded  int
+	Forfeited int
+	Skipped   int
+}
+
 func NewService(store dao.Store) *Service {
 	return &Service{store: store, now: time.Now}
 }
@@ -118,6 +124,74 @@ func (s *Service) HasPaidDeposit(ctx context.Context, itemID, userID string, req
 		return false, err
 	}
 	return deposit.Status == model.DepositPaid && deposit.Amount >= requiredAmount, nil
+}
+
+func (s *Service) RefundNonWinners(ctx context.Context, itemID, winnerUserID string) (summary SettlementSummary, err error) {
+	itemID = strings.TrimSpace(itemID)
+	winnerUserID = strings.TrimSpace(winnerUserID)
+	finish := observability.Track(ctx, "deposit.refund_non_winners", "item_id", itemID, "winner_user_id", winnerUserID)
+	defer func() {
+		finish(&err, "refunded", summary.Refunded, "skipped", summary.Skipped)
+	}()
+	if itemID == "" {
+		return summary, errorx.ErrInvalidRequest
+	}
+	deposits, err := s.store.ListPaidDepositsByItem(itemID)
+	if err != nil {
+		return summary, err
+	}
+	now := s.now()
+	for _, deposit := range deposits {
+		if deposit.UserID == winnerUserID {
+			summary.Skipped++
+			continue
+		}
+		ok, err := s.store.TransitionDepositStatus(itemID, deposit.UserID, model.DepositPaid, model.DepositRefunded, &now)
+		if err != nil {
+			return summary, err
+		}
+		if ok {
+			summary.Refunded++
+		} else {
+			summary.Skipped++
+		}
+	}
+	return summary, nil
+}
+
+func (s *Service) RefundWinner(ctx context.Context, itemID, userID string) (SettlementSummary, error) {
+	return s.settleWinnerDeposit(ctx, "deposit.refund_winner", itemID, userID, model.DepositRefunded)
+}
+
+func (s *Service) ForfeitWinner(ctx context.Context, itemID, userID string) (SettlementSummary, error) {
+	return s.settleWinnerDeposit(ctx, "deposit.forfeit_winner", itemID, userID, model.DepositForfeited)
+}
+
+func (s *Service) settleWinnerDeposit(ctx context.Context, operation, itemID, userID string, target model.DepositStatus) (summary SettlementSummary, err error) {
+	itemID = strings.TrimSpace(itemID)
+	userID = strings.TrimSpace(userID)
+	finish := observability.Track(ctx, operation, "item_id", itemID, "user_id", userID, "target_status", string(target))
+	defer func() {
+		finish(&err, "refunded", summary.Refunded, "forfeited", summary.Forfeited, "skipped", summary.Skipped)
+	}()
+	if itemID == "" || userID == "" {
+		return summary, errorx.ErrInvalidRequest
+	}
+	now := s.now()
+	ok, err := s.store.TransitionDepositStatus(itemID, userID, model.DepositPaid, target, &now)
+	if err != nil {
+		return summary, err
+	}
+	if !ok {
+		summary.Skipped = 1
+		return summary, nil
+	}
+	if target == model.DepositRefunded {
+		summary.Refunded = 1
+	} else if target == model.DepositForfeited {
+		summary.Forfeited = 1
+	}
+	return summary, nil
 }
 
 func userID(current *usermodel.User) string {

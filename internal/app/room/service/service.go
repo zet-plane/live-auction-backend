@@ -213,7 +213,8 @@ func (s *Service) ListRoomFeed(ctx context.Context, input dto.RoomFeedInput) (re
 			onlineCount = state.OnlineCount
 		}
 		itemQueue, _ := s.cache.GetItemQueue(ctx, room.ID)
-		d := dto.NewRoomDetailDTO(room, onlineCount, itemQueue, nil)
+		items := s.roomItems(ctx, itemQueue)
+		d := dto.NewRoomDetailDTO(room, onlineCount, itemQueue, items)
 		list = append(list, d)
 	}
 

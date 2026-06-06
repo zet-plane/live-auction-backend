@@ -10,8 +10,8 @@
 | --- | --- | --- |
 | Router | `internal/app/room/router/room.go` | 注册公开房间接口和鉴权后的商家房间接口 |
 | Handler | `internal/app/room/handler/room.go` | 请求绑定、鉴权上下文、路由参数、统一响应 |
-| DTO | `internal/app/room/dto/room.go` | 创建请求、公开详情、商家视图、状态文案和 actions |
-| Service | `internal/app/room/service/service.go` | 激活幂等、状态流转、商家归属、Redis 富化和降级 |
+| DTO | `internal/app/room/dto/room.go` | 创建请求、公开详情、Feed 游标分页、商家视图、状态文案和 actions |
+| Service | `internal/app/room/service/service.go` | 激活幂等、状态流转、商家归属、Feed 游标分页、Redis 富化和降级 |
 | DAO | `internal/app/room/dao/room.go` | `Store` 接口、GORM 持久化、按状态列表 |
 | Model | `internal/app/room/model/room.go` | `LiveRoom`、`RoomStatus`、唯一索引、软删除字段 |
 | Cache | `internal/app/room/cache/cache.go` | Redis room state 和 item queue 读取 |
@@ -22,8 +22,8 @@
 
 Agent 可以测试：
 
-- HTTP 接口：`GET /api/v1/rooms`、`GET /api/v1/rooms/{room_id}`、`POST /api/v1/merchant/room`、`GET /api/v1/merchant/room`、`POST /api/v1/rooms/{room_id}/start`、`POST /api/v1/rooms/{room_id}/end`。
-- Service 方法：`ActivateRoom`、`GetMerchantRoom`、`StartRoom`、`EndRoom`、`GetRoom`、`ListRooms`。
+- HTTP 接口：`GET /api/v1/rooms`、`GET /api/v1/rooms/feed`、`GET /api/v1/rooms/{room_id}`、`POST /api/v1/merchant/room`、`GET /api/v1/merchant/room`、`POST /api/v1/rooms/{room_id}/start`、`POST /api/v1/rooms/{room_id}/end`。
+- Service 方法：`ActivateRoom`、`GetMerchantRoom`、`StartRoom`、`EndRoom`、`GetRoom`、`ListRooms`、`ListRoomFeed`。
 - DAO / Model：`LiveRoom` 字段、唯一索引、软删除字段、数据库写入和查询。
 - Redis key：`auction:room:{room_id}:state`、`auction:room:{room_id}:item_queue`。
 - 房间状态、Redis 在线人数富化、待拍队列富化、统一响应结构、错误返回和 `MerchantRoomDTO` 派生字段。
@@ -74,6 +74,8 @@ Agent 可以测试：
 - 已激活直播间的商家（`idle` 状态）。
 - 已开播的房间（`live` 状态）。
 - 用于隔离验证的第二个商家房间。
+- Feed 分页测试需准备至少 `limit + 1` 个本批次 `live` 房间，并记录第一页最后一条的 `created_at` 和 `id`。
+- Feed 非法请求集合：非法 base64 cursor、无法解析的 JSON cursor、缺少 `created_at` 或 `id` 的 cursor、非法时间格式 cursor。
 - 若执行待拍队列测试，应通过商品模块创建并上架本批次商品，触发 Redis `auction:room:{room_id}:item_queue`。
 
 ## 7. 业务规则
@@ -96,6 +98,10 @@ Agent 可以测试：
 - `RoomDetailDTO` 和 `MerchantRoomDTO` 必须返回 `current_item_id` 字段；没有当前拍品时值为空字符串，不能省略字段。
 - 当前拍品推进由商品模块维护：商品开始竞拍时写入 MySQL `live_rooms.current_item_id` 和 Redis `auction:room:{room_id}:state.current_item_id`；商品取消、过期结束或房间下播时清空。
 - `ListRooms` 不传 `status` 时默认只返回 `live` 状态的房间。
+- `ListRoomFeed` 是公开接口，只返回 `live` 房间，按 `created_at DESC, id DESC` 排序，使用 cursor 做 keyset 分页。
+- `ListRoomFeed` 的 `limit <= 0` 归一为 10，`limit > 50` 截断为 50；实际 DAO 查询 `limit+1` 条来判断 `has_more`。
+- `ListRoomFeed` 的 cursor 是 raw URL-safe base64 编码 JSON，包含 UTC `created_at` 和 `id`；非法 cursor 返回 `ErrInvalidRequest`。
+- `ListRoomFeed` 返回 `list`、`next_cursor`、`has_more`；只有存在下一页且当前页非空时返回非空 `next_cursor`。
 - `findMerchantRoom` 验证商家归属时若不属于当前商家，返回 `ErrNotFound`，不暴露他人房间是否存在。
 - `item_queue` 在 `RoomDetailDTO` 中永远不为 nil，最少返回空数组。
 
@@ -118,6 +124,8 @@ Agent 可以测试：
 - 非所属商家无法开播或下播其他商家的直播间。
 - 公开详情的 `item_queue` 必须是数组，不能为 `null`。
 - 公开列表、公开详情和商家视图必须包含 `current_item_id` 字段；没有当前拍品时返回空字符串，不能因空值省略。
+- Feed 只能返回 `live` 房间，不能把 `idle` 房间混入短视频式浏览结果。
+- Feed 游标分页不能重复或跳过符合排序条件的房间；下一页第一条必须严格晚于上一页最后一条的排序位置。
 - `current_item_id` 不能在取消拍品、过期结束或下播后保留旧商品 ID。
 
 不变量失败时，agent 除常规失败报告外，必须额外输出：
@@ -139,7 +147,7 @@ Agent 可以测试：
 | `id` | db/response/path | 房间 ID 使用 `room_` 前缀；主键长度 64 | 全部房间接口 | `ROOM.FIELD.id.*` |
 | `merchant_id` | auth/db/response | 创建时来自当前商家；唯一索引；状态动作必须匹配当前商家 | 商家房间接口、状态动作 | `ROOM.FIELD.merchant_id.*` |
 | `status` | db/response/Redis | 枚举仅 `idle`、`live`；状态动作只能 `idle <-> live` | 列表、详情、开播、下播 | `ROOM.FIELD.status.*` |
-| `current_item_id` | db/response/Redis | 可空；公开列表、公开详情和商家视图必须返回该字段，空值为 `""`；商品开始竞拍时写入，商品取消、过期结束或房间下播时清空 | 列表、详情、商家视图、Redis state、商品开始/取消/过期结束、下播 | `ROOM.FIELD.current_item_id.*` |
+| `current_item_id` | db/response/Redis | 可空；公开列表、Feed、公开详情和商家视图必须返回该字段，空值为 `""`；商品开始竞拍时写入，商品取消、过期结束或房间下播时清空 | 列表、Feed、详情、商家视图、Redis state、商品开始/取消/过期结束、下播 | `ROOM.FIELD.current_item_id.*` |
 | `created_at` / `updated_at` | db/response | GORM 自动维护；列表按 `created_at DESC` | 列表、详情、商家视图 | `ROOM.FIELD.timestamps.*` |
 | `DeletedAt` | db | 模型支持软删除；当前无删除接口 | DAO 集成 | `ROOM.FIELD.deleted_at.*` |
 
@@ -147,13 +155,23 @@ Agent 可以测试：
 
 | 字段 | 来源 | 规则 | 涉及接口 / 方法 | 测试点 ID |
 | --- | --- | --- | --- | --- |
-| `online_count` | Redis/response | Redis room state 命中时使用 `online_count`；miss 或错误时为 0 | 公开详情、公开列表、商家视图 | `ROOM.FIELD.online_count.*` |
-| `item_queue` | Redis/response | 来自 Redis ZSET `auction:room:{room_id}:item_queue` 的升序成员；nil 转为空数组 | `GET /api/v1/rooms/{room_id}`、`GET /api/v1/rooms` | `ROOM.FIELD.item_queue.*` |
+| `online_count` | Redis/response | Redis room state 命中时使用 `online_count`；miss 或错误时为 0 | 公开详情、公开列表、Feed、商家视图 | `ROOM.FIELD.online_count.*` |
+| `item_queue` | Redis/response | 来自 Redis ZSET `auction:room:{room_id}:item_queue` 的升序成员；nil 转为空数组 | `GET /api/v1/rooms/{room_id}`、`GET /api/v1/rooms`、`GET /api/v1/rooms/feed` | `ROOM.FIELD.item_queue.*` |
 | `queued_count` | Redis/response | 等于 item queue 长度；Redis miss 时为 0 | `GET /api/v1/merchant/room`、`POST /api/v1/merchant/room` 幂等返回 | `ROOM.FIELD.queued_count.*` |
 | `status_text` | response | `idle -> 未开播`，`live -> 直播中`，未知状态返回原字符串 | 商家视图 | `ROOM.FIELD.status_text.*` |
 | `actions.can_start` | response | `status == idle` 时为 true | 商家视图 | `ROOM.FIELD.actions.can_start.*` |
 | `actions.can_end` | response | `status == live` 时为 true | 商家视图 | `ROOM.FIELD.actions.can_end.*` |
 | Redis room state | Redis | key 为 `auction:room:{room_id}:state`，字段含 `merchant_id`、`status`、`current_item_id`、`online_count` | 开播、下播、查询 | `ROOM.FIELD.redis_state.*` |
+
+### RoomFeedInput / RoomFeedResult
+
+| 字段 | 来源 | 规则 | 涉及接口 / 方法 | 测试点 ID |
+| --- | --- | --- | --- | --- |
+| `cursor` | query/response | 可空；非空时必须是 raw URL-safe base64 JSON，字段含 `created_at` 和 `id`；非法时返回参数错误 | `GET /api/v1/rooms/feed`、`DecodeRoomFeedCursor` | `ROOM.FIELD.feed.cursor.*` |
+| `limit` | query/service | `<=0` 归一为 10；`>50` 截断为 50 | `GET /api/v1/rooms/feed`、`NormalizeRoomFeedInput` | `ROOM.FIELD.feed.limit.*` |
+| `list` | response/db | 只包含 `live` 房间；按 `created_at DESC, id DESC` 排序；元素为 `RoomDetailDTO` | `GET /api/v1/rooms/feed`、`ListLiveRoomsByCursor` | `ROOM.FIELD.feed.list.*` |
+| `next_cursor` | response | `has_more=true` 且当前页有数据时返回最后一条记录的游标；否则为空字符串 | `GET /api/v1/rooms/feed`、`EncodeRoomFeedCursor` | `ROOM.FIELD.feed.next_cursor.*` |
+| `has_more` | response | DAO 查询 `limit+1` 条判断；存在下一页时为 true | `GET /api/v1/rooms/feed`、`ListRoomFeed` | `ROOM.FIELD.feed.has_more.*` |
 
 ## 10. 接口测试契约
 
@@ -490,6 +508,78 @@ Agent 可以测试：
 | 并发测试 | 否 | 列表读取不作为并发目标 |
 | 状态一致性测试 | 是 | 对比 HTTP、DB、Redis |
 
+### `GET /api/v1/rooms/feed` 公开房间 Feed
+
+#### 代码定位
+
+| 层级 | 位置 | 说明 |
+| --- | --- | --- |
+| Router | `internal/app/room/router/room.go` | 公开路由，无鉴权 |
+| Handler | `internal/app/room/handler/room.go` | `ListRoomFeed` 解析 `cursor`、`limit` |
+| DTO | `internal/app/room/dto/room.go` | `RoomFeedInput`、`RoomFeedCursor`、`RoomFeedResult` |
+| Service | `internal/app/room/service/service.go` | `ListRoomFeed`，游标解码、limit 归一、Redis 富化 |
+| DAO | `internal/app/room/dao/room.go` | `ListLiveRoomsByCursor`，keyset 分页 |
+| Cache | `internal/app/room/cache/cache.go` | 读取 room state 和 item queue |
+
+#### 接口职责
+
+返回短视频式浏览用的直播间 Feed，只包含 `live` 房间，并使用 cursor 做稳定翻页。该接口不负责创建房间、开播、下播或返回 `idle` 房间。
+
+#### 请求字段
+
+| 字段 | 必填 | 规则 | 失败表现 |
+| --- | --- | --- | --- |
+| `cursor` | 否 | 为空从第一页开始；非空必须是 `EncodeRoomFeedCursor` 生成的 raw URL-safe base64 JSON | 参数错误 |
+| `limit` | 否 | 非数字解析为 0 后归一为 10；`<=0` 归一为 10；`>50` 截断为 50 | 默认或截断 |
+
+#### 响应字段
+
+| 字段 | 规则 | 证据 |
+| --- | --- | --- |
+| `list` | 数组；元素为 `RoomDetailDTO`；只包含 `live` 房间；按 `created_at DESC, id DESC` 排序 | HTTP 响应 + DB |
+| `next_cursor` | 存在下一页时为最后一条记录的 cursor；否则为空字符串 | HTTP 响应 |
+| `has_more` | DAO 查询到超过本页 limit 的记录时为 true | HTTP 响应 + DB count |
+| `list[].current_item_id` | 每个房间元素必须出现；无当前拍品时为空字符串 | HTTP 响应 + DB |
+| `list[].online_count` / `list[].item_queue` | Redis 命中时富化；miss 或错误时降级为 0 / 空数组 | HTTP 响应 + Redis |
+
+#### 测试数据准备
+
+- 至少 `limit + 1` 个本批次 `live` 房间和 1 个 `idle` 房间。
+- Redis state 和 item queue 命中/miss 场景。
+- 第一页返回后保存 `next_cursor`，用于第二页请求。
+- 非法 cursor 集合：非 base64、base64 但非 JSON、缺少 `created_at` 或 `id`、非法时间格式、空 `id`。
+
+#### 成功路径
+
+- 不传 cursor 时返回第一页 live 房间，数量不超过归一化后的 limit。
+- 当符合条件记录超过 limit 时，`has_more=true` 且 `next_cursor` 非空。
+- 使用 `next_cursor` 查询下一页时，不重复返回上一页最后一条记录。
+- `limit=0` 或非法数字时按 10 处理，`limit>50` 时最多返回 50 条。
+- Redis miss 时接口仍成功，`online_count=0`、`item_queue=[]`。
+
+#### 失败路径
+
+- 非法 cursor 返回参数错误。
+- DAO 查询失败返回错误。
+- Redis 读取失败不应导致接口失败。
+
+#### 状态和一致性验证
+
+- HTTP Feed 只包含 DB 中 `status=live` 的房间。
+- 两页结果按 `created_at DESC, id DESC` 连续，不重复、不跳过。
+- `next_cursor` 解码后对应第一页最后一条记录的 `created_at` 和 `id`。
+
+#### 适用测试方法
+
+| 测试类型 | 是否适用 | 说明 |
+| --- | --- | --- |
+| 本地单元测试 | 是 | fake store/cache 验证 cursor、limit、has_more、Redis 降级 |
+| 接口契约测试 | 是 | 验证公开访问、查询参数和响应结构 |
+| 模块集成测试 | 是 | 验证 DB keyset 分页、排序和过滤 |
+| 场景测试 | 是 | Feed 翻页场景覆盖 |
+| 并发测试 | 否 | Feed 读取不作为并发目标 |
+| 状态一致性测试 | 是 | 对比 HTTP、DB、Redis |
+
 ### `GET /api/v1/rooms/{room_id}` 公开房间详情
 
 #### 代码定位
@@ -617,7 +707,7 @@ Agent 可以测试：
 - DB 状态与真实 Redis state 一致或按软失败规则记录。
 - 并发状态动作最终只能处于合法状态。
 
-### `GetRoom` / `ListRooms` / `GetMerchantRoom`
+### `GetRoom` / `ListRooms` / `ListRoomFeed` / `GetMerchantRoom`
 
 #### 测试数据准备
 
@@ -632,12 +722,17 @@ Agent 可以测试：
 - `GetRoom` / `ListRooms` / `GetMerchantRoom` 序列化时必须包含 `current_item_id` 字段，空值返回 `""`。
 - `ListRooms` 不传 status 时默认返回 `live` 状态房间。
 - `ListRooms` 传入 `status=idle` 只返回 `idle` 状态房间。
+- `ListRoomFeed` 只返回 `live` 房间，并按 `created_at DESC, id DESC` 翻页。
+- `ListRoomFeed` 对 `limit` 做默认值 10 和最大值 50 的归一化。
+- `ListRoomFeed` 对非法 cursor 返回参数错误，对合法 cursor 返回下一页且不重复上一页最后一条。
+- `ListRoomFeed` 在 `has_more=true` 时返回非空 `next_cursor`，无下一页时 `next_cursor=""`。
 - `GetMerchantRoom` 非商家返回未授权。
 - `GetMerchantRoom` 商家无房间时返回 not found。
 
 #### 集成测试点
 
 - 真实 DB 列表按 `created_at DESC`。
+- 真实 DB Feed 按 `created_at DESC, id DESC`，并严格只返回 `live` 房间。
 - 真实 Redis ZSET 的顺序和响应 `item_queue` 一致。
 
 ## 12. 核心场景测试
@@ -808,7 +903,43 @@ Router、Handler、DTO、Service、DAO、Model、Cache 见第 2 节。
 
 - HTTP 响应、数据库状态。
 
-### 场景 6：GetRoom 含商品队列富化
+### 场景 6：公开 Feed 游标翻页只展示直播中房间
+
+#### 业务价值
+
+验证短视频式浏览入口能稳定分页，且不会把未开播房间暴露给用户。
+
+#### 关联接口 / 方法
+
+- `GET /api/v1/rooms/feed`
+- `ListRoomFeed`
+- `ListLiveRoomsByCursor`
+- `EncodeRoomFeedCursor` / `DecodeRoomFeedCursor`
+
+#### Given
+
+- 本批次有至少 3 个 `live` 房间和 1 个 `idle` 房间。
+- `live` 房间的 `created_at` 或 `id` 能形成稳定倒序。
+
+#### When
+
+- 调用 `GET /api/v1/rooms/feed?limit=2`。
+- 使用返回的 `next_cursor` 调用第二页。
+- 使用非法 cursor 调用 Feed。
+
+#### Then
+
+- 第一页最多返回 2 个 `live` 房间，`has_more=true` 且 `next_cursor` 非空。
+- 第二页不包含第一页最后一条，整体顺序为 `created_at DESC, id DESC`。
+- `idle` 房间不出现在任一页。
+- 非法 cursor 返回参数错误。
+- Redis miss 时 Feed 仍返回房间基础信息，`online_count=0`、`item_queue=[]`。
+
+#### 证据要求
+
+- 两页 HTTP 响应、非法 cursor HTTP 响应、数据库房间状态和排序字段、Redis 富化或降级证据。
+
+### 场景 7：GetRoom 含商品队列富化
 
 #### 业务价值
 
@@ -838,7 +969,7 @@ Router、Handler、DTO、Service、DAO、Model、Cache 见第 2 节。
 
 - 商品上架 HTTP 响应、Redis ZSET、房间详情 HTTP 响应。
 
-### 场景 7：房间响应暴露并维护当前拍品 ID
+### 场景 8：房间响应暴露并维护当前拍品 ID
 
 #### 业务价值
 
@@ -906,6 +1037,7 @@ Router、Handler、DTO、Service、DAO、Model、Cache 见第 2 节。
 | 同一直播间并发 `StartRoom` | 是 | 测试数据库 / Redis / HTTP | 最终状态为 `live`，不能进入未定义状态，DB 和后续查询一致 |
 | 同一直播间并发 `EndRoom` | 是 | 测试数据库 / Redis / HTTP | 最终状态为 `idle`，不能进入未定义状态，DB 和后续查询一致 |
 | 商家 A 和商家 B 并发操作各自直播间 | 是 | 测试数据库 / Redis / HTTP | 互不影响 |
+| Feed 翻页期间房间状态变化 | 否 | 测试数据库 / HTTP | 当前文档只要求每次响应内部排序和过滤正确，不定义跨请求快照隔离 |
 
 根据当前代码结构推断：
 
@@ -919,7 +1051,7 @@ Router、Handler、DTO、Service、DAO、Model、Cache 见第 2 节。
 | Redis `auction:room:{room_id}:state` 状态更新 | `EndRoom` / `POST /end` | `HGETALL` 验证 `status=idle`、`current_item_id=""` | 删除本批次 room state |
 | Redis `auction:room:{room_id}:state.current_item_id` 写入 | 商品模块 `StartItem` / `POST /items/{item_id}/start` | `HGET current_item_id` 与 MySQL `live_rooms.current_item_id`、房间 HTTP 响应一致 | 删除本批次 room state |
 | Redis `auction:room:{room_id}:state.current_item_id` 清空 | 商品取消、商品过期结束、`EndRoom` | `HGET current_item_id` 为空字符串；MySQL 和房间 HTTP 响应同步为空 | 删除本批次 room state |
-| Redis `auction:room:{room_id}:item_queue` 读取 | `GetRoom` / `ListRooms` / `GetMerchantRoom` | 通过商品模块上架后 `ZRANGE` 与 HTTP 响应对比 | 清理本批次 item queue 或移除本批次 item member |
+| Redis `auction:room:{room_id}:item_queue` 读取 | `GetRoom` / `ListRooms` / `ListRoomFeed` / `GetMerchantRoom` | 通过商品模块上架后 `ZRANGE` 与 HTTP 响应对比 | 清理本批次 item queue 或移除本批次 item member |
 | WebSocket 消息 | 不适用 | 当前房间模块没有开播/下播广播 | 如需验证推送，转到实时广播模块或跨模块流程 |
 | 第三方外部服务 | 不适用 | 房间模块当前不应调用真实第三方 | 不允许引入真实第三方依赖 |
 
@@ -940,6 +1072,10 @@ Router、Handler、DTO、Service、DAO、Model、Cache 见第 2 节。
 | 商品开始竞拍后房间响应没有当前拍品 ID | 单元 / 场景 / 状态一致性 | 商品开始逻辑、room current item 写入或查询响应变更 | 房间 HTTP + DB + Redis |
 | 商品取消、过期结束或下播后 `current_item_id` 残留旧 ID | 单元 / 场景 / 状态一致性 | 清理逻辑变更 | 房间 HTTP + DB + Redis |
 | `ListRooms` 不传 status 返回 `idle` 房间 | 单元 / 接口 | 默认过滤变更 | HTTP 响应 + DB |
+| Feed 返回 `idle` 房间 | 单元 / 接口 / 集成 | Feed 查询条件变更 | HTTP 响应 + DB |
+| Feed cursor 翻页重复或跳过记录 | 单元 / 集成 | cursor 编解码或排序条件变更 | 两页 HTTP 响应 + DB 排序字段 |
+| Feed `limit` 未截断导致响应过大 | 单元 / 接口 | limit 归一化变更 | HTTP 响应长度 |
+| 非法 Feed cursor 被接受 | 单元 / 接口 | cursor 解析变更 | 参数错误响应 |
 | 公开接口要求登录 | 接口 | 路由鉴权变更 | 未登录 HTTP 响应 |
 | 激活已有房间时 title 被覆盖 | 单元 / 接口 | 幂等行为变更 | DB title |
 | Redis 写失败导致开播/下播失败 | 单元 / 接口 | 软失败语义变更 | HTTP 响应 + fake cache |
@@ -953,6 +1089,7 @@ Router、Handler、DTO、Service、DAO、Model、Cache 见第 2 节。
 | `POST /api/v1/rooms/{room_id}/start` | 是 | 是 | 是 | 是 | 是 | 是 | 是 | 是 |
 | `POST /api/v1/rooms/{room_id}/end` | 是 | 是 | 是 | 是 | 是 | 是 | 是 | 是 |
 | `GET /api/v1/rooms` | 是 | 是 | 是 | 是 | 是 | 是 | 否 | 是 |
+| `GET /api/v1/rooms/feed` | 是 | 是 | 是 | 是 | 是 | 是 | 否 | 是 |
 | `GET /api/v1/rooms/{room_id}` | 是 | 是 | 是 | 是 | 是 | 是 | 否 | 是 |
 | `current_item_id` 响应字段 | 是 | 是 | 是 | 是 | 是 | 是 | 否 | 是 |
 | `LiveRoom` 字段和唯一索引 | 是 | 是 | 是 | 是 | 是 | 是 | 是 | 是 |
@@ -970,6 +1107,7 @@ Router、Handler、DTO、Service、DAO、Model、Cache 见第 2 节。
 - 状态流转只能 `idle ↔ live`，非法状态动作返回错误，有接口响应或单元测试作为证据。
 - MySQL 状态与后续查询接口一致，有 HTTP 响应和数据库记录作为证据。
 - `current_item_id` 在公开列表、公开详情和商家视图中始终出现；无当前拍品时为空字符串，有 HTTP 响应作为证据。
+- `GET /api/v1/rooms/feed` 只返回 `live` 房间，cursor 翻页连续、不重复，`limit` 归一化正确，有 HTTP 响应和数据库排序字段作为证据。
 - 商品开始竞拍后 `current_item_id` 在房间 HTTP 响应、MySQL 和 Redis 中一致；商品取消、过期结束或下播后同步清空，有 HTTP、DB、Redis 证据。
 - Redis miss 时 `GetRoom`、`ListRooms`、`GetMerchantRoom` 降级正常，有单元测试或接口测试作为证据。
 - `item_queue` 在公开响应中为数组，且与 Redis ZSET 一致或按降级规则为空数组。
@@ -980,6 +1118,7 @@ Router、Handler、DTO、Service、DAO、Model、Cache 见第 2 节。
 - `status_text`、`queued_count`、`actions` 派生字段与 status 一致。
 - 房间模块自动迁移成功创建或更新 `live_rooms` 表结构。
 - `ListRooms` 过滤、排序和 `GetRoom` roomID trim 行为符合预期。
+- `ListRoomFeed` 的 `next_cursor` 可解码为上一页最后一条记录，非法 cursor 返回参数错误。
 - 错误响应中的业务错误码与 `pkg/errorx` 定义一致。
 
 ## 19. 需用户确认的问题
@@ -991,6 +1130,8 @@ Router、Handler、DTO、Service、DAO、Model、Cache 见第 2 节。
 - 直播间删除场景（软删除）：当前实现无删除接口，是否需要？
 - `item_queue` 排列顺序依赖 Redis ZSET score（由商品上架时的时间戳写入），是否需要文档明确顺序语义？
 - 公开 `GET /api/v1/rooms` 接口是否需要分页？当前实现返回全量列表。
+- 刷新后的 OpenAPI / Apifox 规格未列出代码已注册的 `GET /api/v1/rooms/feed`；是否需要同步接口规格？
+- Feed 翻页期间如果房间状态从 `live` 变为 `idle`，是否要求跨页快照一致性，还是只要求每次查询返回当时的 live 房间？
 - 并发状态动作预期是严格只有一个请求成功，还是允许幂等成功？
 
 ## 20. 失败报告格式

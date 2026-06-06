@@ -25,6 +25,7 @@ type Store interface {
 	DeleteItem(itemID string) error
 	ListItems(query dto.ListItemsInput) ([]model.ItemWithRule, int64, error)
 	ListOngoingItemsPastEndTime(before time.Time, limit int) ([]model.ItemWithRule, error)
+	ListPublishedItemsPastStartTime(before time.Time, limit int) ([]model.ItemWithRule, error)
 	AutoMigrateBidLog() error
 	CreateBidLog(log *model.BidLog) error
 	CreateBidLogs(logs []*model.BidLog) error
@@ -243,6 +244,43 @@ func (s *GormStore) ListOngoingItemsPastEndTime(before time.Time, limit int) ([]
 		if len(result) >= limit {
 			break
 		}
+	}
+	return result, nil
+}
+
+func (s *GormStore) ListPublishedItemsPastStartTime(before time.Time, limit int) ([]model.ItemWithRule, error) {
+	var items []model.AuctionItem
+	if err := s.db.Model(&model.AuctionItem{}).
+		Joins("JOIN auction_rules ON auction_rules.id = auction_items.rule_id").
+		Where("auction_items.status = ? AND auction_items.deleted_at IS NULL AND auction_rules.start_time <= ?", model.ItemPublished, before).
+		Order("auction_rules.start_time ASC").
+		Limit(limit).
+		Find(&items).Error; err != nil {
+		return nil, err
+	}
+	if len(items) == 0 {
+		return []model.ItemWithRule{}, nil
+	}
+	ruleIDs := make([]string, 0, len(items))
+	for _, item := range items {
+		ruleIDs = append(ruleIDs, item.RuleID)
+	}
+	var rules []model.AuctionRule
+	if err := s.db.Where("id IN ?", ruleIDs).Find(&rules).Error; err != nil {
+		return nil, err
+	}
+	ruleByID := make(map[string]*model.AuctionRule, len(rules))
+	for i := range rules {
+		ruleByID[rules[i].ID] = &rules[i]
+	}
+	result := make([]model.ItemWithRule, 0, len(items))
+	for i := range items {
+		rule := ruleByID[items[i].RuleID]
+		if rule == nil {
+			continue
+		}
+		itemCopy := items[i]
+		result = append(result, model.ItemWithRule{Item: &itemCopy, Rule: rule})
 	}
 	return result, nil
 }

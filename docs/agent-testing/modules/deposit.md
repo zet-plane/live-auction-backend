@@ -31,7 +31,7 @@ Agent 可以测试：
 - 与保证金直接相关的商品规则：`auction_items.rule_id`、`auction_rules.deposit_amount`、商品软删除过滤。
 - 与出价前置条件的协作：商品模块在 `DepositAmount > 0` 时调用 `HasPaidDeposit`。
 
-当前保证金模块不测试真实支付、退款打款、罚没结算、财务流水、WebSocket 推送或订单支付。完整“缴纳保证金后出价”应与商品/出价模块或流程文档联动。
+当前保证金模块不测试真实支付、退款打款、财务流水或 WebSocket 推送。竞拍结算、订单支付、订单取消和订单过期触发的保证金状态变化属于跨模块协作，可在本模块用 service/fake store 验证状态规则，并在流程文档中做端到端合同验证。
 
 ## 4. 禁止事项
 
@@ -75,7 +75,7 @@ Agent 可以测试：
 - 至少 1 个 `deposit_amount <= 0` 或无保证金要求的本批次商品，用于验证拒绝支付或跳过校验。
 - 至少 1 个商品被软删除的记录，用于验证 `FindRequiredAmount` not found。
 - 非法输入集合：空 `item_id`、不存在的 `item_id`、无鉴权、他人保证金查询。
-- 如需测试 refunded/forfeited 分支，可仅创建本批次记录并记录为故障注入，不要改写真实数据。
+- 如需测试 refunded/forfeited 分支，只能使用本批次成交、订单或故障注入数据，不要改写真实数据。
 
 ## 7. 业务规则
 
@@ -98,12 +98,18 @@ Agent 可以测试：
 - `HasPaidDeposit` 找不到记录时返回 false，不报错。
 - `HasPaidDeposit` 只有在状态为 `paid` 且金额大于等于要求金额时返回 true。
 - 商品出价服务在 `rule.DepositAmount > 0` 时调用 `HasPaidDeposit`；未足额支付会返回 `deposit required`。
+- 竞拍结算时，非赢家 paid 保证金会退款为 `refunded`。
+- 竞拍结算时，赢家 paid 保证金保持 `paid`，直到订单支付、取消或过期处理完成。
+- 订单支付成功时，赢家 paid 保证金会退款为 `refunded`。
+- 订单取消或过期时，赢家 paid 保证金会罚没为 `forfeited`。
+- `refunded` 和 `forfeited` 是终态，后续支付、退款、罚没、取消或过期失败路径都不能覆盖该状态。
+- 当前模型复用 `refunded_at` 作为终态结算时间，`refunded` 和 `forfeited` 都写入该字段。
 
 根据当前代码结构推断：
 
 - 当前保证金支付是模拟成功，不区分支付渠道或支付失败。
 - `pending` 状态当前没有 HTTP 创建入口，只能通过测试数据或未来支付流程产生。
-- `refunded_at` 当前只在模型和 DTO 中存在，没有退款接口写入。
+- `refunded_at` 由退款或罚没结算写入，当前模型复用该字段表达终态结算时间。
 - 商家身份当前也能调用保证金接口，因为 handler 只要求登录，没有限制普通用户身份。
 
 需确认内容集中在“需用户确认的问题”章节。
@@ -114,6 +120,11 @@ Agent 可以测试：
 - 保证金支付金额必须等于当前拍品规则要求金额，或至少不低于出价要求金额。
 - 不需要保证金的拍品不能通过 `PayDeposit` 创建无意义保证金记录。
 - `refunded` 或 `forfeited` 记录不能被再次支付覆盖为 `paid`。
+- `refunded` 或 `forfeited` 记录不能被后续退款、罚没、订单取消或订单过期路径覆盖。
+- 非赢家保证金在竞拍结算后应进入 `refunded`。
+- 赢家保证金在订单支付前必须保持 `paid`，不能被竞拍结算提前释放。
+- 赢家保证金在订单支付后应进入 `refunded`。
+- 赢家保证金在订单取消或过期后应进入 `forfeited`。
 - 用户不能查询其他用户的保证金记录。
 - 商品不存在或已软删除时不能支付保证金。
 - 出价需要保证金时，只有 `paid` 且足额的保证金能通过校验。
@@ -140,7 +151,7 @@ Agent 可以测试：
 | `amount` | db/response/rule | 来自 `auction_rules.deposit_amount`；支付时必须大于 0；校验时必须足额 | 支付、查询、校验 | `DEPOSIT.FIELD.amount.*` |
 | `status` | db/response | 枚举：`pending`、`paid`、`refunded`、`forfeited`；支付写入 `paid` | 支付、查询、校验 | `DEPOSIT.FIELD.status.*` |
 | `paid_at` | db/response/time | 支付成功时写入当前时间；幂等返回原 paid 记录时不刷新 | 支付、查询 | `DEPOSIT.FIELD.paid_at.*` |
-| `refunded_at` | db/response/time | 当前无写入接口；仅随已有记录返回 | 查询 | `DEPOSIT.FIELD.refunded_at.*` |
+| `refunded_at` | db/response/time | 退款或罚没终态结算时间；当前模型中 `refunded` 和 `forfeited` 都复用该字段 | 查询、竞拍结算、订单支付/取消/过期 | `DEPOSIT.FIELD.refunded_at.*` |
 | `created_at` / `updated_at` | db/response | GORM 自动维护 | 支付、查询 | `DEPOSIT.FIELD.timestamps.*` |
 
 ### AuctionRule.deposit_amount
@@ -478,8 +489,14 @@ Agent 可以测试：
 | `paid` 且足额 | 重复支付 | `paid` | 是（幂等） | `PayDeposit` | HTTP + `deposits` |
 | `pending` | 支付保证金 | `paid` | 是 | `PayDeposit` | HTTP + `deposits` |
 | `paid` 但不足额 | 支付保证金 | `paid` 足额 | 是 | `PayDeposit` | HTTP + `deposits` |
+| `paid` 非赢家 | 竞拍结算 | `refunded` | 是 | `SettleDueAuctions` | 结算证据 + `deposits` |
+| `paid` 赢家 | 竞拍结算 | `paid` | 是（等待订单） | `SettleDueAuctions` | 结算证据 + `deposits` |
+| `paid` 赢家 | 订单支付 | `refunded` | 是 | order/payment 协作 | HTTP/Service + `deposits` |
+| `paid` 赢家 | 订单取消 | `forfeited` | 是 | order/payment 协作 | HTTP/Service + `deposits` |
+| `paid` 赢家 | 订单过期扫描 | `forfeited` | 是 | `ScanExpiredOrders` | 扫描证据 + `deposits` |
 | `refunded` | 支付保证金 | 无变化 | 否 | `PayDeposit` | 错误响应 + `deposits` |
 | `forfeited` | 支付保证金 | 无变化 | 否 | `PayDeposit` | 错误响应 + `deposits` |
+| `refunded` / `forfeited` | 退款、罚没、取消或过期重试 | 无变化 | 否 | 结算/订单协作 | 错误或跳过证据 + `deposits` |
 
 ## 14. 并发测试
 
@@ -506,6 +523,11 @@ Agent 可以测试：
 | 无保证金也能出价 | 单元 / 场景 | `DepositAmount > 0` 且无 paid 记录 | 出价错误响应 |
 | 重复支付产生多条记录 | 单元 / 集成 / 并发 | 同一用户同一商品重复支付 | `deposits` 记录数量 |
 | refunded/forfeited 被覆盖为 paid | 单元 / 接口 | 终态记录再次支付 | 错误响应 + DB 未变 |
+| refunded/forfeited 被结算重试覆盖 | 单元 / 场景 | 终态记录再次退款、罚没、取消或过期 | DB 未变 + 风险证据 |
+| 非赢家保证金未退款 | 场景 / 流程 | 竞拍结算后 | `deposits.status=refunded` |
+| 赢家保证金过早释放 | 场景 / 流程 | 竞拍结算后订单仍 pending | `deposits.status=paid` |
+| 赢家支付后保证金未退款 | 场景 / 流程 | 订单 paid 后 | `deposits.status=refunded` |
+| 赢家取消或过期后保证金未罚没 | 场景 / 流程 | 订单 cancelled/expired 后 | `deposits.status=forfeited` |
 | 保证金金额与规则不一致 | 单元 / 集成 | 规则金额变化后支付 | 响应金额 + DB 金额 |
 | 用户查询到他人保证金 | 单元 / 接口 | 同一商品不同用户记录 | HTTP 响应只含当前用户 |
 | 软删除商品仍可缴纳保证金 | 集成 | 商品 `deleted_at` 非空 | not found + 无新增记录 |
@@ -529,6 +551,7 @@ Agent 可以测试：
 - 同一用户同一商品只存在一条保证金记录，证据为唯一索引查询和 DB 记录数。
 - 保证金金额与 `auction_rules.deposit_amount` 一致，证据为 DB 对照。
 - `refunded` 和 `forfeited` 记录不会被再次支付覆盖，证据为支付前后 DB 对照。
+- 竞拍结算、订单支付、订单取消和订单过期后的保证金状态符合第 13 节矩阵，且 `refunded_at` 记录终态结算时间。
 - 未缴纳或不足额用户不能通过有保证金要求的出价前置校验。
 
 **辅助验证点（建议验证，可附说明跳过）：**
@@ -542,9 +565,8 @@ Agent 可以测试：
 - 商家身份是否允许缴纳保证金，还是应限制为普通用户？
 - `deposit_amount <= 0` 时 `PayDeposit` 返回 invalid request 是否符合产品预期，还是应返回“无需保证金”？
 - 保证金支付是否需要真实支付渠道、支付单号或流水表？
-- 退款和罚没的触发时机、接口和状态流转规则是什么？
 - 拍品规则保证金金额变更后，已支付保证金是否需要补差价或继续有效？
-- 保证金是否应在订单支付成功后自动退款或抵扣？
+- 当前 P0 规则是订单支付成功后自动退款保证金；后续是否改为抵扣仍需产品确认。
 
 ## 20. 失败报告格式
 

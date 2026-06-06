@@ -16,11 +16,11 @@ var apps = []app.Module{
 	&base.Base{Name: "base"},
 	&user.User{Name: "user"},
 	&ws.WS{Name: "ws"},
-	&room.Room{Name: "room"},
 	&order.Order{Name: "order"},
 	&payment.Payment{Name: "payment"},
 	&deposit.Deposit{Name: "deposit"},
 	&item.Item{Name: "item"},
+	&room.Room{Name: "room"},
 }
 
 func GetApps() []app.Module {
