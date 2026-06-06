@@ -17,7 +17,6 @@ import (
 	"github.com/zet-plane/live-auction-backend/internal/app/item/service"
 	orderapp "github.com/zet-plane/live-auction-backend/internal/app/order"
 	wsapp "github.com/zet-plane/live-auction-backend/internal/app/ws"
-	wshub "github.com/zet-plane/live-auction-backend/internal/app/ws/hub"
 	"github.com/zet-plane/live-auction-backend/internal/core/kernel"
 	"github.com/zet-plane/live-auction-backend/internal/core/observability"
 )
@@ -78,9 +77,7 @@ func (i *Item) Load(engine *kernel.Engine) error {
 	ItemReader = svc
 	handler.Init(svc)
 	router.RegisterRoutes(engine.Flame)
-	if setter, ok := wsapp.Hub.(interface{ SetSnapshotProvider(wshub.SnapshotProvider) }); ok {
-		setter.SetSnapshotProvider(svc)
-	}
+	wsapp.SetSnapshotProvider(svc)
 	engine.Cron.AddFunc("@every 1s", observability.WrapCron("item.start_due_auctions", svc.StartDueAuctions))
 	engine.Cron.AddFunc("@every 1s", observability.WrapCron("item.settle_due_auctions", svc.SettleDueAuctions))
 	engine.Cron.AddFunc("@every 1s", observability.WrapCron("item.broadcast_time_sync", svc.BroadcastTimeSync))
