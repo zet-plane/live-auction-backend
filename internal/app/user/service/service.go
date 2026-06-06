@@ -107,6 +107,33 @@ func (s *Service) Authenticate(ctx context.Context, token string) (result *model
 	return u, err
 }
 
+func (s *Service) AuthenticateClaims(ctx context.Context, token string) (result *model.User, err error) {
+	var userID string
+	finish := observability.Track(ctx, "user.authenticate_claims")
+	defer func() {
+		finish(&err, "user_id", userID)
+	}()
+
+	claims, err := s.tokens.VerifyClaims(token, s.now())
+	if err != nil {
+		return nil, err
+	}
+	userID = claims.Subject
+	if claims.Identity != "" {
+		return &model.User{
+			ID:       claims.Subject,
+			Name:     claims.Name,
+			Identity: claims.Identity,
+		}, nil
+	}
+
+	u, err := s.store.FindUserByID(claims.Subject)
+	if errors.Is(err, errorx.ErrNotFound) {
+		return nil, errorx.ErrUnauthorized
+	}
+	return u, err
+}
+
 func (s *Service) UpdateProfile(ctx context.Context, u *model.User, input dto.UpdateProfileInput) (err error) {
 	defer observability.Track(ctx, "user.update_profile",
 		"user_id", userID(u),
@@ -154,7 +181,7 @@ func userID(u *model.User) string {
 }
 
 func (s *Service) loginResult(u *model.User) (*dto.LoginResult, error) {
-	token, err := s.tokens.Sign(u.ID, s.now())
+	token, err := s.tokens.SignUser(u, s.now())
 	if err != nil {
 		return nil, err
 	}

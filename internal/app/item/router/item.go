@@ -11,10 +11,12 @@ import (
 
 func RegisterRoutes(f *flamego.Flame) {
 	auth := web.Authorization(userhandler.AuthenticateToken)
+	bidAuth := web.Authorization(userhandler.AuthenticateTokenClaims)
 
 	f.Get("/api/v1/items", handler.ListItems)
 	f.Get("/api/v1/items/{item_id}", handler.GetItem)
 	f.Get("/api/v1/items/{item_id}/ranking", handler.GetRanking)
+	f.Post("/api/v1/items/{item_id}/bids", bidAuth, binding.JSON(dto.PlaceBidRequest{}), handler.PlaceBid)
 	f.Group("/api/v1", func() {
 		f.Post("/items", binding.JSON(dto.CreateItemRequest{}), handler.CreateItem)
 		f.Get("/merchant/items", handler.ListMerchantItems)
@@ -23,6 +25,5 @@ func RegisterRoutes(f *flamego.Flame) {
 		f.Post("/items/{item_id}/publish", handler.PublishItem)
 		f.Post("/items/{item_id}/start", handler.StartItem)
 		f.Post("/items/{item_id}/cancel", handler.CancelItem)
-		f.Post("/items/{item_id}/bids", binding.JSON(dto.PlaceBidRequest{}), handler.PlaceBid)
 	}, auth)
 }

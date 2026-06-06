@@ -12,8 +12,9 @@ import (
 )
 
 type fakeStore struct {
-	usersByAccount map[string]*model.User
-	usersByID      map[string]*model.User
+	usersByAccount    map[string]*model.User
+	usersByID         map[string]*model.User
+	findUserByIDCalls int
 }
 
 func newFakeStore() *fakeStore {
@@ -45,6 +46,7 @@ func (s *fakeStore) FindUserByAccount(account string) (*model.User, error) {
 }
 
 func (s *fakeStore) FindUserByID(id string) (*model.User, error) {
+	s.findUserByIDCalls++
 	u, ok := s.usersByID[id]
 	if !ok {
 		return nil, errorx.ErrNotFound
@@ -176,5 +178,60 @@ func TestLoginRejectsWrongPassword(t *testing.T) {
 
 	if _, err := svc.Login(context.Background(), "alice", "wrong-password"); !errors.Is(err, errorx.ErrUnauthorized) {
 		t.Fatalf("expected unauthorized, got %v", err)
+	}
+}
+
+func TestAuthenticateClaimsUsesTokenClaimsWithoutStoreLookup(t *testing.T) {
+	store := newFakeStore()
+	svc := NewService(store, Options{TokenSecret: "test-secret", TokenTTL: time.Hour})
+	result, err := svc.Register(context.Background(), dto.RegisterInput{
+		Account:  "alice",
+		Password: "password123",
+	})
+	if err != nil {
+		t.Fatalf("Register returned error: %v", err)
+	}
+
+	store.findUserByIDCalls = 0
+	current, err := svc.AuthenticateClaims(context.Background(), result.Token)
+	if err != nil {
+		t.Fatalf("AuthenticateClaims returned error: %v", err)
+	}
+	if current.ID != result.User.ID || current.Name != result.User.Name || current.Identity != result.User.Identity {
+		t.Fatalf("expected current user from token claims, got %+v from %+v", current, result.User)
+	}
+	if store.findUserByIDCalls != 0 {
+		t.Fatalf("expected no FindUserByID calls, got %d", store.findUserByIDCalls)
+	}
+}
+
+func TestAuthenticateClaimsFallsBackToStoreForLegacyToken(t *testing.T) {
+	store := newFakeStore()
+	user := &model.User{
+		ID:       "user_legacy",
+		Account:  "legacy",
+		Name:     "Legacy User",
+		Password: "hashed",
+		Identity: model.IdentityUser,
+	}
+	if err := store.CreateUser(user); err != nil {
+		t.Fatalf("CreateUser returned error: %v", err)
+	}
+	svc := NewService(store, Options{TokenSecret: "test-secret", TokenTTL: time.Hour})
+	token, err := svc.tokens.Sign(user.ID, svc.now())
+	if err != nil {
+		t.Fatalf("Sign returned error: %v", err)
+	}
+
+	store.findUserByIDCalls = 0
+	current, err := svc.AuthenticateClaims(context.Background(), token)
+	if err != nil {
+		t.Fatalf("AuthenticateClaims returned error: %v", err)
+	}
+	if current.ID != user.ID || current.Name != user.Name || current.Identity != user.Identity {
+		t.Fatalf("expected current user from store fallback, got %+v", current)
+	}
+	if store.findUserByIDCalls != 1 {
+		t.Fatalf("expected one FindUserByID fallback call, got %d", store.findUserByIDCalls)
 	}
 }
