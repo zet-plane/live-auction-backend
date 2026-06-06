@@ -6,10 +6,7 @@ import (
 	"sync"
 
 	"github.com/zet-plane/live-auction-backend/internal/app"
-	itemcache "github.com/zet-plane/live-auction-backend/internal/app/item/cache"
-	itemdao "github.com/zet-plane/live-auction-backend/internal/app/item/dao"
-	itemdto "github.com/zet-plane/live-auction-backend/internal/app/item/dto"
-	itemservice "github.com/zet-plane/live-auction-backend/internal/app/item/service"
+	itemapp "github.com/zet-plane/live-auction-backend/internal/app/item"
 	"github.com/zet-plane/live-auction-backend/internal/app/room/cache"
 	"github.com/zet-plane/live-auction-backend/internal/app/room/dao"
 	"github.com/zet-plane/live-auction-backend/internal/app/room/handler"
@@ -38,28 +35,7 @@ func (r *Room) PreInit(engine *kernel.Engine) error {
 func (r *Room) Load(engine *kernel.Engine) error {
 	store := dao.NewGormStore(engine.DB)
 	c := cache.NewRedisCache(engine.Cache)
-	var itemReader service.ItemReader
-	if engine.DB != nil {
-		policy := itemdto.DefaultAuctionPolicy()
-		if engine.Config.Auction.ExtendTriggerSec > 0 {
-			policy.ExtendTriggerSec = engine.Config.Auction.ExtendTriggerSec
-		}
-		if engine.Config.Auction.AutoExtendSec > 0 {
-			policy.AutoExtendSec = engine.Config.Auction.AutoExtendSec
-		}
-		if engine.Config.Auction.MaxExtendCount > 0 {
-			policy.MaxExtendCount = engine.Config.Auction.MaxExtendCount
-		}
-		if engine.Config.Auction.MaxTotalExtendSec > 0 {
-			policy.MaxTotalExtendSec = engine.Config.Auction.MaxTotalExtendSec
-		}
-		var itemCache itemcache.Cache
-		if engine.Cache != nil {
-			itemCache = itemcache.NewRedisCache(engine.Cache)
-		}
-		itemReader = itemservice.NewService(itemdao.NewGormStore(engine.DB), policy, itemCache, nil, nil, nil)
-	}
-	svc := service.NewService(store, c, itemReader)
+	svc := service.NewService(store, c, itemapp.ItemReader)
 	handler.Init(svc)
 	router.RegisterRoutes(engine.Flame)
 	return nil

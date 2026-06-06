@@ -1,12 +1,12 @@
 package handler
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/flamego/binding"
 	"github.com/flamego/flamego"
 	orderdto "github.com/zet-plane/live-auction-backend/internal/app/order/dto"
-	orderservice "github.com/zet-plane/live-auction-backend/internal/app/order/service"
 	usermodel "github.com/zet-plane/live-auction-backend/internal/app/user/model"
 	"github.com/zet-plane/live-auction-backend/internal/middleware/response"
 	"github.com/zet-plane/live-auction-backend/internal/middleware/web"
@@ -14,9 +14,14 @@ import (
 	"github.com/zet-plane/live-auction-backend/pkg/logx"
 )
 
-var orderSvc *orderservice.Service
+type OrderOperator interface {
+	Pay(ctx context.Context, current *usermodel.User, orderID string) error
+	Cancel(ctx context.Context, current *usermodel.User, orderID string) error
+}
 
-func Init(s *orderservice.Service) {
+var orderSvc OrderOperator
+
+func Init(s OrderOperator) {
 	orderSvc = s
 }
 

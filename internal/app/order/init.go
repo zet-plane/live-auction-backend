@@ -9,14 +9,23 @@ import (
 	"github.com/zet-plane/live-auction-backend/internal/app"
 	"github.com/zet-plane/live-auction-backend/internal/app/order/dao"
 	"github.com/zet-plane/live-auction-backend/internal/app/order/handler"
+	"github.com/zet-plane/live-auction-backend/internal/app/order/model"
 	"github.com/zet-plane/live-auction-backend/internal/app/order/router"
 	"github.com/zet-plane/live-auction-backend/internal/app/order/service"
+	usermodel "github.com/zet-plane/live-auction-backend/internal/app/user/model"
 	"github.com/zet-plane/live-auction-backend/internal/core/kernel"
 	"github.com/zet-plane/live-auction-backend/internal/core/observability"
 )
 
-// Svc is the package-level service instance exported for use by item and payment modules.
-var Svc *service.Service
+// Service is the package-level contract exported for cross-module calls.
+type Service interface {
+	CreateOrder(ctx context.Context, itemID, userID string, price int64) (*model.Order, error)
+	Pay(ctx context.Context, current *usermodel.User, orderID string) error
+	Cancel(ctx context.Context, current *usermodel.User, orderID string) error
+	SetDepositSettler(settler service.DepositSettler)
+}
+
+var Svc Service
 
 var errNilDB = errors.New("database pointer is nil")
 
@@ -36,12 +45,13 @@ func (o *Order) PreInit(engine *kernel.Engine) error {
 
 func (o *Order) Load(engine *kernel.Engine) error {
 	store := dao.NewGormStore(engine.DB)
-	Svc = service.NewService(store, 30*time.Minute)
-	handler.Init(Svc)
+	svc := service.NewService(store, 30*time.Minute)
+	Svc = svc
+	handler.Init(svc)
 	router.RegisterRoutes(engine.Flame)
 
-	engine.Cron.AddFunc("@every 5m", observability.WrapCron("order.scan_expired_orders", Svc.ScanExpiredOrders))
-	engine.Cron.AddFunc("@every 10m", observability.WrapCron("order.scan_compensation", Svc.ScanCompensation))
+	engine.Cron.AddFunc("@every 5m", observability.WrapCron("order.scan_expired_orders", svc.ScanExpiredOrders))
+	engine.Cron.AddFunc("@every 10m", observability.WrapCron("order.scan_compensation", svc.ScanCompensation))
 	return nil
 }
 
