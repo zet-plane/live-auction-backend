@@ -23,7 +23,7 @@
 ### 保证金与交易闭环
 
 - [x] **保证金释放策略** — 已明确并实现：竞拍结算退款非赢家；赢家保证金保持 `paid` 到订单完成；订单支付后 `refunded`；订单取消或过期后 `forfeited`；终态不被失败路径覆盖
-- [ ] **完整交易 E2E** — 跑通并记录证据：注册 -> 商家开播 -> 上架商品 -> 缴纳保证金 -> 出价 -> 竞拍结束 -> 生成订单 -> 支付；需要按 `docs/agent-testing/` 获批执行并产出报告后才能勾选
+- [x] **完整交易 E2E** — 已按 `docs/agent-testing/` 获批执行并产出报告：`docs/agent-testing/reports/20260606-164751-auction-lifecycle-flow.md`
 - [x] **订单创建失败补偿说明** — 已在订单模块与全生命周期契约中说明：竞拍实时结算创建订单失败时，由 `ScanCompensation` 扫描已结束、有赢家、无订单的拍品补偿创建；订单创建按 `item_id` 幂等
 
 ---
@@ -68,7 +68,7 @@
 
 ## P2 — 测试、文档与交付
 
-- [ ] **E2E 集成测试报告** — 使用 `docs/agent-testing/` 框架跑完整流程，记录环境、测试数据、证据和清理结果
+- [x] **E2E 集成测试报告** — 已使用 `docs/agent-testing/` 框架跑完整流程，记录环境、测试数据、证据和清理结果：`docs/agent-testing/reports/20260606-164751-auction-lifecycle-flow.md`
 - [ ] **并发一致性测试** — 针对同一商品并发出价，验证最高价、排行榜、BidLog、winner、订单只生成一次
 - [ ] **Apifox / Swagger 文档同步** — 将当前 handler annotations 和 `docs/5-21.md` 的接口口径对齐，支持 AI 驱动接口测试
 - [x] **删除 `.golangci.yml`** — 当前仓库中已不存在该文件
