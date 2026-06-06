@@ -72,7 +72,7 @@ Set or override these variables in PTS:
 - IP count: `1`.
 - Region customization: off for the first run.
 
-For this connect sweep script, `1 VU = 1 physical WSS connection`.
+For this connect sweep script, each VU opens at most 1 WSS connection at a time, but it will repeat connect/first-message/close in a loop for the configured duration (so total connection attempts can exceed VU count).
 
 ## Stop Conditions
 
