@@ -870,6 +870,49 @@ func TestPlaceBidPriceCapRefundsNonWinnerDeposits(t *testing.T) {
 	}
 }
 
+func TestPlaceBidPriceCapRefundsAfterCriticalSettlementPathWhenRefundFails(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	fb := &fakeBroadcaster{}
+	orderStore := newFakeOrderStore()
+	orderSvc := orderservice.NewService(orderStore, 30*time.Minute)
+	criticalPathDoneBeforeRefund := false
+	deposits := &fakeDepositChecker{
+		paid:                true,
+		refundNonWinnersErr: errors.New("refund down"),
+		onRefundNonWinners: func(itemID, winnerUserID string) {
+			_, orderErr := orderStore.FindOrderByItemID(itemID)
+			criticalPathDoneBeforeRefund = orderErr == nil &&
+				hasFanoutEvent(fb, itemdto.EventAuctionEnded) &&
+				hasUnicastEvent(fb, itemdto.EventOrderCreated)
+		},
+	}
+	svc := NewService(store, testPolicy, fc, orderSvc, deposits, fb)
+	endTime := time.Now().Add(5 * time.Minute)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 500, endTime)
+
+	result, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
+		Price:          500,
+		IdempotencyKey: "idem_cap_refund_error",
+		UserName:       "Alice",
+	})
+	if err != nil {
+		t.Fatalf("PlaceBid failed: %v", err)
+	}
+	if result.Status != "ended" {
+		t.Fatalf("expected status ended when price cap reached, got %q", result.Status)
+	}
+	if !criticalPathDoneBeforeRefund {
+		t.Fatal("expected refund to run after auction_ended fanout, order creation, and order_created unicast")
+	}
+	if _, err := orderStore.FindOrderByItemID(itemID); err != nil {
+		t.Fatalf("expected order creation to survive refund failure: %v", err)
+	}
+	if !hasUnicastEvent(fb, itemdto.EventOrderCreated) {
+		t.Fatal("expected order_created unicast to survive refund failure")
+	}
+}
+
 func TestPlaceBidPriceCapEmitsSingleOrderCreatedToWinner(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()
@@ -931,6 +974,7 @@ type fakeDepositChecker struct {
 	calls                 int
 	refundNonWinnersCalls []string
 	refundNonWinnersErr   error
+	onRefundNonWinners    func(itemID, winnerUserID string)
 }
 
 func (f *fakeDepositChecker) HasPaidDeposit(_ context.Context, itemID, userID string, requiredAmount int64) (bool, error) {
@@ -943,6 +987,9 @@ func (f *fakeDepositChecker) HasPaidDeposit(_ context.Context, itemID, userID st
 
 func (f *fakeDepositChecker) RefundNonWinners(_ context.Context, itemID, winnerUserID string) (depositservice.SettlementSummary, error) {
 	f.refundNonWinnersCalls = append(f.refundNonWinnersCalls, itemID+"\x00"+winnerUserID)
+	if f.onRefundNonWinners != nil {
+		f.onRefundNonWinners(itemID, winnerUserID)
+	}
 	return depositservice.SettlementSummary{Refunded: 1}, f.refundNonWinnersErr
 }
 

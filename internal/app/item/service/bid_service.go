@@ -209,11 +209,6 @@ func (s *Service) PlaceBid(ctx context.Context, current *usermodel.User, itemID 
 			_ = s.cache.ExpireAuctionState(ctx, item.ID, itemcache.FinalSnapshotTTL)
 			_ = s.cache.ClearRoomCurrentItem(ctx, item.RoomID, item.ID)
 		}
-		if s.depositSvc != nil {
-			if _, refundErr := s.depositSvc.RefundNonWinners(ctx, item.ID, current.ID); refundErr != nil {
-				logx.Warnw("item.PlaceBid refund non-winners failed", "item_id", item.ID, "winner_user_id", current.ID, "err", refundErr)
-			}
-		}
 		status = bidStatus(luaResult, "ended")
 		var orderID string
 		if s.orderSvc != nil {
@@ -249,6 +244,11 @@ func (s *Service) PlaceBid(ctx context.Context, current *usermodel.User, itemID 
 					},
 				}
 				_ = s.broadcaster.Unicast(wsevent.UserAddr(current.ID), orderEvt)
+			}
+		}
+		if s.depositSvc != nil {
+			if _, refundErr := s.depositSvc.RefundNonWinners(ctx, item.ID, current.ID); refundErr != nil {
+				logx.Warnw("item.PlaceBid refund non-winners failed", "item_id", item.ID, "winner_user_id", current.ID, "err", refundErr)
 			}
 		}
 	}

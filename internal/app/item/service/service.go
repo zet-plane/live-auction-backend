@@ -754,11 +754,6 @@ func (s *Service) persistSettledAuction(ctx context.Context, result itemcache.Se
 		_ = s.cache.ExpireAuctionState(ctx, item.ID, itemcache.FinalSnapshotTTL)
 		_ = s.cache.ClearRoomCurrentItem(ctx, item.RoomID, item.ID)
 	}
-	if s.depositSvc != nil {
-		if _, refundErr := s.depositSvc.RefundNonWinners(ctx, item.ID, result.LeaderUserID); refundErr != nil {
-			logx.Warnw("item.persistSettledAuction refund non-winners failed", "item_id", item.ID, "winner_user_id", result.LeaderUserID, "err", refundErr)
-		}
-	}
 	if s.broadcaster != nil {
 		_ = s.broadcaster.Fanout(wsevent.RoomTopic(item.RoomID), wsevent.Event{
 			Type: dto.EventAuctionEnded,
@@ -794,6 +789,11 @@ func (s *Service) persistSettledAuction(ctx context.Context, result itemcache.Se
 				},
 			}
 			_ = s.broadcaster.Unicast(wsevent.UserAddr(result.LeaderUserID), orderEvt)
+		}
+	}
+	if s.depositSvc != nil {
+		if _, refundErr := s.depositSvc.RefundNonWinners(ctx, item.ID, result.LeaderUserID); refundErr != nil {
+			logx.Warnw("item.persistSettledAuction refund non-winners failed", "item_id", item.ID, "winner_user_id", result.LeaderUserID, "err", refundErr)
 		}
 	}
 	return true

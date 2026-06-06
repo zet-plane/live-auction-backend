@@ -13,6 +13,7 @@ import (
 	itemcache "github.com/zet-plane/live-auction-backend/internal/app/item/cache"
 	itemdto "github.com/zet-plane/live-auction-backend/internal/app/item/dto"
 	itemmodel "github.com/zet-plane/live-auction-backend/internal/app/item/model"
+	orderservice "github.com/zet-plane/live-auction-backend/internal/app/order/service"
 	usermodel "github.com/zet-plane/live-auction-backend/internal/app/user/model"
 	"github.com/zet-plane/live-auction-backend/pkg/errorx"
 	"github.com/zet-plane/live-auction-backend/pkg/wsevent"
@@ -289,6 +290,7 @@ type fakeDepositService struct {
 	paid                  map[string]bool
 	refundNonWinnersCalls []string
 	refundNonWinnersErr   error
+	onRefundNonWinners    func(itemID, winnerUserID string)
 }
 
 func (s *fakeDepositService) HasPaidDeposit(ctx context.Context, itemID, userID string, requiredAmount int64) (bool, error) {
@@ -297,7 +299,28 @@ func (s *fakeDepositService) HasPaidDeposit(ctx context.Context, itemID, userID 
 
 func (s *fakeDepositService) RefundNonWinners(ctx context.Context, itemID, winnerUserID string) (depositservice.SettlementSummary, error) {
 	s.refundNonWinnersCalls = append(s.refundNonWinnersCalls, itemID+"\x00"+winnerUserID)
+	if s.onRefundNonWinners != nil {
+		s.onRefundNonWinners(itemID, winnerUserID)
+	}
 	return depositservice.SettlementSummary{Refunded: 1}, s.refundNonWinnersErr
+}
+
+func hasFanoutEvent(fb *fakeBroadcaster, eventType string) bool {
+	for _, fanout := range fb.fanoutSnapshot() {
+		if fanout.event.Type == eventType {
+			return true
+		}
+	}
+	return false
+}
+
+func hasUnicastEvent(fb *fakeBroadcaster, eventType string) bool {
+	for _, unicast := range fb.unicastSnapshot() {
+		if unicast.event.Type == eventType {
+			return true
+		}
+	}
+	return false
 }
 
 func TestCreateItemRequiresMerchantAndCreatesDraftItemWithRule(t *testing.T) {
@@ -1854,6 +1877,52 @@ func TestSettleDueAuctionsRefundsNonWinnerDeposits(t *testing.T) {
 
 	if len(deposits.refundNonWinnersCalls) != 1 || deposits.refundNonWinnersCalls[0] != "item_1\x00winner_1" {
 		t.Fatalf("expected non-winner refunds for winner_1, got %#v", deposits.refundNonWinnersCalls)
+	}
+}
+
+func TestSettleDueAuctionsRefundsAfterCriticalSettlementPathWhenRefundFails(t *testing.T) {
+	store := newFakeStore()
+	cache := newFakeCache()
+	fb := &fakeBroadcaster{}
+	orderStore := newFakeOrderStore()
+	orderSvc := orderservice.NewService(orderStore, 30*time.Minute)
+	criticalPathDoneBeforeRefund := false
+	deposits := &fakeDepositService{
+		paid:                map[string]bool{},
+		refundNonWinnersErr: errors.New("refund down"),
+		onRefundNonWinners: func(itemID, winnerUserID string) {
+			_, orderErr := orderStore.FindOrderByItemID(itemID)
+			criticalPathDoneBeforeRefund = orderErr == nil &&
+				hasFanoutEvent(fb, itemdto.EventAuctionEnded) &&
+				hasUnicastEvent(fb, itemdto.EventOrderCreated)
+		},
+	}
+	svc := NewService(store, itemdto.DefaultAuctionPolicy(), cache, orderSvc, deposits, fb)
+	now := time.Date(2026, 6, 6, 10, 0, 0, 0, time.UTC)
+	svc.now = func() time.Time { return now }
+	item := &itemmodel.AuctionItem{ID: "item_refund_order", MerchantID: "merchant_1", RoomID: "room_1", RuleID: "rule_refund_order", Status: itemmodel.ItemPublished}
+	rule := &itemmodel.AuctionRule{ID: "rule_refund_order", ItemID: "item_refund_order", StartPrice: 1000, BidIncrement: 100, StartTime: now.Add(-time.Minute), EndTime: now.Add(-time.Second)}
+	if err := store.CreateItemWithRule(item, rule); err != nil {
+		t.Fatalf("CreateItemWithRule: %v", err)
+	}
+	if err := svc.StartItem(context.Background(), &usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}, item.ID); err != nil {
+		t.Fatalf("StartItem: %v", err)
+	}
+	cache.states[item.ID].LeaderUserID = "winner_1"
+	cache.states[item.ID].DealPrice = 1500
+	cache.states[item.ID].EndTimeUnixMS = now.Add(-time.Second).UnixMilli()
+	cache.ending[item.ID] = now.Add(-time.Second).UnixMilli()
+
+	svc.SettleDueAuctions(context.Background())
+
+	if !criticalPathDoneBeforeRefund {
+		t.Fatal("expected refund to run after auction_ended fanout, order creation, and order_created unicast")
+	}
+	if _, err := orderStore.FindOrderByItemID(item.ID); err != nil {
+		t.Fatalf("expected order creation to survive refund failure: %v", err)
+	}
+	if !hasUnicastEvent(fb, itemdto.EventOrderCreated) {
+		t.Fatal("expected order_created unicast to survive refund failure")
 	}
 }
 
