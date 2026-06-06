@@ -15,16 +15,16 @@
 
 ### 定时任务与状态流转
 
-- [ ] **自动开始竞拍** — 商品上架后按 `rule.start_time` 自动触发 `StartItem`，复用现有服务方法，挂到 `kernel.Engine.Cron`
-- [ ] **自动结束竞拍实时化** — `EndExpiredAuctions()` 已实现并接入 cron，但当前周期是 `@every 1m`；按实时竞拍体验改为 5s 级轮询，或在文档中说明 1m 周期的取舍
+- [x] **自动开始竞拍** — 商品上架后按 `rule.start_time` 自动触发 `StartItem`，复用现有服务方法，挂到 `kernel.Engine.Cron`
+- [x] **自动结束竞拍实时化** — `SettleDueAuctions()` 已接入 `@every 1s` 实时结算；`EndExpiredAuctions()` 保留 `@every 1m` 作为兜底 fallback
 - [x] **订单超时关闭** — `order.scan_expired_orders` 已接入 cron，`pending` 订单超时后流转为 `expired`
 - [x] **订单创建补偿** — `order.scan_compensation` 已接入 cron，扫描已结束但未建单的竞拍并补偿创建订单
 
 ### 保证金与交易闭环
 
-- [ ] **保证金释放策略** — 明确并实现竞拍结束后的保证金 `refunded` / `forfeited` 规则：未中标退款，中标未支付是否罚没，中标已支付是否抵扣或退回
-- [ ] **完整交易 E2E** — 跑通并记录证据：注册 -> 商家开播 -> 上架商品 -> 缴纳保证金 -> 出价 -> 竞拍结束 -> 生成订单 -> 支付
-- [ ] **订单创建失败补偿说明** — 补充 `EndExpiredAuctions` 中订单创建失败后的补偿路径，和 `ScanCompensation` 的边界条件
+- [x] **保证金释放策略** — 已明确并实现：竞拍结算退款非赢家；赢家保证金保持 `paid` 到订单完成；订单支付后 `refunded`；订单取消或过期后 `forfeited`；终态不被失败路径覆盖
+- [ ] **完整交易 E2E** — 跑通并记录证据：注册 -> 商家开播 -> 上架商品 -> 缴纳保证金 -> 出价 -> 竞拍结束 -> 生成订单 -> 支付；需要按 `docs/agent-testing/` 获批执行并产出报告后才能勾选
+- [x] **订单创建失败补偿说明** — 已在订单模块与全生命周期契约中说明：竞拍实时结算创建订单失败时，由 `ScanCompensation` 扫描已结束、有赢家、无订单的拍品补偿创建；订单创建按 `item_id` 幂等
 
 ---
 
