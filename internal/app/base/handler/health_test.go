@@ -23,6 +23,8 @@ func TestLivezAlwaysReturnsOK(t *testing.T) {
 }
 
 func TestReadyzWithoutDBReturnsServiceUnavailable(t *testing.T) {
+	prevDB, prevCache := db, cache
+	t.Cleanup(func() { Init(prevDB, prevCache) })
 	Init(nil, nil)
 	f := flamego.New()
 	f.Use(flamego.Renderer())

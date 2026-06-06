@@ -39,36 +39,48 @@ func Readyz(r flamego.Render) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
+	components := make(map[string]componentStatus)
+	overall := "ok"
+
 	if db == nil {
-		response.Success(r, 503, "degraded", healthData{
-			Status: "degraded",
-			Components: map[string]componentStatus{
-				"mysql": {Status: "error", Error: "not initialized"},
-			},
-		})
+		components["mysql"] = componentStatus{Status: "error", Error: "not initialized"}
+		overall = "degraded"
+	} else {
+		start := time.Now()
+		sqlDB, err := db.DB()
+		if err == nil {
+			err = sqlDB.PingContext(ctx)
+		}
+		elapsed := time.Since(start)
+		if err != nil {
+			components["mysql"] = componentStatus{Status: "error", Error: err.Error()}
+			overall = "degraded"
+		} else {
+			components["mysql"] = componentStatus{Status: "ok", Latency: elapsed.String()}
+		}
+	}
+
+	if cache == nil {
+		components["redis"] = componentStatus{Status: "error", Error: "not initialized"}
+		overall = "degraded"
+	} else {
+		start := time.Now()
+		err := cache.Ping(ctx).Err()
+		elapsed := time.Since(start)
+		if err != nil {
+			components["redis"] = componentStatus{Status: "error", Error: err.Error()}
+			overall = "degraded"
+		} else {
+			components["redis"] = componentStatus{Status: "ok", Latency: elapsed.String()}
+		}
+	}
+
+	data := healthData{Status: overall, Components: components}
+	if overall != "ok" {
+		response.Success(r, 503, overall, data)
 		return
 	}
-	start := time.Now()
-	sqlDB, err := db.DB()
-	if err == nil {
-		err = sqlDB.PingContext(ctx)
-	}
-	elapsed := time.Since(start)
-	if err != nil {
-		response.Success(r, 503, "degraded", healthData{
-			Status: "degraded",
-			Components: map[string]componentStatus{
-				"mysql": {Status: "error", Error: err.Error()},
-			},
-		})
-		return
-	}
-	response.OK(r, healthData{
-		Status: "ok",
-		Components: map[string]componentStatus{
-			"mysql": {Status: "ok", Latency: elapsed.String()},
-		},
-	})
+	response.OK(r, data)
 }
 
 // Health checks MySQL and Redis connectivity.
