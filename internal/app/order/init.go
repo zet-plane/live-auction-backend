@@ -17,7 +17,6 @@ import (
 	usermodel "github.com/zet-plane/live-auction-backend/internal/app/user/model"
 	"github.com/zet-plane/live-auction-backend/internal/core/cronlease"
 	"github.com/zet-plane/live-auction-backend/internal/core/kernel"
-	"github.com/zet-plane/live-auction-backend/internal/core/observability"
 )
 
 // Service is the package-level contract exported for cross-module calls.
@@ -53,12 +52,12 @@ func (o *Order) Load(engine *kernel.Engine) error {
 	handler.Init(svc)
 	router.RegisterRoutes(engine.Flame)
 
-	storeLease := cronlease.RedisStore{Client: engine.Cache}
+	storeLease := cronlease.NewRedisStore(engine.Cache)
 	owner := leaseOwner(os.Hostname)
-	engine.Cron.AddFunc("@every 5m", observability.WrapCron("order.scan_expired_orders",
-		cronlease.Wrap("order.scan_expired_orders", owner, 2*time.Minute, storeLease, svc.ScanExpiredOrders)))
-	engine.Cron.AddFunc("@every 10m", observability.WrapCron("order.scan_compensation",
-		cronlease.Wrap("order.scan_compensation", owner, 2*time.Minute, storeLease, svc.ScanCompensation)))
+	engine.Cron.AddFunc("@every 5m",
+		cronlease.WrapCron("order.scan_expired_orders", owner, 2*time.Minute, storeLease, svc.ScanExpiredOrders))
+	engine.Cron.AddFunc("@every 10m",
+		cronlease.WrapCron("order.scan_compensation", owner, 2*time.Minute, storeLease, svc.ScanCompensation))
 	return nil
 }
 

@@ -2,6 +2,7 @@ package cronlease
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -17,8 +18,28 @@ type RedisStore struct {
 	Client *redis.Client
 }
 
+var ErrUnconfigured = errors.New("cron lease store unconfigured")
+
+func NewRedisStore(client *redis.Client) Store {
+	if client == nil {
+		return nil
+	}
+	return RedisStore{Client: client}
+}
+
 func (s RedisStore) Acquire(ctx context.Context, key, value string, ttl time.Duration) (bool, error) {
+	if s.Client == nil {
+		return false, ErrUnconfigured
+	}
 	return s.Client.SetNX(ctx, key, value, ttl).Result()
+}
+
+func WrapCron(name, podID string, ttl time.Duration, store Store, fn func(context.Context)) func() {
+	return func() {
+		Wrap(name, podID, ttl, store, func(context.Context) {
+			observability.WrapCron(name, fn)()
+		})(context.Background())
+	}
 }
 
 func Wrap(name, podID string, ttl time.Duration, store Store, fn func(context.Context)) func(context.Context) {
@@ -29,6 +50,10 @@ func Wrap(name, podID string, ttl time.Duration, store Store, fn func(context.Co
 		}
 		ok, err := store.Acquire(ctx, "cron:lease:"+name, podID, ttl)
 		if err != nil {
+			if errors.Is(err, ErrUnconfigured) {
+				record(ctx, name, "lease_unconfigured")
+				return
+			}
 			logx.Warnw("cron lease acquire failed", "cron_name", name, "lease_owner", podID, "err", err)
 			record(ctx, name, "lease_error")
 			return
