@@ -141,6 +141,8 @@ Agent 不应在本模块内测试：
 - MySQL 排行榜按每个用户最高价 `MAX(price)` 聚合，按价格倒序返回，并左连接 `users` 表取昵称。
 - 排行榜 `page <= 0` 归一为 1，`page_size <= 0` 归一为 10，`page_size > 100` 归一为 100。
 - 排名 `rank` 从当前分页 offset + 1 开始。
+- 排行榜接口会尝试读取可选 `Authorization: Bearer <token>`；未携带 token 时公开返回排行榜，携带合法 token 时额外返回 `current_user`，非法 bearer token 返回未授权。
+- `current_user` 优先从 Redis ranking 计算，Redis miss 时降级到 MySQL `bid_logs`，未出价用户返回 `has_bid=false`、`rank=0`、`price=0`、`is_leader=false`。
 - 当商品规则 `deposit_amount > 0` 时，`PlaceBid` 会在 Redis Lua 执行前调用 `depositSvc.HasPaidDeposit`；未缴纳足额 `paid` 保证金时返回 `40005 deposit required`。
 - 当商品规则 `deposit_amount <= 0` 时，`PlaceBid` 不调用保证金检查。
 - 当前实现写 BidLog 是 Redis Stream backed 异步落库；接口成功只证明 Redis 原子状态和 stream handoff 成功，MySQL `bid_logs` 需要按最终一致窗口验证。
@@ -196,8 +198,10 @@ Agent 不应在本模块内测试：
 | `idempotency_key` | request/Redis | 必填；HTTP 长度 1 到 128；Redis STRING，TTL 86400 秒；重复使用时幂等返回 | 出价接口、Redis Lua | `BID.FIELD.idempotency_key.*` |
 | `bid_id` | Redis/stream/db/response | 非幂等成功出价生成 `bid_` 前缀；幂等重试返回原 bid ID | 出价响应、BidLog stream、BidLog | `BID.FIELD.bid_id.*` |
 | `current_price` | Redis/response | 成功后等于本次有效出价；幂等返回 Redis 当前价格 | 出价响应、Redis state | `BID.FIELD.current_price.*` |
+| `deal_price` | Redis/response/db | 当前实现等于 Redis `current_price`；一口价成交时应与 MySQL `AuctionItem.DealPrice` 一致 | 出价响应、Redis state、一口价成交 | `BID.FIELD.deal_price.*` |
 | `leader_user_id` | Redis/response | 成功后等于当前出价用户 ID；幂等返回 Redis 当前领先用户 | 出价响应、Redis state | `BID.FIELD.leader_user_id.*` |
 | `end_time` | Redis/response | 由 Redis `end_time_unix` 转换；自动延时时应增加 | 出价响应、Redis state | `BID.FIELD.end_time.*` |
+| `end_time_unix_ms` | Redis/response | 优先来自 Redis `end_time_unix_ms`；旧状态只有秒级值时退化为 `end_time_unix * 1000` | 出价响应、Redis state | `BID.FIELD.end_time_unix_ms.*` |
 | `status` | response/db | 普通成功为 `ongoing`；一口价成交为 `ended` | 出价响应、AuctionItem | `BID.FIELD.status.*` |
 
 ### BidLog / Ranking / Redis State
@@ -214,6 +218,8 @@ Agent 不应在本模块内测试：
 | `ranking.user_id` | Redis/db/response | Redis 来源为 ZSET member；MySQL 来源为 BidLog user_id | 排行榜接口 | `BID.FIELD.ranking_user_id.*` |
 | `ranking.user_name` | Redis/db/response | Redis 来源为 bidder_names；MySQL fallback 来源为 users.name；可能为空 | 排行榜接口 | `BID.FIELD.ranking_user_name.*` |
 | `ranking.price` | Redis/db/response | 每个用户最高出价；按倒序排列 | 排行榜接口 | `BID.FIELD.ranking_price.*` |
+| `current_user` | auth/Redis/db/response | 未携带 token 时省略；携带合法 token 时返回当前用户排名快照；未出价用户 `has_bid=false` | 排行榜接口 | `BID.FIELD.current_user.*` |
+| `current_user.is_leader` | Redis/db/response | 当前用户排名为 1 且已出价时为 true | 排行榜接口 | `BID.FIELD.current_user.is_leader.*` |
 | `bid_count` | Redis | 非幂等成功出价加 1 | Redis Lua、商品查询 | `BID.FIELD.bid_count.*` |
 | `participant_count` | Redis | 新用户首次出价加 1 | Redis Lua、商品查询 | `BID.FIELD.participant_count.*` |
 | `extend_count` / `total_extended_sec` | Redis | 自动延时不能超过策略上限 | Redis Lua | `BID.FIELD.extend_limits.*` |
@@ -256,8 +262,10 @@ Agent 不应在本模块内测试：
 | --- | --- | --- |
 | `bid_id` | 成功时非空；幂等重试返回原 bid ID | HTTP 响应 + Redis idempotency key + BidLog stream / 最终 BidLog |
 | `current_price` | 等于 Redis 当前价 | HTTP 响应 + Redis state |
+| `deal_price` | 当前实现等于 Redis 当前价；一口价成交时与 MySQL 成交价一致 | HTTP 响应 + Redis state + DB |
 | `leader_user_id` | 等于当前领先用户 ID | HTTP 响应 + Redis state |
 | `end_time` | 等于 Redis `end_time_unix` 转换结果 | HTTP 响应 + Redis state |
+| `end_time_unix_ms` | 等于 Redis 毫秒结束时间；旧秒级状态按秒转毫秒 | HTTP 响应 + Redis state |
 | `status` | `ongoing` 或 `ended` | HTTP 响应 + MySQL AuctionItem |
 
 #### 测试数据准备
@@ -333,7 +341,7 @@ Agent 不应在本模块内测试：
 
 返回指定拍品按用户最高价倒序排列的排行榜。优先返回 Redis 实时排行榜；Redis 无数据或读取失败时降级到 MySQL BidLog 聚合。
 
-接口不负责校验拍品是否存在、不负责鉴权、不负责返回出价明细流水。
+接口不负责校验拍品是否存在、不强制鉴权、不负责返回出价明细流水。未携带 token 时公开返回排行榜；携带合法 token 时返回当前用户排名快照；携带非法 bearer token 时返回未授权。
 
 #### 请求字段
 
@@ -342,6 +350,7 @@ Agent 不应在本模块内测试：
 | `item_id` | 是 | path 参数；trim 后用于 Redis/DB 查询 | 当前实现不存在也可返回空榜 |
 | `page` | 否 | 非数字解析为 0 后归一为 1；`<=0` 归一为 1 | 默认分页 |
 | `page_size` | 否 | 非数字解析为 0 后归一为 10；`<=0` 归一为 10；`>100` 截断为 100 | 默认或截断 |
+| `Authorization` | 否 | 为空时公开访问；合法 bearer token 返回 `current_user`；非法 bearer token 返回未授权 | 未授权 |
 
 #### 响应字段
 
@@ -353,6 +362,7 @@ Agent 不应在本模块内测试：
 | `user_name` | Redis 来源为 bidder_names；MySQL 来源为 users.name；允许为空 | HTTP 响应 + Redis/DB |
 | `price` | 用户最高价 | HTTP 响应 + Redis/DB |
 | `page` / `page_size` | 返回归一化后的分页参数 | HTTP 响应 |
+| `current_user` | 未携带 token 时省略；携带合法 token 时包含 `user_id`、`rank`、`price`、`is_leader`、`has_bid` | HTTP 响应 + Redis/DB |
 
 #### 测试数据准备
 
@@ -368,10 +378,13 @@ Agent 不应在本模块内测试：
 - `page=1&page_size=2` 返回前两名，rank 为 1、2。
 - `page=2&page_size=2` 返回下一页，rank 从 3 开始。
 - Redis miss 或错误时，从 MySQL BidLog 聚合返回排行榜。
+- 携带合法 token 时，返回当前用户在该拍品的排名快照；未出价用户返回 `has_bid=false`。
+- 不携带 token 时不返回 `current_user` 字段。
 - 空榜返回空 list 和归一化分页。
 
 #### 失败路径
 
+- 携带非法 bearer token 时返回未授权。
 - MySQL fallback 查询失败时接口失败。
 - Redis bidder names 读取失败时当前 cache 方法返回错误，Service 会降级到 MySQL；需验证结果来源和昵称差异。
 - `page_size` 极大时必须被限制为 100。
@@ -380,6 +393,7 @@ Agent 不应在本模块内测试：
 
 - Redis 来源排行榜与 `auction:item:{item_id}:ranking` 分数一致。
 - MySQL fallback 排行榜与 `bid_logs` 每用户最高价一致。
+- `current_user` 与 Redis / MySQL 对当前用户的最高价和排名一致。
 - 排名、分页和价格排序一致。
 - Redis 和 MySQL 同时存在时，当前实现优先 Redis；若二者不一致，报告必须标明来源。
 
@@ -732,7 +746,7 @@ Agent 不应在本模块内测试：
 | 自动延时超过上限 | 单元 / 集成 | 多次临近结束出价 | Redis extend_count / total_extended_sec |
 | 一口价后仍可有效出价 | 场景 / 并发 | `price >= price_cap` 后再次出价 | MySQL 成交状态不变 |
 | worker 失败造成 BidLog 延迟落库 | 故障注入 / 风险报告 | CreateBidLogs 或 XACK 失败 | HTTP 成功 + Redis stream pending/未 ack + MySQL 暂未一致证据 |
-| 公开排行榜泄露敏感信息 | 接口契约 | 查询 ranking | 响应只含 rank/user_id/user_name/price |
+| 公开排行榜泄露敏感信息 | 接口契约 | 查询 ranking | 响应只含 rank/user_id/user_name/price/page/page_size/current_user 排名快照，不含 token 或联系方式 |
 
 ## 17. 测试类型覆盖矩阵
 
@@ -749,6 +763,7 @@ Agent 不应在本模块内测试：
 | `GormStore.ListBidRanking` | 否 | 否 | 是 | 是 | 是 | 是 | 否 | 是 |
 | `price` 字段 | 是 | 是 | 是 | 是 | 是 | 是 | 是 | 是 |
 | `idempotency_key` 字段 | 是 | 是 | 是 | 是 | 是 | 是 | 是 | 是 |
+| `current_user` 排名快照 | 是 | 是 | 是 | 是 | 是 | 是 | 否 | 是 |
 | 自动延时 | 是 | 是 | 是 | 是 | 是 | 是 | 是 | 是 |
 | 一口价成交 | 是 | 是 | 是 | 是 | 是 | 是 | 是 | 是 |
 | WebSocket 事件生产 | 是 | 否 | 是 | 是 | 是 | 是 | 是 | 是 |
@@ -762,6 +777,7 @@ Agent 不应在本模块内测试：
 - 同一 `idempotency_key` 重试不重复追加 stream、不重复写 BidLog、不重复增加 Redis 计数。
 - 多用户连续出价后，当前价、领先用户和排行榜第一名一致。
 - 排行榜分页、排序、每用户最高价聚合和 page/page_size 归一化符合预期。
+- 携带合法 token 查询排行榜时，`current_user` 与 Redis / MySQL 当前用户最高价和排名一致；不携带 token 时该字段省略。
 - 一口价出价后，商品状态、赢家和成交价正确，后续出价不能改变成交结果。
 - 并发测试最终状态唯一且可解释，没有重复 rank、价格倒退或成交结果冲突。
 - 所有测试只操作本批次数据，并记录清理结果。
