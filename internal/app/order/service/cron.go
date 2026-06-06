@@ -25,9 +25,18 @@ func (s *Service) ScanExpiredOrders(ctx context.Context) {
 		return
 	}
 	for _, o := range orders {
-		if _, err := s.store.UpdateOrderStatus(o.ID, model.OrderPending, model.OrderExpired); err != nil {
+		ok, err := s.store.UpdateOrderStatus(o.ID, model.OrderPending, model.OrderExpired)
+		if err != nil {
 			logx.Errorf("[order] ScanExpiredOrders update %s error: %v", o.ID, err)
 			continue
+		}
+		if !ok {
+			continue
+		}
+		if s.depositSettler != nil {
+			if _, settleErr := s.depositSettler.ForfeitWinner(ctx, o.ItemID, o.UserID); settleErr != nil {
+				logx.Warnw("[order] ScanExpiredOrders deposit forfeit failed", "order_id", o.ID, "item_id", o.ItemID, "user_id", o.UserID, "err", settleErr)
+			}
 		}
 		updatedCount++
 	}
