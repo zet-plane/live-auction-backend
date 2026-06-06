@@ -181,7 +181,7 @@ func TestLoginRejectsWrongPassword(t *testing.T) {
 	}
 }
 
-func TestAuthenticateClaimsUsesTokenClaimsWithoutStoreLookup(t *testing.T) {
+func TestAuthenticateClaimsValidatesUserAndOverlaysTokenClaims(t *testing.T) {
 	store := newFakeStore()
 	svc := NewService(store, Options{TokenSecret: "test-secret", TokenTTL: time.Hour})
 	result, err := svc.Register(context.Background(), dto.RegisterInput{
@@ -200,8 +200,8 @@ func TestAuthenticateClaimsUsesTokenClaimsWithoutStoreLookup(t *testing.T) {
 	if current.ID != result.User.ID || current.Name != result.User.Name || current.Identity != result.User.Identity {
 		t.Fatalf("expected current user from token claims, got %+v from %+v", current, result.User)
 	}
-	if store.findUserByIDCalls != 0 {
-		t.Fatalf("expected no FindUserByID calls, got %d", store.findUserByIDCalls)
+	if store.findUserByIDCalls != 1 {
+		t.Fatalf("expected one FindUserByID call, got %d", store.findUserByIDCalls)
 	}
 }
 
