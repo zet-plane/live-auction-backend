@@ -61,6 +61,26 @@ func (s *fakeStore) UpdateDeposit(d *model.Deposit) error {
 	return nil
 }
 
+func (s *fakeStore) ListPaidDepositsByItem(itemID string) ([]model.Deposit, error) {
+	var result []model.Deposit
+	for _, d := range s.deposits {
+		if d.ItemID == itemID && d.Status == model.DepositPaid {
+			result = append(result, *d)
+		}
+	}
+	return result, nil
+}
+
+func (s *fakeStore) TransitionDepositStatus(itemID, userID string, from, to model.DepositStatus, terminalAt *time.Time) (bool, error) {
+	d, ok := s.deposits[depositKey(itemID, userID)]
+	if !ok || d.Status != from {
+		return false, nil
+	}
+	d.Status = to
+	d.RefundedAt = terminalAt
+	return true, nil
+}
+
 func TestPayDepositCreatesPaidDepositUsingRuleAmount(t *testing.T) {
 	store := newFakeStore()
 	store.amounts["item_1"] = 5000
@@ -85,6 +105,71 @@ func TestPayDepositCreatesPaidDepositUsingRuleAmount(t *testing.T) {
 	}
 	if result.PaidAt == nil {
 		t.Fatal("expected paid_at")
+	}
+}
+
+func TestRefundNonWinnersRefundsPaidDepositsExceptWinner(t *testing.T) {
+	store := newFakeStore()
+	paidAt := store.now.Add(-time.Minute)
+	store.deposits[depositKey("item_1", "user_a")] = &model.Deposit{ID: "deposit_a", ItemID: "item_1", UserID: "user_a", Amount: 5000, Status: model.DepositPaid, PaidAt: &paidAt}
+	store.deposits[depositKey("item_1", "user_b")] = &model.Deposit{ID: "deposit_b", ItemID: "item_1", UserID: "user_b", Amount: 5000, Status: model.DepositPaid, PaidAt: &paidAt}
+	store.deposits[depositKey("item_1", "user_c")] = &model.Deposit{ID: "deposit_c", ItemID: "item_1", UserID: "user_c", Amount: 5000, Status: model.DepositRefunded, PaidAt: &paidAt}
+	svc := NewService(store)
+	svc.now = func() time.Time { return store.now }
+
+	summary, err := svc.RefundNonWinners(context.Background(), "item_1", "user_b")
+
+	if err != nil {
+		t.Fatalf("RefundNonWinners returned error: %v", err)
+	}
+	if summary.Refunded != 1 || summary.Forfeited != 0 || summary.Skipped != 1 {
+		t.Fatalf("unexpected summary: %+v", summary)
+	}
+	if got := store.deposits[depositKey("item_1", "user_a")]; got.Status != model.DepositRefunded || got.RefundedAt == nil {
+		t.Fatalf("expected user_a refunded with terminal time, got %+v", got)
+	}
+	if got := store.deposits[depositKey("item_1", "user_b")]; got.Status != model.DepositPaid {
+		t.Fatalf("expected winner to remain paid, got %+v", got)
+	}
+}
+
+func TestRefundWinnerAndForfeitWinnerAreIdempotent(t *testing.T) {
+	store := newFakeStore()
+	paidAt := store.now.Add(-time.Minute)
+	store.deposits[depositKey("item_1", "winner_paid")] = &model.Deposit{ID: "deposit_w", ItemID: "item_1", UserID: "winner_paid", Amount: 5000, Status: model.DepositPaid, PaidAt: &paidAt}
+	store.deposits[depositKey("item_1", "winner_done")] = &model.Deposit{ID: "deposit_done", ItemID: "item_1", UserID: "winner_done", Amount: 5000, Status: model.DepositRefunded, PaidAt: &paidAt}
+	svc := NewService(store)
+	svc.now = func() time.Time { return store.now }
+
+	refundSummary, err := svc.RefundWinner(context.Background(), "item_1", "winner_paid")
+	if err != nil {
+		t.Fatalf("RefundWinner returned error: %v", err)
+	}
+	if refundSummary.Refunded != 1 {
+		t.Fatalf("expected one refund, got %+v", refundSummary)
+	}
+	if got := store.deposits[depositKey("item_1", "winner_paid")]; got.Status != model.DepositRefunded || got.RefundedAt == nil {
+		t.Fatalf("expected winner_paid refunded, got %+v", got)
+	}
+
+	second, err := svc.RefundWinner(context.Background(), "item_1", "winner_done")
+	if err != nil {
+		t.Fatalf("second RefundWinner returned error: %v", err)
+	}
+	if second.Refunded != 0 || second.Skipped != 1 {
+		t.Fatalf("expected terminal deposit skipped, got %+v", second)
+	}
+
+	store.deposits[depositKey("item_2", "winner_default")] = &model.Deposit{ID: "deposit_f", ItemID: "item_2", UserID: "winner_default", Amount: 5000, Status: model.DepositPaid, PaidAt: &paidAt}
+	forfeitSummary, err := svc.ForfeitWinner(context.Background(), "item_2", "winner_default")
+	if err != nil {
+		t.Fatalf("ForfeitWinner returned error: %v", err)
+	}
+	if forfeitSummary.Forfeited != 1 {
+		t.Fatalf("expected one forfeiture, got %+v", forfeitSummary)
+	}
+	if got := store.deposits[depositKey("item_2", "winner_default")]; got.Status != model.DepositForfeited || got.RefundedAt == nil {
+		t.Fatalf("expected winner_default forfeited, got %+v", got)
 	}
 }
 

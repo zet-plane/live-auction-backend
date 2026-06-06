@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	depositservice "github.com/zet-plane/live-auction-backend/internal/app/deposit/service"
 	"github.com/zet-plane/live-auction-backend/internal/app/order/dto"
 	"github.com/zet-plane/live-auction-backend/internal/app/order/model"
 	usermodel "github.com/zet-plane/live-auction-backend/internal/app/user/model"
@@ -105,6 +106,23 @@ func (s *fakeStore) ListExpiredPendingOrders(before time.Time, limit int) ([]mod
 
 func (s *fakeStore) ListEndedItemsWithoutOrder(limit int) ([]dto.EndedItemSummary, error) {
 	return nil, nil
+}
+
+type fakeDepositSettler struct {
+	refunded   []string
+	forfeited  []string
+	refundErr  error
+	forfeitErr error
+}
+
+func (s *fakeDepositSettler) RefundWinner(ctx context.Context, itemID, userID string) (depositservice.SettlementSummary, error) {
+	s.refunded = append(s.refunded, itemID+"\x00"+userID)
+	return depositservice.SettlementSummary{Refunded: 1}, s.refundErr
+}
+
+func (s *fakeDepositSettler) ForfeitWinner(ctx context.Context, itemID, userID string) (depositservice.SettlementSummary, error) {
+	s.forfeited = append(s.forfeited, itemID+"\x00"+userID)
+	return depositservice.SettlementSummary{Forfeited: 1}, s.forfeitErr
 }
 
 // --- helpers ---
@@ -243,6 +261,55 @@ func TestPay_ExpiredOrder_ReturnsInvalidRequest(t *testing.T) {
 
 	if !errors.Is(err, errorx.ErrInvalidRequest) {
 		t.Errorf("want ErrInvalidRequest for expired order, got %v", err)
+	}
+}
+
+func TestPayRefundsWinnerDepositAfterStatusCommit(t *testing.T) {
+	store := newFakeStore()
+	svc := newTestService(store)
+	settler := &fakeDepositSettler{}
+	svc.SetDepositSettler(settler)
+	order, _ := svc.CreateOrder(context.Background(), "item_1", "user_1", 5000)
+
+	err := svc.Pay(context.Background(), &usermodel.User{ID: "user_1"}, order.ID)
+
+	if err != nil {
+		t.Fatalf("Pay returned error: %v", err)
+	}
+	if len(settler.refunded) != 1 || settler.refunded[0] != "item_1\x00user_1" {
+		t.Fatalf("expected winner deposit refunded, got %#v", settler.refunded)
+	}
+}
+
+func TestCancelForfeitsWinnerDepositAfterStatusCommit(t *testing.T) {
+	store := newFakeStore()
+	svc := newTestService(store)
+	settler := &fakeDepositSettler{}
+	svc.SetDepositSettler(settler)
+	order, _ := svc.CreateOrder(context.Background(), "item_1", "user_1", 5000)
+
+	err := svc.Cancel(context.Background(), &usermodel.User{ID: "user_1"}, order.ID)
+
+	if err != nil {
+		t.Fatalf("Cancel returned error: %v", err)
+	}
+	if len(settler.forfeited) != 1 || settler.forfeited[0] != "item_1\x00user_1" {
+		t.Fatalf("expected winner deposit forfeited, got %#v", settler.forfeited)
+	}
+}
+
+func TestScanExpiredOrdersForfeitsWinnerDeposit(t *testing.T) {
+	store := newFakeStore()
+	svc := newTestService(store)
+	settler := &fakeDepositSettler{}
+	svc.SetDepositSettler(settler)
+	order, _ := svc.CreateOrder(context.Background(), "item_1", "user_1", 5000)
+	store.orders[order.ID].ExpiredAt = svc.now().Add(-time.Minute)
+
+	svc.ScanExpiredOrders(context.Background())
+
+	if len(settler.forfeited) != 1 || settler.forfeited[0] != "item_1\x00user_1" {
+		t.Fatalf("expected expired order to forfeit deposit, got %#v", settler.forfeited)
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	usermodel "github.com/zet-plane/live-auction-backend/internal/app/user/model"
 	"github.com/zet-plane/live-auction-backend/internal/core/observability"
 	"github.com/zet-plane/live-auction-backend/pkg/errorx"
+	"github.com/zet-plane/live-auction-backend/pkg/logx"
 	"github.com/zet-plane/live-auction-backend/pkg/snowflake"
 	"github.com/zet-plane/live-auction-backend/pkg/wsevent"
 )
@@ -243,6 +244,11 @@ func (s *Service) PlaceBid(ctx context.Context, current *usermodel.User, itemID 
 					},
 				}
 				_ = s.broadcaster.Unicast(wsevent.UserAddr(current.ID), orderEvt)
+			}
+		}
+		if s.depositSvc != nil {
+			if _, refundErr := s.depositSvc.RefundNonWinners(ctx, item.ID, current.ID); refundErr != nil {
+				logx.Warnw("item.PlaceBid refund non-winners failed", "item_id", item.ID, "winner_user_id", current.ID, "err", refundErr)
 			}
 		}
 	}

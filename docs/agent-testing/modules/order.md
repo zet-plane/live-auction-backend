@@ -31,7 +31,7 @@ Agent 可以测试：
 - 与订单直接相关的商品表状态：`auction_items.status='ended'`、`winner_id`、`deal_price`、`merchant_id`、软删除过滤。
 - 订单 cron 日志关键字：`[order] ScanExpiredOrders`、`[order] ScanCompensation`。
 
-当前订单模块不测试保证金支付、出价排序、WebSocket 推送、真实三方支付、发货、售后或退款。支付接口应转到 `payment.md`，保证金接口应转到 `deposit.md`，完整竞拍到订单链路应转到流程文档。
+当前订单模块不测试保证金支付、出价排序、WebSocket 推送、真实三方支付、发货、售后或真实退款打款。订单状态触发的赢家保证金退款/罚没属于订单与保证金协作边界，应在本模块记录状态副作用，并在 `deposit.md` 和流程文档中验证终态规则。支付接口应转到 `payment.md`，保证金接口应转到 `deposit.md`，完整竞拍到订单链路应转到流程文档。
 
 ## 4. 禁止事项
 
@@ -99,12 +99,19 @@ Agent 可以测试：
 - `ScanCompensation` 每次最多扫描 50 个已结束、有赢家、无订单的商品并调用 `CreateOrder`。
 - `order.Load` 注册 `@every 5m` 过期扫描和 `@every 10m` 补偿扫描。
 
+订单状态触发的保证金规则：
+
+- `pending -> paid` 成功后触发赢家保证金 `paid -> refunded`。
+- `pending -> cancelled` 成功后触发赢家保证金 `paid -> forfeited`。
+- `pending -> expired` 成功后触发赢家保证金 `paid -> forfeited`。
+- 保证金结算失败不回滚已提交的订单状态，但必须记录日志或风险证据，供补偿和人工排查。
+
 根据当前代码结构推断：
 
 - 订单创建的业务入口是商品成交，不应由普通客户端直接创建。
 - 商家可以查询自己商品产生的订单详情，但不能通过订单服务支付或取消订单。
 - 未知 `status` 当前会作为数据库过滤条件，不会在 handler 层被拒绝。
-- 支付成功后当前订单模块只更新订单状态，不触发外部支付流水、库存、发货或通知。
+- 支付成功后当前订单模块不触发外部支付流水、库存、发货或通知。
 
 需确认内容集中在“需用户确认的问题”章节。
 
@@ -118,6 +125,8 @@ Agent 可以测试：
 - 订单状态只能按当前实现允许的路径变化：`pending -> paid`、`pending -> cancelled`、`pending -> expired`。
 - `paid` 订单不能被取消，`cancelled` 或 `expired` 订单不能被支付。
 - 已过期订单不能支付。
+- 订单进入 `paid` 后，赢家保证金应为 `refunded`，且不覆盖已有终态。
+- 订单进入 `cancelled` 或 `expired` 后，赢家保证金应为 `forfeited`，且不覆盖已有终态。
 - 订单列表和详情不得泄露其他用户或其他商家的订单。
 - HTTP 响应中的订单状态必须与 `orders` 表一致。
 
@@ -341,9 +350,11 @@ Agent 可以测试：
 
 - 所属用户支付 pending 未过期订单成功。
 - 重复支付已 paid 订单当前幂等成功。
+- pending 订单支付成功后触发赢家保证金退款；保证金结算失败时订单仍为已提交的 paid 状态，并记录风险证据。
 - 已过期 pending 订单支付失败。
 - 非所属用户支付或取消失败。
 - pending 订单取消成功。
+- pending 订单取消成功后触发赢家保证金罚没；保证金结算失败时订单仍为已提交的 cancelled 状态，并记录风险证据。
 - paid 订单取消失败。
 
 #### 集成测试点
@@ -370,7 +381,7 @@ Agent 可以测试：
 
 #### 单元测试点
 
-- 过期扫描只更新过期 pending 订单。
+- 过期扫描只更新过期 pending 订单，并触发赢家保证金罚没；保证金结算失败时订单仍为已提交的 expired 状态，并记录风险证据。
 - 补偿扫描只为符合条件的 ended 商品创建订单。
 - store 查询或更新失败时记录日志，不 panic。
 
@@ -461,8 +472,10 @@ Agent 可以测试：
 #### Then
 
 - 第一次支付成功，订单状态为 `paid`。
+- 赢家保证金变为 `refunded`。
 - 第二次支付当前幂等成功。
 - 支付后取消失败，订单仍为 `paid`。
+- 支付后取消失败不能把赢家保证金从 `refunded` 覆盖为 `forfeited`。
 
 #### 证据要求
 
@@ -502,6 +515,7 @@ Agent 可以测试：
 #### Then
 
 - 已过期 pending 订单变为 `expired`。
+- 已过期 pending 订单对应的赢家保证金变为 `forfeited`。
 - 未过期 pending 订单仍为 `pending`。
 
 #### 证据要求
@@ -514,13 +528,13 @@ Agent 可以测试：
 | 当前状态 | 动作 | 目标状态 | 允许 | 涉及接口 / 方法 | 一致性证据 |
 | --- | --- | --- | --- | --- | --- |
 | 无订单 | 成交创建 | `pending` | 是 | `CreateOrder` | Service 返回 + `orders` |
-| `pending` | 支付 | `paid` | 是 | `Pay` / payment 接口 | HTTP/Service + `orders` |
-| `pending` | 取消 | `cancelled` | 是 | `Cancel` / payment 接口 | HTTP/Service + `orders` |
-| `pending` | 过期扫描 | `expired` | 是 | `ScanExpiredOrders` | 测试输出 + `orders` |
+| `pending` | 支付 | `paid` + 赢家保证金 `refunded` | 是 | `Pay` / payment 接口 | HTTP/Service + `orders` + `deposits` |
+| `pending` | 取消 | `cancelled` + 赢家保证金 `forfeited` | 是 | `Cancel` / payment 接口 | HTTP/Service + `orders` + `deposits` |
+| `pending` | 过期扫描 | `expired` + 赢家保证金 `forfeited` | 是 | `ScanExpiredOrders` | 测试输出 + `orders` + `deposits` |
 | `paid` | 支付 | `paid` | 是（当前幂等） | `Pay` | HTTP/Service + `orders` |
-| `paid` | 取消 | 无变化 | 否 | `Cancel` | 错误响应 + `orders` |
-| `cancelled` | 支付 | 无变化 | 否 | `Pay` | 错误响应 + `orders` |
-| `expired` | 支付 | 无变化 | 否 | `Pay` | 错误响应 + `orders` |
+| `paid` | 取消 | 无变化，保证金终态不变 | 否 | `Cancel` | 错误响应 + `orders` + `deposits` |
+| `cancelled` | 支付 | 无变化，保证金终态不变 | 否 | `Pay` | 错误响应 + `orders` + `deposits` |
+| `expired` | 支付 | 无变化，保证金终态不变 | 否 | `Pay` | 错误响应 + `orders` + `deposits` |
 
 ## 14. 并发测试
 
@@ -548,6 +562,9 @@ Agent 可以测试：
 | 其他用户查看或支付订单 | 单元 / 接口 | 使用非所属用户 token | 错误响应 + DB 未变化 |
 | 商家看到其他商家的订单 | 单元 / 接口 | 使用非所属商家 token | 错误响应或列表为空 |
 | 已过期订单仍可支付 | 单元 / 集成 | `ExpiredAt < now` 时调用 `Pay` | 错误响应 + `orders.status` |
+| paid 订单未退款保证金 | 单元 / 场景 | `pending -> paid` 成功后 | `orders.status` + `deposits.status=refunded` |
+| cancelled/expired 订单未罚没保证金 | 单元 / 场景 | `pending -> cancelled/expired` 成功后 | `orders.status` + `deposits.status=forfeited` |
+| 保证金结算失败回滚订单状态 | 单元 / 场景 | 注入保证金结算失败 | 订单已提交状态 + 日志/风险证据 |
 | 软删除商品订单仍被查询 | 集成 | 商品 `deleted_at` 非空 | 查询不返回该订单 |
 | 补偿扫描漏建订单 | 单元 / 集成 | ended、有 winner、无订单商品 | 新订单记录 |
 
@@ -568,7 +585,7 @@ Agent 可以测试：
 
 **核心验证点（全部通过才算过）：**
 
-- 订单创建、支付、取消、过期扫描的状态流转符合第 13 节矩阵，证据为 Service/HTTP 响应和 `orders` 表。
+- 订单创建、支付、取消、过期扫描的状态流转符合第 13 节矩阵，证据为 Service/HTTP 响应、`orders` 表和关联 `deposits` 表。
 - 普通用户和商家订单查询只返回自己可见的数据，证据为 HTTP 响应和 DB 对照。
 - `CreateOrder` 对同一 `item_id` 的幂等行为和数据库唯一约束符合当前实现，证据为返回 ID、唯一索引和订单数量。
 - `ScanExpiredOrders` 只更新已过期 pending 订单，证据为扫描前后 DB 状态。
@@ -585,7 +602,7 @@ Agent 可以测试：
 - 订单过期后是否允许用户重新发起支付或重新生成订单？
 - 商家查看订单详情时返回 `user_id` 是否符合隐私边界？
 - 商品软删除后，历史订单是否应继续可查询？
-- 订单支付成功后是否需要触发保证金抵扣、退款、通知、发货或审计流水？
+- 订单支付成功后当前 P0 规则触发保证金退款；后续是否新增抵扣、通知、发货或审计流水仍需确认。
 
 ## 20. 失败报告格式
 

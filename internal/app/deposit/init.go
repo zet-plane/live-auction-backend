@@ -10,6 +10,7 @@ import (
 	"github.com/zet-plane/live-auction-backend/internal/app/deposit/handler"
 	"github.com/zet-plane/live-auction-backend/internal/app/deposit/router"
 	"github.com/zet-plane/live-auction-backend/internal/app/deposit/service"
+	orderapp "github.com/zet-plane/live-auction-backend/internal/app/order"
 	"github.com/zet-plane/live-auction-backend/internal/core/kernel"
 )
 
@@ -34,6 +35,9 @@ func (d *Deposit) PreInit(engine *kernel.Engine) error {
 func (d *Deposit) Load(engine *kernel.Engine) error {
 	store := dao.NewGormStore(engine.DB)
 	Svc = service.NewService(store)
+	if orderapp.Svc != nil {
+		orderapp.Svc.SetDepositSettler(Svc)
+	}
 	handler.Init(Svc)
 	router.RegisterRoutes(engine.Flame)
 	return nil

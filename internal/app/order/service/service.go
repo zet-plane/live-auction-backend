@@ -5,19 +5,27 @@ import (
 	"errors"
 	"time"
 
+	depositservice "github.com/zet-plane/live-auction-backend/internal/app/deposit/service"
 	"github.com/zet-plane/live-auction-backend/internal/app/order/dao"
 	"github.com/zet-plane/live-auction-backend/internal/app/order/dto"
 	"github.com/zet-plane/live-auction-backend/internal/app/order/model"
 	usermodel "github.com/zet-plane/live-auction-backend/internal/app/user/model"
 	"github.com/zet-plane/live-auction-backend/internal/core/observability"
 	"github.com/zet-plane/live-auction-backend/pkg/errorx"
+	"github.com/zet-plane/live-auction-backend/pkg/logx"
 	"github.com/zet-plane/live-auction-backend/pkg/snowflake"
 )
+
+type DepositSettler interface {
+	RefundWinner(ctx context.Context, itemID, userID string) (depositservice.SettlementSummary, error)
+	ForfeitWinner(ctx context.Context, itemID, userID string) (depositservice.SettlementSummary, error)
+}
 
 type Service struct {
 	store          dao.Store
 	paymentTimeout time.Duration
 	now            func() time.Time
+	depositSettler DepositSettler
 }
 
 func NewService(store dao.Store, paymentTimeout time.Duration) *Service {
@@ -26,6 +34,10 @@ func NewService(store dao.Store, paymentTimeout time.Duration) *Service {
 		paymentTimeout: paymentTimeout,
 		now:            time.Now,
 	}
+}
+
+func (s *Service) SetDepositSettler(settler DepositSettler) {
+	s.depositSettler = settler
 }
 
 func (s *Service) CreateOrder(ctx context.Context, itemID, userID string, price int64) (result *model.Order, err error) {
@@ -90,6 +102,11 @@ func (s *Service) Pay(ctx context.Context, current *usermodel.User, orderID stri
 		}
 		return errorx.ErrInvalidRequest
 	}
+	if s.depositSettler != nil {
+		if _, settleErr := s.depositSettler.RefundWinner(ctx, order.ItemID, order.UserID); settleErr != nil {
+			logx.Warnw("order.Pay refund winner deposit failed", "order_id", order.ID, "item_id", order.ItemID, "user_id", order.UserID, "err", settleErr)
+		}
+	}
 	return nil
 }
 
@@ -109,6 +126,11 @@ func (s *Service) Cancel(ctx context.Context, current *usermodel.User, orderID s
 	}
 	if !ok {
 		return errorx.ErrInvalidRequest
+	}
+	if s.depositSettler != nil {
+		if _, settleErr := s.depositSettler.ForfeitWinner(ctx, order.ItemID, order.UserID); settleErr != nil {
+			logx.Warnw("order.Cancel forfeit winner deposit failed", "order_id", order.ID, "item_id", order.ItemID, "user_id", order.UserID, "err", settleErr)
+		}
 	}
 	return nil
 }

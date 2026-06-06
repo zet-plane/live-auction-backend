@@ -31,7 +31,7 @@ Agent 可以测试：
 - 订单服务协作：`orderSvc.Pay`、`orderSvc.Cancel` 的返回错误和成功结果。
 - 订单状态一致性：`orders.status` 从 `pending` 变为 `paid` 或 `cancelled`。
 
-当前支付模块不测试真实第三方支付、支付渠道、支付回调、支付流水、签名验签、退款、保证金抵扣、发货或财务对账。订单状态规则的详细测试边界以 `order.md` 为准。
+当前支付模块不测试真实第三方支付、支付渠道、支付回调、支付流水、签名验签、真实退款打款、保证金抵扣、发货或财务对账。当前成功订单支付会触发赢家保证金 `paid -> refunded`；当前订单取消会触发赢家保证金 `paid -> forfeited`。订单状态规则和保证金结算失败边界以 `order.md` 为准，保证金终态规则以 `deposit.md` 为准。
 
 ## 4. 禁止事项
 
@@ -82,12 +82,15 @@ Agent 可以测试：
 
 - 支付和取消接口都需要登录用户。
 - 支付接口绑定 `PayOrderRequest`，字段 `result` 必填且只能为 `success`。
-- 当前支付 handler 只检查绑定错误；通过绑定后不再读取 `result` 的具体值。
+- 当前支付 handler 先处理绑定错误，再显式拒绝 `body.Result != "success"`；校验通过后不把具体 `result` 值传给订单服务。
 - 支付接口调用 `orderSvc.Pay(current, order_id)`。
 - 取消接口调用 `orderSvc.Cancel(current, order_id)`。
 - `orderSvc == nil` 时两个接口都返回 internal error。
 - 支付成功时返回 `response.OK(r, nil)`，订单状态由订单服务更新为 `paid`。
 - 取消成功时返回 `response.OK(r, nil)`，订单状态由订单服务更新为 `cancelled`。
+- 支付成功后触发赢家保证金从 `paid` 变为 `refunded`。
+- 取消成功后触发赢家保证金从 `paid` 变为 `forfeited`。
+- 支付或取消失败不能覆盖已有 `refunded` / `forfeited` 终态保证金。
 - 订单服务要求只有订单所属用户能支付或取消。
 - 订单服务拒绝已过期订单支付。
 - 订单服务允许已 paid 订单重复支付幂等成功。
@@ -98,6 +101,7 @@ Agent 可以测试：
 - `result` 当前只表达“发起支付成功确认”的接口契约，非 `success` 会被 handler 显式拒绝。
 - 当前支付模块是订单状态操作入口，不代表真实资金已到账。
 - 商家身份如果不是订单 `user_id`，调用支付或取消会被订单服务拒绝。
+- 保证金结算失败不回滚已经提交的订单支付或取消状态，但必须由订单模块记录日志或风险证据。
 
 需确认内容集中在“需用户确认的问题”章节。
 
@@ -108,6 +112,9 @@ Agent 可以测试：
 - 支付接口不能接受非 `success` 的 `result`，也不能绕过订单归属、状态或过期校验。
 - `pending` 未过期订单支付成功后必须变为 `paid`。
 - `pending` 订单取消成功后必须变为 `cancelled`。
+- 订单支付成功后赢家保证金必须变为 `refunded`。
+- 订单取消成功后赢家保证金必须变为 `forfeited`。
+- 失败支付或失败取消不得覆盖保证金 `refunded` / `forfeited` 终态。
 - `paid`、`cancelled`、`expired` 订单不能被取消成其他状态。
 - 已过期 pending 订单不能支付成 `paid`。
 - 支付/取消失败时 `orders.status` 不能改变。
@@ -138,6 +145,13 @@ Agent 可以测试：
 | --- | --- | --- | --- | --- |
 | `status` | db/response | 支付：`pending -> paid`；取消：`pending -> cancelled`；其他状态按订单服务规则拒绝 | 支付、取消、订单详情 | `PAYMENT.FIELD.order_status.*` |
 | `expired_at` | db/time | `now > expired_at` 时支付失败 | 支付 | `PAYMENT.FIELD.expired_at.*` |
+
+### Deposit 状态字段
+
+| 字段 | 来源 | 规则 | 涉及接口 / 方法 | 测试点 ID |
+| --- | --- | --- | --- | --- |
+| `status` | db/response | 支付成功：赢家保证金 `paid -> refunded`；取消成功：赢家保证金 `paid -> forfeited`；失败路径不覆盖 `refunded` / `forfeited` | 支付、取消、订单详情、保证金查询 | `PAYMENT.FIELD.deposit_status.*` |
+| `refunded_at` | db/response/time | 支付退款或取消罚没成功时写入终态结算时间；当前模型中 `refunded` 和 `forfeited` 都复用该字段 | 支付、取消、保证金查询 | `PAYMENT.FIELD.deposit_refunded_at.*` |
 
 ## 10. 接口测试契约
 
@@ -171,6 +185,7 @@ Agent 可以测试：
 | --- | --- | --- |
 | `data` | 成功时为 `null` 或统一响应中的空数据 | HTTP 响应 |
 | `orders.status` | 成功后为 `paid` | DB + 订单详情接口 |
+| `deposits.status` | 成功后赢家保证金为 `refunded` | DB + 保证金查询 |
 
 #### 测试数据准备
 
@@ -197,7 +212,9 @@ Agent 可以测试：
 #### 状态和一致性验证
 
 - 成功响应后 `orders.status=paid`。
+- 成功响应后赢家 `deposits.status=refunded`。
 - 失败响应后 `orders.status` 不变。
+- 失败响应后保证金终态不变。
 - 订单详情接口返回状态与 DB 一致。
 
 #### 适用测试方法
@@ -239,6 +256,7 @@ Agent 可以测试：
 | --- | --- | --- |
 | `data` | 成功时为 `null` 或统一响应中的空数据 | HTTP 响应 |
 | `orders.status` | 成功后为 `cancelled` | DB + 订单详情接口 |
+| `deposits.status` | 成功后赢家保证金为 `forfeited` | DB + 保证金查询 |
 
 #### 测试数据准备
 
@@ -259,7 +277,9 @@ Agent 可以测试：
 #### 状态和一致性验证
 
 - 成功响应后 `orders.status=cancelled`。
+- 成功响应后赢家 `deposits.status=forfeited`。
 - 失败响应后 `orders.status` 不变。
+- 失败响应后保证金终态不变。
 - 订单详情接口返回状态与 DB 一致。
 
 #### 适用测试方法
@@ -364,12 +384,14 @@ Agent 可以测试：
 
 - 支付接口返回成功。
 - `orders.status` 为 `paid`。
+- 赢家保证金状态为 `refunded`。
 - 订单详情接口返回 `paid`。
 
 #### 证据要求
 
 - HTTP 支付响应。
 - `orders` 表记录。
+- `deposits` 表记录。
 - 订单详情 HTTP 响应。
 
 ### 场景 2：用户取消自己的 pending 订单
@@ -406,13 +428,16 @@ Agent 可以测试：
 #### Then
 
 - 取消成功，订单状态为 `cancelled`。
+- 赢家保证金状态为 `forfeited`。
 - 后续支付失败，订单保持 `cancelled`。
+- 后续支付失败不能把保证金从 `forfeited` 覆盖为 `refunded`。
 
 #### 证据要求
 
 - HTTP 取消响应。
 - HTTP 支付失败响应。
 - `orders` 表状态。
+- `deposits` 表状态。
 
 ### 场景 3：支付与取消权限隔离
 
@@ -458,15 +483,15 @@ Agent 可以测试：
 
 | 当前状态 | 动作 | 目标状态 | 允许 | 涉及接口 / 方法 | 一致性证据 |
 | --- | --- | --- | --- | --- | --- |
-| `pending` 未过期 | 支付 | `paid` | 是 | `POST /orders/{order_id}/pay` | HTTP + DB + 详情 |
-| `pending` 已过期 | 支付 | 无变化 | 否 | `POST /orders/{order_id}/pay` | 错误响应 + DB |
+| `pending` 未过期 | 支付 | `paid` + 保证金 `refunded` | 是 | `POST /orders/{order_id}/pay` | HTTP + DB + 详情 + 保证金 |
+| `pending` 已过期 | 支付 | 无变化，保证金不变 | 否 | `POST /orders/{order_id}/pay` | 错误响应 + DB |
 | `paid` | 支付 | `paid` | 是（当前幂等） | `POST /orders/{order_id}/pay` | HTTP + DB |
-| `cancelled` | 支付 | 无变化 | 否 | `POST /orders/{order_id}/pay` | 错误响应 + DB |
-| `expired` | 支付 | 无变化 | 否 | `POST /orders/{order_id}/pay` | 错误响应 + DB |
-| `pending` | 取消 | `cancelled` | 是 | `POST /orders/{order_id}/cancel` | HTTP + DB + 详情 |
-| `paid` | 取消 | 无变化 | 否 | `POST /orders/{order_id}/cancel` | 错误响应 + DB |
-| `cancelled` | 取消 | 无变化 | 否 | `POST /orders/{order_id}/cancel` | 错误响应 + DB |
-| `expired` | 取消 | 无变化 | 否 | `POST /orders/{order_id}/cancel` | 错误响应 + DB |
+| `cancelled` | 支付 | 无变化，保证金终态不变 | 否 | `POST /orders/{order_id}/pay` | 错误响应 + DB |
+| `expired` | 支付 | 无变化，保证金终态不变 | 否 | `POST /orders/{order_id}/pay` | 错误响应 + DB |
+| `pending` | 取消 | `cancelled` + 保证金 `forfeited` | 是 | `POST /orders/{order_id}/cancel` | HTTP + DB + 详情 + 保证金 |
+| `paid` | 取消 | 无变化，保证金终态不变 | 否 | `POST /orders/{order_id}/cancel` | 错误响应 + DB |
+| `cancelled` | 取消 | 无变化，保证金终态不变 | 否 | `POST /orders/{order_id}/cancel` | 错误响应 + DB |
+| `expired` | 取消 | 无变化，保证金终态不变 | 否 | `POST /orders/{order_id}/cancel` | 错误响应 + DB |
 
 ## 14. 并发测试
 
@@ -495,6 +520,9 @@ Agent 可以测试：
 | 他人订单被支付或取消 | 接口 / 集成 | 使用非所属用户 token | 错误响应 + DB 未变 |
 | 过期订单被支付 | 接口 / 集成 | `expired_at < now` 的 pending 订单 | 错误响应 + DB 未变 |
 | 支付后仍可取消 | 接口 / 集成 | paid 订单调用取消 | 错误响应 + DB 未变 |
+| 支付后保证金未退款 | 接口 / 集成 / 场景 | pending 未过期订单支付成功 | `orders.status=paid` + `deposits.status=refunded` |
+| 取消后保证金未罚没 | 接口 / 集成 / 场景 | pending 订单取消成功 | `orders.status=cancelled` + `deposits.status=forfeited` |
+| 失败支付/取消覆盖保证金终态 | 接口 / 集成 / 场景 | 对 terminal deposit 的订单重复操作 | DB 未变 |
 | 支付取消并发产生矛盾状态 | 并发 | 同一订单同时支付和取消 | 最终单一状态 + 请求结果记录 |
 | 订单服务未注入导致 panic | 单元 / 接口 | `orderSvc == nil` | internal error 响应 |
 
@@ -513,10 +541,10 @@ Agent 可以测试：
 
 **核心验证点（全部通过才算过）：**
 
-- 支付和取消接口的状态流转符合第 13 节矩阵，证据为 HTTP 响应、`orders` 表和订单详情接口。
+- 支付和取消接口的状态流转符合第 13 节矩阵，证据为 HTTP 响应、`orders` 表、订单详情接口和关联 `deposits` 表。
 - 未登录、无效 token、非订单所属用户不能支付或取消订单，证据为错误响应和 DB 未变化。
 - 支付接口缺少必填 `result` 或 `result` 非 `success` 时触发参数错误，证据为 HTTP 响应和 DB 未变化。
-- 支付/取消失败时订单状态不被修改。
+- 支付/取消失败时订单状态不被修改，保证金终态不被覆盖。
 - 并发支付/取消后最终状态唯一且可解释。
 
 **辅助验证点（建议验证，可附说明跳过）：**
@@ -529,7 +557,7 @@ Agent 可以测试：
 
 - 支付模块是否计划新增支付单、支付流水、渠道单号或回调验签？
 - 取消订单是否需要区分用户主动取消和超时取消？
-- 订单支付成功后是否需要触发保证金退款/抵扣、通知或发货流程？
+- 订单支付成功后当前 P0 规则触发保证金退款；后续是否新增抵扣、通知或发货流程仍需确认。
 - 商家是否应该有取消订单的能力，还是只能买家取消？
 
 ## 20. 失败报告格式
