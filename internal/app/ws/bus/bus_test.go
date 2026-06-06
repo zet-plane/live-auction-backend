@@ -71,3 +71,63 @@ func TestBroadcasterPublishesUserUnicastEnvelope(t *testing.T) {
 		t.Fatalf("unexpected envelope: %+v", env)
 	}
 }
+
+type fakeDispatcher struct {
+	roomID string
+	userID string
+	event  wsevent.Event
+}
+
+func (d *fakeDispatcher) SendToRoom(roomID string, event wsevent.Event) {
+	d.roomID = roomID
+	d.event = event
+}
+
+func (d *fakeDispatcher) SendToUser(userID string, event wsevent.Event) {
+	d.userID = userID
+	d.event = event
+}
+
+func TestSubscriberDispatchesRoomEnvelopeLocally(t *testing.T) {
+	dispatcher := &fakeDispatcher{}
+	s := NewSubscriber(dispatcher)
+	raw := `{"event_id":"evt_1","scope":"room","target":"room_1","type":"bid_success","payload":{"item_id":"item_1"},"source_pod":"pod_a","created_at_unix_ms":1}`
+
+	if err := s.DispatchPayload([]byte(raw)); err != nil {
+		t.Fatalf("DispatchPayload returned error: %v", err)
+	}
+	if dispatcher.roomID != "room_1" {
+		t.Fatalf("roomID = %q, want room_1", dispatcher.roomID)
+	}
+	if dispatcher.event.Type != "bid_success" {
+		t.Fatalf("event type = %q, want bid_success", dispatcher.event.Type)
+	}
+}
+
+func TestSubscriberDispatchesUserEnvelopeLocally(t *testing.T) {
+	dispatcher := &fakeDispatcher{}
+	s := NewSubscriber(dispatcher)
+	raw := `{"event_id":"evt_2","scope":"user","target":"user_1","type":"order_created","payload":{"order_id":"order_1"},"source_pod":"pod_b","created_at_unix_ms":1}`
+
+	if err := s.DispatchPayload([]byte(raw)); err != nil {
+		t.Fatalf("DispatchPayload returned error: %v", err)
+	}
+	if dispatcher.userID != "user_1" {
+		t.Fatalf("userID = %q, want user_1", dispatcher.userID)
+	}
+	if dispatcher.event.Type != "order_created" {
+		t.Fatalf("event type = %q, want order_created", dispatcher.event.Type)
+	}
+}
+
+func TestSubscriberRejectsMalformedEnvelope(t *testing.T) {
+	dispatcher := &fakeDispatcher{}
+	s := NewSubscriber(dispatcher)
+
+	if err := s.DispatchPayload([]byte(`{"scope":"room","target":"","type":"bid_success"}`)); err == nil {
+		t.Fatal("expected malformed envelope error")
+	}
+	if dispatcher.roomID != "" || dispatcher.userID != "" {
+		t.Fatalf("malformed envelope should not dispatch: %+v", dispatcher)
+	}
+}
