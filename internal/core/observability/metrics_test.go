@@ -33,6 +33,16 @@ func TestDefaultRecorderCanBeSetAndReset(t *testing.T) {
 	}
 }
 
+func TestNoopRecorderAcceptsWSEventBusMetric(t *testing.T) {
+	var rec Recorder = NoopRecorder{}
+	rec.WSEventBus(context.Background(), WSEventBusMetric{
+		Action:    "publish",
+		Result:    "success",
+		Scope:     "room",
+		EventType: "bid_success",
+	})
+}
+
 func TestSafeReasonNormalizesEmpty(t *testing.T) {
 	if got := SafeReason(""); got != "none" {
 		t.Fatalf("empty reason = %q", got)

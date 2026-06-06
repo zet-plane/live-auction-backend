@@ -25,6 +25,7 @@ type Recorder interface {
 	WSDelivery(context.Context, WSDeliveryMetric)
 	WSWrite(context.Context, WSWriteMetric)
 	WSTimeSync(context.Context, WSTimeSyncMetric)
+	WSEventBus(context.Context, WSEventBusMetric)
 	OrderAuctionCreate(context.Context, OrderMetric)
 }
 
@@ -131,6 +132,13 @@ type WSTimeSyncMetric struct {
 	WriteLag time.Duration
 }
 
+type WSEventBusMetric struct {
+	Action    string
+	Result    string
+	Scope     string
+	EventType string
+}
+
 type OrderMetric struct {
 	Result string
 }
@@ -152,6 +160,7 @@ func (NoopRecorder) WSBroadcast(context.Context, WSBroadcastMetric)             
 func (NoopRecorder) WSDelivery(context.Context, WSDeliveryMetric)                       {}
 func (NoopRecorder) WSWrite(context.Context, WSWriteMetric)                             {}
 func (NoopRecorder) WSTimeSync(context.Context, WSTimeSyncMetric)                       {}
+func (NoopRecorder) WSEventBus(context.Context, WSEventBusMetric)                       {}
 func (NoopRecorder) OrderAuctionCreate(context.Context, OrderMetric)                    {}
 
 var defaultRecorder Recorder = NoopRecorder{}
@@ -204,6 +213,7 @@ type OTelRecorder struct {
 	wsSendQueueDepth      metric.Int64Histogram
 	wsTimeSyncCount       metric.Int64Counter
 	wsTimeSyncWriteLag    metric.Float64Histogram
+	wsEventBusCount       metric.Int64Counter
 	orderCount            metric.Int64Counter
 }
 
@@ -349,6 +359,10 @@ func NewRecorder() (*OTelRecorder, error) {
 	if err != nil {
 		return nil, err
 	}
+	wsEventBusCount, err := meter.Int64Counter("live_auction_ws_event_bus_total")
+	if err != nil {
+		return nil, err
+	}
 	orderCount, err := meter.Int64Counter("order.auction_create.count")
 	if err != nil {
 		return nil, err
@@ -389,6 +403,7 @@ func NewRecorder() (*OTelRecorder, error) {
 		wsSendQueueDepth:      wsSendQueueDepth,
 		wsTimeSyncCount:       wsTimeSyncCount,
 		wsTimeSyncWriteLag:    wsTimeSyncWriteLag,
+		wsEventBusCount:       wsEventBusCount,
 		orderCount:            orderCount,
 	}, nil
 }
@@ -526,6 +541,15 @@ func (r *OTelRecorder) WSTimeSync(ctx context.Context, m WSTimeSyncMetric) {
 	if m.WriteLag != 0 {
 		r.wsTimeSyncWriteLag.Record(ctx, m.WriteLag.Seconds(), opts)
 	}
+}
+
+func (r *OTelRecorder) WSEventBus(ctx context.Context, m WSEventBusMetric) {
+	r.wsEventBusCount.Add(ctx, 1, metric.WithAttributes(
+		attribute.String("action", SafeReason(m.Action)),
+		attribute.String("result", SafeReason(m.Result)),
+		attribute.String("scope", SafeReason(m.Scope)),
+		attribute.String("event_type", SafeReason(m.EventType)),
+	))
 }
 
 func (r *OTelRecorder) OrderAuctionCreate(ctx context.Context, m OrderMetric) {

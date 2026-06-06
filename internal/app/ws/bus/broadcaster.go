@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/zet-plane/live-auction-backend/internal/core/observability"
 	"github.com/zet-plane/live-auction-backend/pkg/wsevent"
 )
 
@@ -80,7 +81,23 @@ func (b *Broadcaster) Unicast(addr string, event wsevent.Event) error {
 func (b *Broadcaster) publish(channel string, env Envelope) error {
 	raw, err := json.Marshal(env)
 	if err != nil {
+		recordBus("publish", "error", env.Scope, env.Type)
 		return err
 	}
-	return b.publisher.Publish(context.Background(), channel, string(raw))
+	err = b.publisher.Publish(context.Background(), channel, string(raw))
+	if err != nil {
+		recordBus("publish", "error", env.Scope, env.Type)
+		return err
+	}
+	recordBus("publish", "success", env.Scope, env.Type)
+	return nil
+}
+
+func recordBus(action, result, scope, eventType string) {
+	observability.DefaultRecorder().WSEventBus(context.Background(), observability.WSEventBusMetric{
+		Action:    action,
+		Result:    result,
+		Scope:     scope,
+		EventType: eventType,
+	})
 }

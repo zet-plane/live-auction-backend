@@ -29,6 +29,7 @@ func (s *Subscriber) DispatchPayload(raw []byte) error {
 		return err
 	}
 	if env.Target == "" || env.Type == "" {
+		recordBus("dispatch", "error", env.Scope, env.Type)
 		return fmt.Errorf("invalid websocket bus envelope")
 	}
 	event := wsevent.Event{Type: env.Type, Payload: json.RawMessage(env.Payload)}
@@ -38,8 +39,10 @@ func (s *Subscriber) DispatchPayload(raw []byte) error {
 	case ScopeUser:
 		s.dispatcher.SendToUser(env.Target, event)
 	default:
+		recordBus("dispatch", "error", env.Scope, env.Type)
 		return fmt.Errorf("unknown websocket bus scope: %s", env.Scope)
 	}
+	recordBus("dispatch", "success", env.Scope, env.Type)
 	return nil
 }
 
