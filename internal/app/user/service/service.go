@@ -119,19 +119,19 @@ func (s *Service) AuthenticateClaims(ctx context.Context, token string) (result 
 		return nil, err
 	}
 	userID = claims.Subject
-	if claims.Identity != "" {
-		return &model.User{
-			ID:       claims.Subject,
-			Name:     claims.Name,
-			Identity: claims.Identity,
-		}, nil
-	}
-
 	u, err := s.store.FindUserByID(claims.Subject)
 	if errors.Is(err, errorx.ErrNotFound) {
 		return nil, errorx.ErrUnauthorized
 	}
-	return u, err
+	if err != nil {
+		return nil, err
+	}
+	// Optionally overlay claim fields if you intentionally want token values.
+	if claims.Identity != "" {
+		u.Name = claims.Name
+		u.Identity = claims.Identity
+	}
+	return u, nil
 }
 
 func (s *Service) UpdateProfile(ctx context.Context, u *model.User, input dto.UpdateProfileInput) (err error) {
