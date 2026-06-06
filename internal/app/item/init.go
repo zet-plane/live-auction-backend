@@ -73,6 +73,7 @@ func (i *Item) Load(engine *kernel.Engine) error {
 	if setter, ok := wsapp.Hub.(interface{ SetSnapshotProvider(wshub.SnapshotProvider) }); ok {
 		setter.SetSnapshotProvider(svc)
 	}
+	engine.Cron.AddFunc("@every 1s", observability.WrapCron("item.start_due_auctions", svc.StartDueAuctions))
 	engine.Cron.AddFunc("@every 1s", observability.WrapCron("item.settle_due_auctions", svc.SettleDueAuctions))
 	engine.Cron.AddFunc("@every 1s", observability.WrapCron("item.broadcast_time_sync", svc.BroadcastTimeSync))
 	engine.Cron.AddFunc("@every 1m", observability.WrapCron("item.end_expired_auctions_fallback", svc.EndExpiredAuctions))

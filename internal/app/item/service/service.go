@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	depositservice "github.com/zet-plane/live-auction-backend/internal/app/deposit/service"
 	itemcache "github.com/zet-plane/live-auction-backend/internal/app/item/cache"
 	"github.com/zet-plane/live-auction-backend/internal/app/item/dao"
 	"github.com/zet-plane/live-auction-backend/internal/app/item/dto"
@@ -26,7 +27,7 @@ type Service struct {
 	policy      dto.AuctionPolicy
 	now         func() time.Time
 	orderSvc    *orderservice.Service
-	depositSvc  DepositChecker
+	depositSvc  DepositService
 	broadcaster wsevent.Broadcaster
 
 	broadcastTimeSyncRunning atomic.Bool
@@ -38,11 +39,12 @@ type Service struct {
 	bidLogWorkerCancel       context.CancelFunc
 }
 
-type DepositChecker interface {
+type DepositService interface {
 	HasPaidDeposit(ctx context.Context, itemID, userID string, requiredAmount int64) (bool, error)
+	RefundNonWinners(ctx context.Context, itemID, winnerUserID string) (depositservice.SettlementSummary, error)
 }
 
-func NewService(store dao.Store, policy dto.AuctionPolicy, cache itemcache.Cache, orderSvc *orderservice.Service, depositSvc DepositChecker, broadcaster wsevent.Broadcaster) *Service {
+func NewService(store dao.Store, policy dto.AuctionPolicy, cache itemcache.Cache, orderSvc *orderservice.Service, depositSvc DepositService, broadcaster wsevent.Broadcaster) *Service {
 	return &Service{
 		store:             store,
 		cache:             cache,
@@ -319,6 +321,35 @@ func (s *Service) StartItem(ctx context.Context, current *usermodel.User, itemID
 	if err != nil {
 		return err
 	}
+	return s.startItemWithRule(ctx, item, rule)
+}
+
+func (s *Service) StartDueAuctions(ctx context.Context) {
+	var err error
+	startedCount := 0
+	finish := observability.Track(ctx, "item.start_due_auctions")
+	defer func() {
+		finish(&err, "started_count", startedCount)
+	}()
+
+	items, listErr := s.store.ListPublishedItemsPastStartTime(s.now(), 50)
+	if listErr != nil {
+		err = listErr
+		return
+	}
+	for _, iwr := range items {
+		if iwr.Item == nil || iwr.Rule == nil {
+			continue
+		}
+		if startErr := s.startItemWithRule(ctx, iwr.Item, iwr.Rule); startErr != nil {
+			logx.Warnw("item.StartDueAuctions start failed", "item_id", iwr.Item.ID, "err", startErr)
+			continue
+		}
+		startedCount++
+	}
+}
+
+func (s *Service) startItemWithRule(ctx context.Context, item *model.AuctionItem, rule *model.AuctionRule) error {
 	if item.Status != model.ItemPublished {
 		return errorx.ErrInvalidRequest
 	}
@@ -722,6 +753,11 @@ func (s *Service) persistSettledAuction(ctx context.Context, result itemcache.Se
 		_ = s.cache.RemoveFromRoomQueue(ctx, item.RoomID, item.ID)
 		_ = s.cache.ExpireAuctionState(ctx, item.ID, itemcache.FinalSnapshotTTL)
 		_ = s.cache.ClearRoomCurrentItem(ctx, item.RoomID, item.ID)
+	}
+	if s.depositSvc != nil {
+		if _, refundErr := s.depositSvc.RefundNonWinners(ctx, item.ID, result.LeaderUserID); refundErr != nil {
+			logx.Warnw("item.persistSettledAuction refund non-winners failed", "item_id", item.ID, "winner_user_id", result.LeaderUserID, "err", refundErr)
+		}
 	}
 	if s.broadcaster != nil {
 		_ = s.broadcaster.Fanout(wsevent.RoomTopic(item.RoomID), wsevent.Event{

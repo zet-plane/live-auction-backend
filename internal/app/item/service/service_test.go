@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	depositservice "github.com/zet-plane/live-auction-backend/internal/app/deposit/service"
 	itemcache "github.com/zet-plane/live-auction-backend/internal/app/item/cache"
 	itemdto "github.com/zet-plane/live-auction-backend/internal/app/item/dto"
 	itemmodel "github.com/zet-plane/live-auction-backend/internal/app/item/model"
@@ -173,6 +174,26 @@ func (s *fakeStore) ListOngoingItemsPastEndTime(before time.Time, limit int) ([]
 	return result, nil
 }
 
+func (s *fakeStore) ListPublishedItemsPastStartTime(before time.Time, limit int) ([]itemmodel.ItemWithRule, error) {
+	var result []itemmodel.ItemWithRule
+	for _, item := range s.items {
+		if item.Status != itemmodel.ItemPublished {
+			continue
+		}
+		rule := s.rules[item.RuleID]
+		if rule == nil || rule.StartTime.After(before) {
+			continue
+		}
+		itemCopy := *item
+		ruleCopy := *rule
+		result = append(result, itemmodel.ItemWithRule{Item: &itemCopy, Rule: &ruleCopy})
+		if len(result) >= limit {
+			break
+		}
+	}
+	return result, nil
+}
+
 func (s *fakeStore) AutoMigrateBidLog() error { return nil }
 
 func (s *fakeStore) CreateBidLog(log *itemmodel.BidLog) error {
@@ -262,6 +283,21 @@ func (s *fakeStore) GetUserRanking(itemID, userID string) (*itemdto.CurrentUserR
 		}
 	}
 	return nil, nil
+}
+
+type fakeDepositService struct {
+	paid                  map[string]bool
+	refundNonWinnersCalls []string
+	refundNonWinnersErr   error
+}
+
+func (s *fakeDepositService) HasPaidDeposit(ctx context.Context, itemID, userID string, requiredAmount int64) (bool, error) {
+	return s.paid[itemID+"\x00"+userID], nil
+}
+
+func (s *fakeDepositService) RefundNonWinners(ctx context.Context, itemID, winnerUserID string) (depositservice.SettlementSummary, error) {
+	s.refundNonWinnersCalls = append(s.refundNonWinnersCalls, itemID+"\x00"+winnerUserID)
+	return depositservice.SettlementSummary{Refunded: 1}, s.refundNonWinnersErr
 }
 
 func TestCreateItemRequiresMerchantAndCreatesDraftItemWithRule(t *testing.T) {
@@ -1021,6 +1057,39 @@ func TestStartItemSetsRoomCurrentItem(t *testing.T) {
 	}
 }
 
+func TestStartDueAuctionsStartsPublishedItemsPastStartTime(t *testing.T) {
+	store := newFakeStore()
+	cache := newFakeCache()
+	svc := NewService(store, itemdto.DefaultAuctionPolicy(), cache, nil, nil, nil)
+	now := time.Date(2026, 6, 6, 10, 0, 0, 0, time.UTC)
+	svc.now = func() time.Time { return now }
+	dueItem := &itemmodel.AuctionItem{ID: "item_due", MerchantID: "merchant_1", RoomID: "room_1", RuleID: "rule_due", Status: itemmodel.ItemPublished}
+	dueRule := &itemmodel.AuctionRule{ID: "rule_due", ItemID: "item_due", StartPrice: 1000, BidIncrement: 100, StartTime: now.Add(-time.Second), EndTime: now.Add(time.Minute)}
+	futureItem := &itemmodel.AuctionItem{ID: "item_future", MerchantID: "merchant_1", RoomID: "room_1", RuleID: "rule_future", Status: itemmodel.ItemPublished}
+	futureRule := &itemmodel.AuctionRule{ID: "rule_future", ItemID: "item_future", StartPrice: 1000, BidIncrement: 100, StartTime: now.Add(time.Minute), EndTime: now.Add(2 * time.Minute)}
+	if err := store.CreateItemWithRule(dueItem, dueRule); err != nil {
+		t.Fatalf("CreateItemWithRule due: %v", err)
+	}
+	if err := store.CreateItemWithRule(futureItem, futureRule); err != nil {
+		t.Fatalf("CreateItemWithRule future: %v", err)
+	}
+
+	svc.StartDueAuctions(context.Background())
+
+	if store.items["item_due"].Status != itemmodel.ItemOngoing {
+		t.Fatalf("expected due item ongoing, got %s", store.items["item_due"].Status)
+	}
+	if store.items["item_future"].Status != itemmodel.ItemPublished {
+		t.Fatalf("expected future item still published, got %s", store.items["item_future"].Status)
+	}
+	if _, ok := cache.states["item_due"]; !ok {
+		t.Fatal("expected due item auction state initialized")
+	}
+	if store.roomCurrentItems["room_1"] != "item_due" {
+		t.Fatalf("expected room current item to be item_due, got %q", store.roomCurrentItems["room_1"])
+	}
+}
+
 func TestStartItemFailsWhenRedisInitFails(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()
@@ -1758,6 +1827,33 @@ func TestSettleDueAuctionsMarksEndedAndKeepsSnapshot(t *testing.T) {
 	}
 	if got := fc.stateTTLs[itemID]; got != itemcache.FinalSnapshotTTL {
 		t.Fatalf("expected final snapshot TTL %s, got %s", itemcache.FinalSnapshotTTL, got)
+	}
+}
+
+func TestSettleDueAuctionsRefundsNonWinnerDeposits(t *testing.T) {
+	store := newFakeStore()
+	cache := newFakeCache()
+	deposits := &fakeDepositService{paid: map[string]bool{}}
+	svc := NewService(store, itemdto.DefaultAuctionPolicy(), cache, nil, deposits, nil)
+	now := time.Date(2026, 6, 6, 10, 0, 0, 0, time.UTC)
+	svc.now = func() time.Time { return now }
+	item := &itemmodel.AuctionItem{ID: "item_1", MerchantID: "merchant_1", RoomID: "room_1", RuleID: "rule_1", Status: itemmodel.ItemPublished}
+	rule := &itemmodel.AuctionRule{ID: "rule_1", ItemID: "item_1", StartPrice: 1000, BidIncrement: 100, StartTime: now.Add(-time.Minute), EndTime: now.Add(-time.Second)}
+	if err := store.CreateItemWithRule(item, rule); err != nil {
+		t.Fatalf("CreateItemWithRule: %v", err)
+	}
+	if err := svc.StartItem(context.Background(), &usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}, "item_1"); err != nil {
+		t.Fatalf("StartItem: %v", err)
+	}
+	cache.states["item_1"].LeaderUserID = "winner_1"
+	cache.states["item_1"].DealPrice = 1500
+	cache.states["item_1"].EndTimeUnixMS = now.Add(-time.Second).UnixMilli()
+	cache.ending["item_1"] = now.Add(-time.Second).UnixMilli()
+
+	svc.SettleDueAuctions(context.Background())
+
+	if len(deposits.refundNonWinnersCalls) != 1 || deposits.refundNonWinnersCalls[0] != "item_1\x00winner_1" {
+		t.Fatalf("expected non-winner refunds for winner_1, got %#v", deposits.refundNonWinnersCalls)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	depositservice "github.com/zet-plane/live-auction-backend/internal/app/deposit/service"
 	itemcache "github.com/zet-plane/live-auction-backend/internal/app/item/cache"
 	itemdto "github.com/zet-plane/live-auction-backend/internal/app/item/dto"
 	itemmodel "github.com/zet-plane/live-auction-backend/internal/app/item/model"
@@ -849,6 +850,26 @@ func TestPlaceBidPriceCapEndsAuction(t *testing.T) {
 	}
 }
 
+func TestPlaceBidPriceCapRefundsNonWinnerDeposits(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	deposits := &fakeDepositChecker{paid: true}
+	svc := NewService(store, testPolicy, fc, nil, deposits, nil)
+	endTime := time.Now().Add(5 * time.Minute)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 500, endTime)
+
+	result, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{Price: 500, IdempotencyKey: "idem_cap_refund"})
+	if err != nil {
+		t.Fatalf("PlaceBid failed: %v", err)
+	}
+	if result.Status != "ended" {
+		t.Fatalf("expected status ended when price cap reached, got %q", result.Status)
+	}
+	if len(deposits.refundNonWinnersCalls) != 1 || deposits.refundNonWinnersCalls[0] != itemID+"\x00user_1" {
+		t.Fatalf("expected non-winner refunds for price-cap winner user_1, got %#v", deposits.refundNonWinnersCalls)
+	}
+}
+
 func TestPlaceBidPriceCapEmitsSingleOrderCreatedToWinner(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()
@@ -905,9 +926,11 @@ func TestPlaceBidPriceCapEmitsSingleOrderCreatedToWinner(t *testing.T) {
 }
 
 type fakeDepositChecker struct {
-	paid  bool
-	err   error
-	calls int
+	paid                  bool
+	err                   error
+	calls                 int
+	refundNonWinnersCalls []string
+	refundNonWinnersErr   error
 }
 
 func (f *fakeDepositChecker) HasPaidDeposit(_ context.Context, itemID, userID string, requiredAmount int64) (bool, error) {
@@ -916,6 +939,11 @@ func (f *fakeDepositChecker) HasPaidDeposit(_ context.Context, itemID, userID st
 		return false, f.err
 	}
 	return f.paid, nil
+}
+
+func (f *fakeDepositChecker) RefundNonWinners(_ context.Context, itemID, winnerUserID string) (depositservice.SettlementSummary, error) {
+	f.refundNonWinnersCalls = append(f.refundNonWinnersCalls, itemID+"\x00"+winnerUserID)
+	return depositservice.SettlementSummary{Refunded: 1}, f.refundNonWinnersErr
 }
 
 func TestPlaceBidSkipsDepositCheckWhenNotRequired(t *testing.T) {
