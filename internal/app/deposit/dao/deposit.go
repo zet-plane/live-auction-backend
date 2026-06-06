@@ -2,6 +2,7 @@ package dao
 
 import (
 	"errors"
+	"time"
 
 	"github.com/zet-plane/live-auction-backend/internal/app/deposit/model"
 	"github.com/zet-plane/live-auction-backend/pkg/errorx"
@@ -14,6 +15,8 @@ type Store interface {
 	FindDeposit(itemID, userID string) (*model.Deposit, error)
 	CreateDeposit(deposit *model.Deposit) error
 	UpdateDeposit(deposit *model.Deposit) error
+	ListPaidDepositsByItem(itemID string) ([]model.Deposit, error)
+	TransitionDepositStatus(itemID, userID string, from, to model.DepositStatus, terminalAt *time.Time) (bool, error)
 }
 
 type GormStore struct {
@@ -67,4 +70,24 @@ func (s *GormStore) CreateDeposit(deposit *model.Deposit) error {
 
 func (s *GormStore) UpdateDeposit(deposit *model.Deposit) error {
 	return s.db.Save(deposit).Error
+}
+
+func (s *GormStore) ListPaidDepositsByItem(itemID string) ([]model.Deposit, error) {
+	var deposits []model.Deposit
+	err := s.db.Where("item_id = ? AND status = ?", itemID, model.DepositPaid).Find(&deposits).Error
+	return deposits, err
+}
+
+func (s *GormStore) TransitionDepositStatus(itemID, userID string, from, to model.DepositStatus, terminalAt *time.Time) (bool, error) {
+	updates := map[string]any{"status": to}
+	if terminalAt != nil {
+		updates["refunded_at"] = terminalAt
+	}
+	result := s.db.Model(&model.Deposit{}).
+		Where("item_id = ? AND user_id = ? AND status = ?", itemID, userID, from).
+		Updates(updates)
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected > 0, nil
 }
