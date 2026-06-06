@@ -483,13 +483,38 @@ func (s *Service) rebuildRankingOnce(ctx context.Context, itemID string, limit i
 		return nil, nil
 	}
 	value, err, _ := s.rankingRebuilds.Do("ranking:"+itemID, func() (any, error) {
+		if s.cache != nil {
+			coolingDown, err := s.cache.RankingRebuildCoolingDown(ctx, itemID)
+			if err != nil {
+				logx.Warnw("item.GetRanking check rebuild cooldown failed", "item_id", itemID, "err", err)
+			}
+			if coolingDown {
+				return s.waitForRankingRebuild(ctx, itemID, limit), nil
+			}
+			acquired, err := s.cache.AcquireRankingRebuild(ctx, itemID, s.rankingRebuildOwner, s.rankingRebuildLockTTL)
+			if err != nil {
+				logx.Warnw("item.GetRanking acquire ranking rebuild lock failed", "item_id", itemID, "err", err)
+				return s.waitForRankingRebuild(ctx, itemID, limit), nil
+			}
+			if !acquired {
+				return s.waitForRankingRebuild(ctx, itemID, limit), nil
+			}
+		}
+
 		entries, err := s.store.ListBidRanking(itemID, limit)
 		if err != nil {
+			if s.cache != nil {
+				_ = s.cache.SetRankingRebuildCooldown(ctx, itemID, s.rankingRebuildCooldownTTL)
+			}
 			return nil, err
 		}
-		if s.cache != nil && len(entries) > 0 {
-			if err := s.cache.SetRanking(ctx, itemID, entries); err != nil {
-				logx.Warnw("item.GetRanking set rebuilt redis ranking failed", "item_id", itemID, "err", err)
+		if s.cache != nil {
+			if len(entries) > 0 {
+				if err := s.cache.SetRanking(ctx, itemID, entries); err != nil {
+					logx.Warnw("item.GetRanking set rebuilt redis ranking failed", "item_id", itemID, "err", err)
+				}
+			} else {
+				_ = s.cache.SetRankingRebuildCooldown(ctx, itemID, s.rankingRebuildCooldownTTL)
 			}
 		}
 		return entries, nil
@@ -499,6 +524,25 @@ func (s *Service) rebuildRankingOnce(ctx context.Context, itemID string, limit i
 	}
 	entries, _ := value.([]dto.BidderPrice)
 	return entries, nil
+}
+
+func (s *Service) waitForRankingRebuild(ctx context.Context, itemID string, limit int) []dto.BidderPrice {
+	if s.cache == nil {
+		return nil
+	}
+	timer := time.NewTimer(s.rankingRebuildWait)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return nil
+	case <-timer.C:
+	}
+	entries, err := s.cache.GetRanking(ctx, itemID, 0, limit)
+	if err != nil {
+		logx.Warnw("item.GetRanking reread ranking after rebuild wait failed", "item_id", itemID, "err", err)
+		return nil
+	}
+	return entries
 }
 
 func firstCurrentUser(users []*usermodel.User) *usermodel.User {

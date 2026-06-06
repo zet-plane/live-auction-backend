@@ -10,6 +10,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/zet-plane/live-auction-backend/internal/app/item/dto"
 	"github.com/zet-plane/live-auction-backend/internal/core/observability"
+	"github.com/zet-plane/live-auction-backend/internal/core/redislease"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -148,6 +149,14 @@ var bidScript = redis.NewScript(bidLuaScript)
 
 func rankingKey(itemID string) string {
 	return "auction:item:" + itemID + ":ranking"
+}
+
+func rankingRebuildLockKey(itemID string) string {
+	return "auction:item:" + itemID + ":ranking:rebuild_lock"
+}
+
+func rankingRebuildCooldownKey(itemID string) string {
+	return "auction:item:" + itemID + ":ranking:rebuild_cooldown"
 }
 
 func bidderNamesKey(itemID string) string {
@@ -311,4 +320,21 @@ func (c *RedisCache) GetUserRanking(ctx context.Context, itemID, userID string) 
 		IsLeader: oneBasedRank == 1,
 		HasBid:   true,
 	}, nil
+}
+
+func (c *RedisCache) AcquireRankingRebuild(ctx context.Context, itemID, owner string, ttl time.Duration) (bool, error) {
+	return redislease.Store{Setter: redislease.RedisSetter{Client: c.client}}.
+		Acquire(ctx, rankingRebuildLockKey(itemID), owner, ttl)
+}
+
+func (c *RedisCache) SetRankingRebuildCooldown(ctx context.Context, itemID string, ttl time.Duration) error {
+	return c.client.Set(ctx, rankingRebuildCooldownKey(itemID), "1", ttl).Err()
+}
+
+func (c *RedisCache) RankingRebuildCoolingDown(ctx context.Context, itemID string) (bool, error) {
+	n, err := c.client.Exists(ctx, rankingRebuildCooldownKey(itemID)).Result()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }

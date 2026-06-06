@@ -1265,6 +1265,46 @@ func TestGetRankingCoalescesConcurrentRedisMissRebuild(t *testing.T) {
 	}
 }
 
+func TestGetRankingCoalescesRedisMissRebuildAcrossServices(t *testing.T) {
+	store := newFakeStore()
+	store.listBidRankingDelay = 20 * time.Millisecond
+	fc := newFakeCache()
+	svcA := NewService(store, testPolicy, fc, nil, nil, nil)
+	svcB := NewService(store, testPolicy, fc, nil, nil, nil)
+	svcA.SetRankingRebuildOwner("backend-a")
+	svcB.SetRankingRebuildOwner("backend-b")
+	svcA.rankingRebuildWait = 40 * time.Millisecond
+	svcB.rankingRebuildWait = 40 * time.Millisecond
+
+	endTime := time.Now().Add(5 * time.Minute)
+	itemID := seedOngoingItem(t, svcA, "merchant_1", "room_1", 0, 100, 0, endTime)
+
+	store.bidLogs = append(store.bidLogs,
+		&itemmodel.BidLog{ID: "b1", ItemID: itemID, RoomID: "room_1", UserID: "u1", Price: 200},
+		&itemmodel.BidLog{ID: "b2", ItemID: itemID, RoomID: "room_1", UserID: "u2", Price: 300},
+	)
+	fc.states[itemID].BidCount = 2
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_, _ = svcA.GetRanking(context.Background(), itemID, 1, 10)
+	}()
+	go func() {
+		defer wg.Done()
+		_, _ = svcB.GetRanking(context.Background(), itemID, 1, 10)
+	}()
+	wg.Wait()
+
+	if store.listBidRankingCalls != 1 {
+		t.Fatalf("expected one distributed ListBidRanking rebuild, got %d", store.listBidRankingCalls)
+	}
+	if got := fc.ranking[itemID]["u2"]; got != 300 {
+		t.Fatalf("expected rebuilt ranking to be cached, got u2=%d", got)
+	}
+}
+
 func TestGetRankingFallsBackToMySQLWithoutCache(t *testing.T) {
 	store := newFakeStore()
 	svc := NewService(store, testPolicy, nil, nil, nil, nil)

@@ -31,14 +31,18 @@ type Service struct {
 	depositSvc  DepositService
 	broadcaster wsevent.Broadcaster
 
-	broadcastTimeSyncRunning atomic.Bool
-	timeSyncRoomIDs          sync.Map // itemID -> roomID
-	bidBroadcastMu           sync.Mutex
-	pendingBidBroadcasts     map[string]*pendingBidBroadcast
-	bidBroadcastDelay        time.Duration
-	bidLogWorkerMu           sync.Mutex
-	bidLogWorkerCancel       context.CancelFunc
-	rankingRebuilds          singleflight.Group
+	broadcastTimeSyncRunning  atomic.Bool
+	timeSyncRoomIDs           sync.Map // itemID -> roomID
+	bidBroadcastMu            sync.Mutex
+	pendingBidBroadcasts      map[string]*pendingBidBroadcast
+	bidBroadcastDelay         time.Duration
+	bidLogWorkerMu            sync.Mutex
+	bidLogWorkerCancel        context.CancelFunc
+	rankingRebuilds           singleflight.Group
+	rankingRebuildOwner       string
+	rankingRebuildLockTTL     time.Duration
+	rankingRebuildWait        time.Duration
+	rankingRebuildCooldownTTL time.Duration
 }
 
 type DepositService interface {
@@ -52,15 +56,27 @@ type OrderCreator interface {
 
 func NewService(store dao.Store, policy dto.AuctionPolicy, cache itemcache.Cache, orderSvc OrderCreator, depositSvc DepositService, broadcaster wsevent.Broadcaster) *Service {
 	return &Service{
-		store:             store,
-		cache:             cache,
-		policy:            policy,
-		now:               time.Now,
-		orderSvc:          orderSvc,
-		depositSvc:        depositSvc,
-		broadcaster:       broadcaster,
-		bidBroadcastDelay: 100 * time.Millisecond,
+		store:                     store,
+		cache:                     cache,
+		policy:                    policy,
+		now:                       time.Now,
+		orderSvc:                  orderSvc,
+		depositSvc:                depositSvc,
+		broadcaster:               broadcaster,
+		bidBroadcastDelay:         100 * time.Millisecond,
+		rankingRebuildOwner:       "backend-local",
+		rankingRebuildLockTTL:     time.Second,
+		rankingRebuildWait:        100 * time.Millisecond,
+		rankingRebuildCooldownTTL: 2 * time.Second,
 	}
+}
+
+func (s *Service) SetRankingRebuildOwner(owner string) {
+	owner = strings.TrimSpace(owner)
+	if owner == "" {
+		return
+	}
+	s.rankingRebuildOwner = owner
 }
 
 func (s *Service) StartBidLogWorker(ctx context.Context, reader bidLogStreamReader) {

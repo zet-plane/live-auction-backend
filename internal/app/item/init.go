@@ -73,6 +73,7 @@ func (i *Item) Load(engine *kernel.Engine) error {
 		c = cache.NewRedisCache(engine.Cache)
 	}
 	svc := service.NewService(store, policy, c, orderapp.Svc, depositapp.Svc, wsapp.Hub)
+	svc.SetRankingRebuildOwner(bidLogConsumerName(os.Hostname))
 	i.svc = svc
 	ItemReader = svc
 	handler.Init(svc)

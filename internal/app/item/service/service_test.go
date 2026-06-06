@@ -474,6 +474,9 @@ type fakeCache struct {
 	roomCurrent        map[string]string
 	ranking            map[string]map[string]int64
 	bidderNames        map[string]map[string]string
+	rankingMu          sync.Mutex
+	rankingLocks       map[string]string
+	rankingCooldowns   map[string]bool
 	listActiveCalls    atomic.Int32
 	listActiveStarted  chan struct{}
 	listActiveRelease  chan struct{}
@@ -493,14 +496,16 @@ type fakeCache struct {
 
 func newFakeCache() *fakeCache {
 	return &fakeCache{
-		states:      map[string]*itemcache.AuctionState{},
-		itemDetails: map[string]*itemcache.ItemDetailCache{},
-		stateTTLs:   map[string]time.Duration{},
-		ending:      map[string]int64{},
-		queues:      map[string][]string{},
-		roomCurrent: map[string]string{},
-		ranking:     map[string]map[string]int64{},
-		bidderNames: map[string]map[string]string{},
+		states:           map[string]*itemcache.AuctionState{},
+		itemDetails:      map[string]*itemcache.ItemDetailCache{},
+		stateTTLs:        map[string]time.Duration{},
+		ending:           map[string]int64{},
+		queues:           map[string][]string{},
+		roomCurrent:      map[string]string{},
+		ranking:          map[string]map[string]int64{},
+		bidderNames:      map[string]map[string]string{},
+		rankingLocks:     map[string]string{},
+		rankingCooldowns: map[string]bool{},
 	}
 }
 
@@ -929,6 +934,29 @@ func (c *fakeCache) GetUserRanking(_ context.Context, itemID, userID string) (*i
 		}
 	}
 	return nil, nil
+}
+
+func (c *fakeCache) AcquireRankingRebuild(_ context.Context, itemID, owner string, _ time.Duration) (bool, error) {
+	c.rankingMu.Lock()
+	defer c.rankingMu.Unlock()
+	if c.rankingLocks[itemID] != "" {
+		return false, nil
+	}
+	c.rankingLocks[itemID] = owner
+	return true, nil
+}
+
+func (c *fakeCache) SetRankingRebuildCooldown(_ context.Context, itemID string, _ time.Duration) error {
+	c.rankingMu.Lock()
+	defer c.rankingMu.Unlock()
+	c.rankingCooldowns[itemID] = true
+	return nil
+}
+
+func (c *fakeCache) RankingRebuildCoolingDown(_ context.Context, itemID string) (bool, error) {
+	c.rankingMu.Lock()
+	defer c.rankingMu.Unlock()
+	return c.rankingCooldowns[itemID], nil
 }
 
 func TestCreateItemStoresRoomID(t *testing.T) {

@@ -141,6 +141,9 @@ type Cache interface {
 	GetRanking(ctx context.Context, itemID string, offset, limit int) ([]dto.BidderPrice, error)
 	SetRanking(ctx context.Context, itemID string, entries []dto.BidderPrice) error
 	GetUserRanking(ctx context.Context, itemID, userID string) (*dto.CurrentUserRanking, error)
+	AcquireRankingRebuild(ctx context.Context, itemID, owner string, ttl time.Duration) (bool, error)
+	SetRankingRebuildCooldown(ctx context.Context, itemID string, ttl time.Duration) error
+	RankingRebuildCoolingDown(ctx context.Context, itemID string) (bool, error)
 }
 
 type RedisCache struct {
