@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/zet-plane/live-auction-backend/internal/core/observability"
 	"github.com/zet-plane/live-auction-backend/pkg/wsevent"
 )
 
@@ -130,4 +131,36 @@ func TestSubscriberRejectsMalformedEnvelope(t *testing.T) {
 	if dispatcher.roomID != "" || dispatcher.userID != "" {
 		t.Fatalf("malformed envelope should not dispatch: %+v", dispatcher)
 	}
+}
+
+func TestSubscriberRecordsMetricForInvalidJSONPayload(t *testing.T) {
+	rec := &captureBusRecorder{}
+	observability.SetDefaultRecorder(rec)
+	t.Cleanup(func() { observability.SetDefaultRecorder(nil) })
+
+	dispatcher := &fakeDispatcher{}
+	s := NewSubscriber(dispatcher)
+
+	if err := s.DispatchPayload([]byte(`{`)); err == nil {
+		t.Fatal("expected invalid JSON error")
+	}
+	if dispatcher.roomID != "" || dispatcher.userID != "" {
+		t.Fatalf("invalid JSON should not dispatch: %+v", dispatcher)
+	}
+	if len(rec.events) != 1 {
+		t.Fatalf("event bus metrics = %d, want 1", len(rec.events))
+	}
+	got := rec.events[0]
+	if got.Action != "dispatch" || got.Result != "error" {
+		t.Fatalf("metric = %+v, want dispatch/error", got)
+	}
+}
+
+type captureBusRecorder struct {
+	observability.NoopRecorder
+	events []observability.WSEventBusMetric
+}
+
+func (r *captureBusRecorder) WSEventBus(_ context.Context, m observability.WSEventBusMetric) {
+	r.events = append(r.events, m)
 }

@@ -26,6 +26,7 @@ func NewSubscriber(dispatcher LocalDispatcher) *Subscriber {
 func (s *Subscriber) DispatchPayload(raw []byte) error {
 	var env Envelope
 	if err := json.Unmarshal(raw, &env); err != nil {
+		recordBus("dispatch", "error", "", "")
 		return err
 	}
 	if env.Target == "" || env.Type == "" {
