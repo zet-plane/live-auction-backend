@@ -27,8 +27,48 @@ type componentStatus struct {
 }
 
 type healthData struct {
-	Status string                     `json:"status"`
+	Status     string                     `json:"status"`
 	Components map[string]componentStatus `json:"components"`
+}
+
+func Livez(r flamego.Render) {
+	response.OK(r, map[string]string{"status": "ok"})
+}
+
+func Readyz(r flamego.Render) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	if db == nil {
+		response.Success(r, 503, "degraded", healthData{
+			Status: "degraded",
+			Components: map[string]componentStatus{
+				"mysql": {Status: "error", Error: "not initialized"},
+			},
+		})
+		return
+	}
+	start := time.Now()
+	sqlDB, err := db.DB()
+	if err == nil {
+		err = sqlDB.PingContext(ctx)
+	}
+	elapsed := time.Since(start)
+	if err != nil {
+		response.Success(r, 503, "degraded", healthData{
+			Status: "degraded",
+			Components: map[string]componentStatus{
+				"mysql": {Status: "error", Error: err.Error()},
+			},
+		})
+		return
+	}
+	response.OK(r, healthData{
+		Status: "ok",
+		Components: map[string]componentStatus{
+			"mysql": {Status: "ok", Latency: elapsed.String()},
+		},
+	})
 }
 
 // Health checks MySQL and Redis connectivity.

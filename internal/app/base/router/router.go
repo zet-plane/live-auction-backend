@@ -6,5 +6,7 @@ import (
 )
 
 func RegisterRoutes(f *flamego.Flame) {
+	f.Get("/livez", handler.Livez)
+	f.Get("/readyz", handler.Readyz)
 	f.Get("/health", handler.Health)
 }
