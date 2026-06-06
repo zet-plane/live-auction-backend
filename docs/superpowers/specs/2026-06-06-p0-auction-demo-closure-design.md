@@ -2,7 +2,7 @@
 
 ## Goal
 
-Close the P0 demo path for live auction:
+Make the live-auction backend demonstrably complete for the core demo path:
 
 ```text
 merchant opens room
@@ -12,26 +12,28 @@ merchant opens room
 -> auction settles
 -> winner receives an order
 -> winner pays or defaults
--> deposits are refunded or forfeited
+-> deposits are released or forfeited
 -> E2E evidence is recorded
 ```
 
-This closes the `docs/todo.md` P0 gaps without turning the current mock payment flow into a full financial ledger.
+The feature should close the P0 gaps in `docs/todo.md` without turning the current mock payment flow into a full financial ledger.
 
 ## Chosen Approach
 
-Use the existing module boundaries:
+Use the existing module boundaries and add the smallest durable business hooks:
 
 - `item.Service` owns auction lifecycle automation.
-- `deposit.Service` owns deposit refund and forfeiture.
-- `order.Service` owns order status transitions and calls deposit settlement hooks after committed transitions.
+- `deposit.Service` owns deposit release and forfeiture.
+- `order.Service` owns order status transitions and calls deposit settlement hooks after a successful transition.
 - `docs/agent-testing/flows/auction-lifecycle.md` owns the full user-visible E2E contract.
 
-Deposits are not applied as payment discounts in this phase. They are participation and fulfillment guarantees:
+Deposits are not applied as a payment discount in this phase. They are a participation and fulfillment guarantee:
 
 - Non-winners are refunded after auction settlement.
 - Winners are refunded after successful order payment.
 - Winners are forfeited after order cancellation or order expiry.
+
+This keeps the P0 demo honest and traceable while avoiding new payment ledger, refund channel, or reconciliation concepts.
 
 ## Current State
 
@@ -48,7 +50,7 @@ Already implemented:
 Missing:
 
 - No automatic start scan for `published` items whose `rule.start_time` has arrived.
-- No deposit release method writes terminal deposit state.
+- No deposit release method writes `refunded_at`.
 - No winner deposit hook runs after order payment, cancellation, or expiry.
 - No auction settlement hook refunds non-winners.
 - The auction lifecycle E2E contract still says order payment is out of scope, which conflicts with the P0 demo goal.
@@ -63,7 +65,7 @@ StartDueAuctions(ctx)
   -> for each item, call a shared start helper
 ```
 
-The shared start helper contains the existing `StartItem` transition work so manual HTTP start and cron automatic start cannot drift. The HTTP path still authorizes the merchant before calling the helper. The cron path uses persisted item data and does not fabricate a user.
+The shared start helper should contain the existing `StartItem` transition work so HTTP manual start and cron automatic start cannot drift. The HTTP path still authorizes the merchant before calling the helper. The cron path uses the item's persisted merchant and does not need to fabricate a user.
 
 Selection rule:
 
@@ -80,13 +82,13 @@ Cron cadence:
 @every 1s
 ```
 
-This matches the existing one-second settlement and time-sync cadence. If later load requires it, the scan can move to a Redis schedule, but P0 should favor visible demo correctness.
+Reasoning: the settlement worker and time sync already run every second, and this is a demo-first real-time auction backend. If later load requires it, the scan can move to 5 seconds or a Redis schedule, but the first P0 implementation should favor visible correctness.
 
 Failure handling:
 
 - A failed item logs a warning and does not block the rest of the batch.
-- Redis initialization failure keeps the item `published`.
-- MySQL update or room current-item failure rolls back Redis auction state and ending schedule, matching current `StartItem` behavior.
+- Redis initialization failure must keep the item `published`.
+- MySQL update or room current-item failure must roll back Redis auction state and ending schedule, matching the current `StartItem` behavior.
 - Re-running the cron is safe because only `published` items are selected.
 
 ## Deposit Settlement Rules
@@ -99,7 +101,7 @@ When an auction reaches final state:
 - If there is a winner, refund every paid deposit except the winner's deposit.
 - The winner's paid deposit remains `paid` until the order reaches `paid`, `cancelled`, or `expired`.
 
-The item service calls the deposit service after final auction persistence succeeds. Deposit release is non-fatal for auction settlement: update failure is logged and observable, but it must not undo final auction result or order creation. The operation is idempotent so retries are safe.
+The item service should call the deposit service after final auction persistence succeeds. Deposit release is non-fatal for auction settlement: a deposit update failure should be logged and observable, but it must not undo the already-final auction result or order creation. The operation must be idempotent so compensation or retry jobs can safely call it again later.
 
 ### Order Payment
 
@@ -112,7 +114,7 @@ forfeited -> no-op with warning
 missing -> no-op with warning
 ```
 
-This represents returning the guarantee after the winner fulfilled payment.
+This represents the platform returning the guarantee after the winner fulfilled payment.
 
 ### Order Cancellation
 
@@ -129,17 +131,17 @@ This represents buyer default after winning.
 
 ### Order Expiry
 
-When `ScanExpiredOrders` successfully changes a pending order to `expired`, the winner's deposit follows the same forfeiture rule as cancellation.
+When `ScanExpiredOrders` successfully changes a pending order to `expired`, the winner's deposit for that item follows the same forfeiture rule as cancellation.
 
 ### Idempotency and State Safety
 
-Terminal deposit states are not overwritten:
+Deposit terminal states are not overwritten:
 
 - `refunded` stays `refunded`.
 - `forfeited` stays `forfeited`.
 - Only `paid` records transition to a terminal state.
 
-This prevents order cron, retries, cancellation, and future compensation from fighting over the same row.
+This is important because order cron, retries, manual cancellation, and future compensation can overlap.
 
 ## Deposit Service API
 
@@ -161,14 +163,14 @@ DAO additions:
 
 ```go
 ListPaidDepositsByItem(itemID string) ([]model.Deposit, error)
-TransitionDepositStatus(itemID, userID string, from, to model.DepositStatus, terminalAt *time.Time) (bool, error)
+TransitionDepositStatus(itemID, userID string, from, to model.DepositStatus, refundedAt *time.Time) (bool, error)
 ```
 
-`refunded_at` is set for both `refunded` and `forfeited` terminal transitions because the model currently has only one terminal timestamp. In docs and reports, interpret it as terminal settlement time until a future ledger adds separate `forfeited_at`.
+`refunded_at` should be set for both `refunded` and `forfeited` terminal transitions because the model currently has only one terminal timestamp. In reports and docs, interpret it as "terminal settlement time" until a future ledger introduces separate `forfeited_at`.
 
 ## Order Service Wiring
 
-`order.Service` receives an optional dependency:
+`order.Service` should receive an optional deposit settlement dependency:
 
 ```go
 type DepositSettler interface {
@@ -177,17 +179,19 @@ type DepositSettler interface {
 }
 ```
 
-Use a `SetDepositSettler` method if constructor injection is awkward because module initialization order already exists. Hook points:
+The order module initializer wires `depositapp.Svc` into `order.Service` after both modules are loaded. If wiring order makes direct constructor injection awkward, expose a `SetDepositSettler` method on `order.Service` and call it from the order module `Load`.
+
+Hook points:
 
 - `Pay`: after `UpdateOrderStatus(pending, paid)` succeeds.
 - `Cancel`: after `UpdateOrderStatus(pending, cancelled)` succeeds.
 - `ScanExpiredOrders`: inside the loop, after `UpdateOrderStatus(pending, expired)` returns `ok=true`.
 
-Deposit settlement errors are logged but do not turn a committed order status transition into a failed HTTP response.
+Deposit settlement errors should be logged and recorded but not turn a successful order status transition into a failed HTTP response. The user-visible order state is already committed. Follow-up compensation can be added later if needed.
 
 ## Item Service Wiring
 
-Extend the current deposit dependency so item service can both check and release deposits:
+`item.Service` already receives `depositapp.Svc` as a `DepositChecker`. Replace or extend this dependency with an interface that includes both checking and settlement:
 
 ```go
 type DepositService interface {
@@ -201,7 +205,7 @@ Hook points:
 - `persistSettledAuction`: after item final state and room cleanup are persisted, call `RefundNonWinners`.
 - Price-cap settlement in `PlaceBid`: after item final state and room cleanup are persisted, call `RefundNonWinners`.
 
-Refund failures continue order creation and broadcasts. The error is logged with `item_id` and `winner_user_id`.
+If refunding non-winners fails, continue order creation and broadcasts. Log the error with `item_id` and `winner_user_id`.
 
 ## E2E Contract Update
 
@@ -226,6 +230,8 @@ docs/agent-testing/README.md
 -> reports/README.md
 ```
 
+The implementation can update the flow contract and create a planned report path, but a dependency-backed E2E execution requires a separate user approval in the conversation.
+
 ## Testing Strategy
 
 Use TDD for production code changes.
@@ -244,9 +250,9 @@ Docs and contract tests:
 Dependency-backed E2E:
 
 - Requires explicit approval before running.
-- Uses only current test batch data.
-- Produces a report under `docs/agent-testing/reports/`.
-- Redacts online addresses, credentials, tokens, and full WebSocket tickets.
+- Must use only current test batch data.
+- Must produce a report under `docs/agent-testing/reports/`.
+- Must redact online addresses, credentials, tokens, and full WebSocket tickets.
 
 ## Observability
 
@@ -257,9 +263,9 @@ Use existing `observability.Track` for new service methods:
 - `deposit.refund_winner`
 - `deposit.forfeit_winner`
 
-Record item ID, winner/user ID where applicable, result counts, and error status.
+Each should record item ID, winner/user ID where applicable, result counts, and error status.
 
-Cron name:
+Cron names:
 
 - `item.start_due_auctions`
 
@@ -267,10 +273,10 @@ Existing order cron names stay unchanged.
 
 ## Risks and Trade-Offs
 
-- Deposit settlement after order status change can partially fail. This is acceptable for P0 if logged and idempotent, but a later compensation job should scan stuck `paid` deposits on ended items.
+- Deposit settlement after order status change can partially fail. This is acceptable for P0 if logged and idempotent, but a later P1/P2 compensation job should scan stuck `paid` deposits on ended items.
 - `refunded_at` is reused for forfeiture terminal time. This avoids schema expansion now, but future finance work should add separate fields or a ledger table.
-- Automatic start scans MySQL every second. This is fine for demo scale, but a Redis start schedule would be better for large catalogs.
-- Dependency-backed E2E execution must remain approval-gated.
+- Automatic start scans MySQL every second. This is fine for demo scale and small P0 load, but a Redis start schedule would be better for large catalogs.
+- Public E2E execution depends on real or online-equivalent services and must remain approval-gated.
 
 ## Acceptance Criteria
 

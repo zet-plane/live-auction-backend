@@ -508,8 +508,8 @@ func TestPlaceBidRebuildsHotStateWhenStatusMissing(t *testing.T) {
 	if result.CurrentPrice != 1100 {
 		t.Fatalf("expected current_price 1100, got %d", result.CurrentPrice)
 	}
-	if store.findItemWithRuleCalls != 1 {
-		t.Fatalf("expected one FindItemWithRule call for rebuild, got %d", store.findItemWithRuleCalls)
+	if store.findItemWithRuleCalls != 0 {
+		t.Fatalf("expected no FindItemWithRule calls for cached hot rebuild, got %d", store.findItemWithRuleCalls)
 	}
 	if fc.initCalls != 0 {
 		t.Fatalf("expected no full InitAuctionState call for existing missing-status repair, got %d", fc.initCalls)
@@ -552,8 +552,8 @@ func TestPlaceBidHotFieldRepairDoesNotOverwriteEndedStatus(t *testing.T) {
 	if !errors.As(err, &ce) || ce.Code != 40002 {
 		t.Fatalf("expected auction ended after concurrent status change, got %v", err)
 	}
-	if store.findItemWithRuleCalls != 1 {
-		t.Fatalf("expected one FindItemWithRule call for repair, got %d", store.findItemWithRuleCalls)
+	if store.findItemWithRuleCalls != 0 {
+		t.Fatalf("expected no FindItemWithRule calls for cached repair, got %d", store.findItemWithRuleCalls)
 	}
 	if fc.initCalls != 0 {
 		t.Fatalf("expected no full InitAuctionState call for hot repair, got %d", fc.initCalls)
@@ -603,8 +603,8 @@ func TestPlaceBidCompletesIncompleteHotStateWithoutResettingPrice(t *testing.T) 
 	if !errors.As(err, &ce) || ce.Code != 40003 {
 		t.Fatalf("expected price too low after preserving current price, got %v", err)
 	}
-	if store.findItemWithRuleCalls != 1 {
-		t.Fatalf("expected one FindItemWithRule call for repair, got %d", store.findItemWithRuleCalls)
+	if store.findItemWithRuleCalls != 0 {
+		t.Fatalf("expected no FindItemWithRule calls for cached repair, got %d", store.findItemWithRuleCalls)
 	}
 	if fc.initCalls != 0 {
 		t.Fatalf("expected no full InitAuctionState call for existing state repair, got %d", fc.initCalls)
@@ -617,7 +617,7 @@ func TestPlaceBidCompletesIncompleteHotStateWithoutResettingPrice(t *testing.T) 
 		t.Fatalf("expected dynamic state preserved, got price/deal/leader %d/%d/%q", state.CurrentPrice, state.DealPrice, state.LeaderUserID)
 	}
 	if state.RoomID != "room_1" || state.BidIncrement != 100 {
-		t.Fatalf("expected hot fields completed from DB, got room=%q increment=%d", state.RoomID, state.BidIncrement)
+		t.Fatalf("expected hot fields completed from cache, got room=%q increment=%d", state.RoomID, state.BidIncrement)
 	}
 }
 
@@ -649,8 +649,8 @@ func TestPlaceBidRepairsMissingPolicyHotFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PlaceBid failed after policy repair: %v", err)
 	}
-	if store.findItemWithRuleCalls != 1 {
-		t.Fatalf("expected one FindItemWithRule call for policy repair, got %d", store.findItemWithRuleCalls)
+	if store.findItemWithRuleCalls != 0 {
+		t.Fatalf("expected no FindItemWithRule calls for cached policy repair, got %d", store.findItemWithRuleCalls)
 	}
 	if fc.initCalls != 0 {
 		t.Fatalf("expected no full InitAuctionState call for policy repair, got %d", fc.initCalls)
@@ -1194,7 +1194,7 @@ func TestGetRankingReturnsCurrentUserNoBid(t *testing.T) {
 	}
 }
 
-func TestGetRankingFallsBackToMySQL(t *testing.T) {
+func TestGetRankingRebuildsRedisRankingOnCacheMiss(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()
 	svc := NewService(store, testPolicy, fc, nil, nil, nil)
@@ -1206,7 +1206,75 @@ func TestGetRankingFallsBackToMySQL(t *testing.T) {
 		&itemmodel.BidLog{ID: "b1", ItemID: itemID, RoomID: "room_1", UserID: "u1", Price: 200},
 		&itemmodel.BidLog{ID: "b2", ItemID: itemID, RoomID: "room_1", UserID: "u2", Price: 300},
 	)
+	fc.states[itemID].BidCount = 2
 	// No bids placed via service so fc.ranking[itemID] was never populated — cache miss is natural.
+
+	result, err := svc.GetRanking(context.Background(), itemID, 1, 10, &usermodel.User{ID: "u2"})
+	if err != nil {
+		t.Fatalf("GetRanking failed: %v", err)
+	}
+	if len(result.List) != 2 {
+		t.Fatalf("expected 2 rebuilt ranking entries, got %d", len(result.List))
+	}
+	if result.List[0].UserID != "u2" || result.List[0].Price != 300 {
+		t.Fatalf("expected u2/300 at rank 1, got %+v", result.List[0])
+	}
+	if result.CurrentUser == nil || !result.CurrentUser.HasBid || result.CurrentUser.Rank != 1 {
+		t.Fatalf("expected current_user rebuilt ranking, got %+v", result.CurrentUser)
+	}
+	if store.getUserRankingCalls != 0 {
+		t.Fatalf("expected no per-user MySQL fallback when cache is configured, got %d", store.getUserRankingCalls)
+	}
+	if store.listBidRankingCalls != 1 {
+		t.Fatalf("expected one controlled ListBidRanking rebuild, got %d", store.listBidRankingCalls)
+	}
+	if got := fc.ranking[itemID]["u2"]; got != 300 {
+		t.Fatalf("expected rebuilt ranking to be cached, got u2=%d", got)
+	}
+}
+
+func TestGetRankingCoalescesConcurrentRedisMissRebuild(t *testing.T) {
+	store := newFakeStore()
+	store.listBidRankingDelay = 20 * time.Millisecond
+	fc := newFakeCache()
+	svc := NewService(store, testPolicy, fc, nil, nil, nil)
+	endTime := time.Now().Add(5 * time.Minute)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 0, endTime)
+
+	store.bidLogs = append(store.bidLogs,
+		&itemmodel.BidLog{ID: "b1", ItemID: itemID, RoomID: "room_1", UserID: "u1", Price: 200},
+		&itemmodel.BidLog{ID: "b2", ItemID: itemID, RoomID: "room_1", UserID: "u2", Price: 300},
+	)
+	fc.states[itemID].BidCount = 2
+
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = svc.GetRanking(context.Background(), itemID, 1, 10)
+		}()
+	}
+	wg.Wait()
+
+	if store.listBidRankingCalls != 1 {
+		t.Fatalf("expected one coalesced ListBidRanking rebuild, got %d", store.listBidRankingCalls)
+	}
+	if got := fc.ranking[itemID]["u2"]; got != 300 {
+		t.Fatalf("expected rebuilt ranking to be cached, got u2=%d", got)
+	}
+}
+
+func TestGetRankingFallsBackToMySQLWithoutCache(t *testing.T) {
+	store := newFakeStore()
+	svc := NewService(store, testPolicy, nil, nil, nil, nil)
+	endTime := time.Now().Add(5 * time.Minute)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 0, endTime)
+
+	store.bidLogs = append(store.bidLogs,
+		&itemmodel.BidLog{ID: "b1", ItemID: itemID, RoomID: "room_1", UserID: "u1", Price: 200},
+		&itemmodel.BidLog{ID: "b2", ItemID: itemID, RoomID: "room_1", UserID: "u2", Price: 300},
+	)
 
 	result, err := svc.GetRanking(context.Background(), itemID, 1, 10)
 	if err != nil {

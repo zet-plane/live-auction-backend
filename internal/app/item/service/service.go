@@ -19,6 +19,7 @@ import (
 	"github.com/zet-plane/live-auction-backend/pkg/logx"
 	"github.com/zet-plane/live-auction-backend/pkg/snowflake"
 	"github.com/zet-plane/live-auction-backend/pkg/wsevent"
+	"golang.org/x/sync/singleflight"
 )
 
 type Service struct {
@@ -37,6 +38,7 @@ type Service struct {
 	bidBroadcastDelay        time.Duration
 	bidLogWorkerMu           sync.Mutex
 	bidLogWorkerCancel       context.CancelFunc
+	rankingRebuilds          singleflight.Group
 }
 
 type DepositService interface {
@@ -130,6 +132,7 @@ func (s *Service) CreateItem(ctx context.Context, current *usermodel.User, input
 	if err := s.store.CreateItemWithRule(item, rule); err != nil {
 		return nil, err
 	}
+	s.cacheItemDetail(ctx, item, rule)
 	return &dto.CreateItemResult{ItemID: itemID, RuleID: ruleID}, nil
 }
 
@@ -243,7 +246,7 @@ func (s *Service) GetItem(ctx context.Context, itemID string) (result *dto.ItemD
 	itemID = strings.TrimSpace(itemID)
 	defer observability.Track(ctx, "item.get", "item_id", itemID)(&err)
 
-	item, rule, err := s.store.FindItemWithRule(itemID)
+	item, rule, err := s.getItemDetailSource(ctx, itemID)
 	if err != nil {
 		return nil, err
 	}
@@ -255,6 +258,42 @@ func (s *Service) GetItem(ctx context.Context, itemID string) (result *dto.ItemD
 		}
 	}
 	return &detail, nil
+}
+
+func (s *Service) getItemDetailSource(ctx context.Context, itemID string) (*model.AuctionItem, *model.AuctionRule, error) {
+	if s.cache != nil {
+		detail, ok, err := s.cache.GetItemDetail(ctx, itemID)
+		if err != nil {
+			logx.Warnw("item.GetItem get detail cache failed", "item_id", itemID, "err", err)
+		} else if ok {
+			return detail.Item, detail.Rule, nil
+		}
+	}
+
+	item, rule, err := s.store.FindItemWithRule(itemID)
+	if err != nil {
+		return nil, nil, err
+	}
+	s.cacheItemDetail(ctx, item, rule)
+	return item, rule, nil
+}
+
+func (s *Service) cacheItemDetail(ctx context.Context, item *model.AuctionItem, rule *model.AuctionRule) {
+	if s.cache == nil || item == nil || rule == nil {
+		return
+	}
+	if err := s.cache.SetItemDetail(ctx, item.ID, itemcache.ItemDetailCache{Item: item, Rule: rule}); err != nil {
+		logx.Warnw("item cache detail failed", "item_id", item.ID, "err", err)
+	}
+}
+
+func (s *Service) deleteCachedItemDetail(ctx context.Context, itemID string) {
+	if s.cache == nil {
+		return
+	}
+	if err := s.cache.DeleteItemDetail(ctx, itemID); err != nil {
+		logx.Warnw("item delete detail cache failed", "item_id", itemID, "err", err)
+	}
 }
 
 func (s *Service) UpdateItem(ctx context.Context, current *usermodel.User, itemID string, input dto.CreateItemInput) (err error) {
@@ -282,7 +321,11 @@ func (s *Service) UpdateItem(ctx context.Context, current *usermodel.User, itemI
 	rule.DepositAmount = input.Rule.DepositAmount
 	rule.StartTime = input.Rule.StartTime
 	rule.EndTime = input.Rule.EndTime
-	return s.store.UpdateItemWithRule(item, rule)
+	if err := s.store.UpdateItemWithRule(item, rule); err != nil {
+		return err
+	}
+	s.cacheItemDetail(ctx, item, rule)
+	return nil
 }
 
 func (s *Service) DeleteItem(ctx context.Context, current *usermodel.User, itemID string) (err error) {
@@ -295,7 +338,11 @@ func (s *Service) DeleteItem(ctx context.Context, current *usermodel.User, itemI
 	if item.Status != model.ItemDraft && item.Status != model.ItemPublished {
 		return errorx.ErrInvalidRequest
 	}
-	return s.store.DeleteItem(item.ID)
+	if err := s.store.DeleteItem(item.ID); err != nil {
+		return err
+	}
+	s.deleteCachedItemDetail(ctx, item.ID)
+	return nil
 }
 
 func (s *Service) PublishItem(ctx context.Context, current *usermodel.User, itemID string) (err error) {
@@ -312,6 +359,7 @@ func (s *Service) PublishItem(ctx context.Context, current *usermodel.User, item
 	if err := s.store.UpdateItemWithRule(item, rule); err != nil {
 		return err
 	}
+	s.cacheItemDetail(ctx, item, rule)
 	if s.cache != nil {
 		_ = s.cache.PushToRoomQueue(ctx, item.RoomID, item.ID, float64(s.now().Unix()))
 	}
@@ -386,6 +434,7 @@ func (s *Service) startItemWithRule(ctx context.Context, item *model.AuctionItem
 		}
 		return err
 	}
+	s.cacheItemDetail(ctx, item, rule)
 	if err := s.store.SetRoomCurrentItem(item.RoomID, item.ID); err != nil {
 		if s.cache != nil {
 			_ = s.cache.UnscheduleAuctionEnd(ctx, item.ID)
@@ -428,6 +477,7 @@ func (s *Service) CancelItem(ctx context.Context, current *usermodel.User, itemI
 	if err := s.store.UpdateItemWithRule(item, rule); err != nil {
 		return err
 	}
+	s.cacheItemDetail(ctx, item, rule)
 	if err := s.store.ClearRoomCurrentItem(item.RoomID, item.ID); err != nil {
 		return err
 	}
@@ -749,6 +799,7 @@ func (s *Service) persistSettledAuction(ctx context.Context, result itemcache.Se
 		logx.Warnw("item.persistSettledAuction update failed", "item_id", item.ID, "err", err)
 		return false
 	}
+	s.cacheItemDetail(ctx, item, rule)
 	if err := s.store.ClearRoomCurrentItem(item.RoomID, item.ID); err != nil {
 		logx.Warnw("item.persistSettledAuction clear room current item failed", "room_id", item.RoomID, "item_id", item.ID, "err", err)
 	}

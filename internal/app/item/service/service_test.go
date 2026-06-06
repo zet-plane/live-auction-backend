@@ -27,6 +27,9 @@ type fakeStore struct {
 	setRoomCurrentErr     error
 	clearRoomCurrentErr   error
 	bidLogs               []*itemmodel.BidLog
+	listBidRankingDelay   time.Duration
+	listBidRankingCalls   int
+	getUserRankingCalls   int
 	findMu                sync.Mutex
 	findItemCalls         map[string]int
 	findItemWithRuleCalls int
@@ -246,6 +249,12 @@ func TestFakeStoreCreateBidLogsSkipsDuplicateIDs(t *testing.T) {
 }
 
 func (s *fakeStore) ListBidRanking(itemID string, limit int) ([]itemdto.BidderPrice, error) {
+	s.findMu.Lock()
+	s.listBidRankingCalls++
+	s.findMu.Unlock()
+	if s.listBidRankingDelay > 0 {
+		time.Sleep(s.listBidRankingDelay)
+	}
 	best := map[string]int64{}
 	for _, l := range s.bidLogs {
 		if l.ItemID != itemID {
@@ -267,6 +276,9 @@ func (s *fakeStore) ListBidRanking(itemID string, limit int) ([]itemdto.BidderPr
 }
 
 func (s *fakeStore) GetUserRanking(itemID, userID string) (*itemdto.CurrentUserRanking, error) {
+	s.findMu.Lock()
+	s.getUserRankingCalls++
+	s.findMu.Unlock()
 	entries, err := s.ListBidRanking(itemID, len(s.bidLogs))
 	if err != nil {
 		return nil, err
@@ -455,6 +467,7 @@ func TestPublishStartAndCancelValidateOwnerAndStatus(t *testing.T) {
 
 type fakeCache struct {
 	states             map[string]*itemcache.AuctionState
+	itemDetails        map[string]*itemcache.ItemDetailCache
 	stateTTLs          map[string]time.Duration
 	ending             map[string]int64
 	queues             map[string][]string
@@ -481,6 +494,7 @@ type fakeCache struct {
 func newFakeCache() *fakeCache {
 	return &fakeCache{
 		states:      map[string]*itemcache.AuctionState{},
+		itemDetails: map[string]*itemcache.ItemDetailCache{},
 		stateTTLs:   map[string]time.Duration{},
 		ending:      map[string]int64{},
 		queues:      map[string][]string{},
@@ -488,6 +502,28 @@ func newFakeCache() *fakeCache {
 		ranking:     map[string]map[string]int64{},
 		bidderNames: map[string]map[string]string{},
 	}
+}
+
+func (c *fakeCache) SetItemDetail(_ context.Context, itemID string, detail itemcache.ItemDetailCache) error {
+	item := *detail.Item
+	rule := *detail.Rule
+	c.itemDetails[itemID] = &itemcache.ItemDetailCache{Item: &item, Rule: &rule}
+	return nil
+}
+
+func (c *fakeCache) GetItemDetail(_ context.Context, itemID string) (*itemcache.ItemDetailCache, bool, error) {
+	detail, ok := c.itemDetails[itemID]
+	if !ok {
+		return nil, false, nil
+	}
+	item := *detail.Item
+	rule := *detail.Rule
+	return &itemcache.ItemDetailCache{Item: &item, Rule: &rule}, true, nil
+}
+
+func (c *fakeCache) DeleteItemDetail(_ context.Context, itemID string) error {
+	delete(c.itemDetails, itemID)
+	return nil
 }
 
 func (c *fakeCache) InitAuctionState(_ context.Context, itemID string, state itemcache.AuctionState) error {
@@ -865,6 +901,16 @@ func (c *fakeCache) GetRanking(_ context.Context, itemID string, offset, limit i
 	return entries, nil
 }
 
+func (c *fakeCache) SetRanking(_ context.Context, itemID string, entries []itemdto.BidderPrice) error {
+	c.ranking[itemID] = map[string]int64{}
+	c.bidderNames[itemID] = map[string]string{}
+	for _, entry := range entries {
+		c.ranking[itemID][entry.UserID] = entry.Price
+		c.bidderNames[itemID][entry.UserID] = entry.UserName
+	}
+	return nil
+}
+
 func (c *fakeCache) GetUserRanking(_ context.Context, itemID, userID string) (*itemdto.CurrentUserRanking, error) {
 	entries, err := c.GetRanking(context.Background(), itemID, 0, len(c.ranking[itemID]))
 	if err != nil {
@@ -1197,6 +1243,28 @@ func TestGetItemEnrichesFromCacheWhenOngoing(t *testing.T) {
 	}
 	if detail.LeaderUserID != "user_99" {
 		t.Fatalf("expected leader_user_id user_99, got %q", detail.LeaderUserID)
+	}
+}
+
+func TestGetItemCachesStaticDetailAfterMySQLLoad(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	svc := NewService(store, itemdto.AuctionPolicy{}, fc, nil, nil, nil)
+	merchant := &usermodel.User{ID: "merchant_1", Identity: usermodel.IdentityMerchant}
+	itemID := seedPublishedItem(t, svc, "merchant_1", "room_abc")
+	_ = svc.StartItem(context.Background(), merchant, itemID)
+	delete(fc.itemDetails, itemID)
+	store.findItemCalls[itemID] = 0
+
+	if _, err := svc.GetItem(context.Background(), itemID); err != nil {
+		t.Fatalf("first GetItem failed: %v", err)
+	}
+	if _, err := svc.GetItem(context.Background(), itemID); err != nil {
+		t.Fatalf("second GetItem failed: %v", err)
+	}
+
+	if got := store.findItemCalls[itemID]; got != 1 {
+		t.Fatalf("expected GetItem to load item detail from MySQL once, got %d", got)
 	}
 }
 
