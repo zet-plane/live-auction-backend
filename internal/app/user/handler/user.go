@@ -32,6 +32,17 @@ func AuthenticateToken(ctx context.Context, token string) (any, error) {
 	return result, err
 }
 
+func AuthenticateTokenClaims(ctx context.Context, token string) (any, error) {
+	if svc == nil {
+		return nil, errorx.ErrInternal
+	}
+	result, err := svc.AuthenticateClaims(ctx, token)
+	if err != nil {
+		logx.Warnw("AuthenticateTokenClaims failed", "err", err)
+	}
+	return result, err
+}
+
 // Register creates a user account.
 //
 // @Summary 用户注册

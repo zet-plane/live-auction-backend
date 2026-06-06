@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zet-plane/live-auction-backend/internal/app/user/model"
 	"github.com/zet-plane/live-auction-backend/pkg/errorx"
 )
 
@@ -17,9 +18,11 @@ type tokenService struct {
 }
 
 type tokenClaims struct {
-	Subject   string `json:"sub"`
-	ExpiresAt int64  `json:"exp"`
-	IssuedAt  int64  `json:"iat"`
+	Subject   string             `json:"sub"`
+	Name      string             `json:"name,omitempty"`
+	Identity  model.UserIdentity `json:"identity,omitempty"`
+	ExpiresAt int64              `json:"exp"`
+	IssuedAt  int64              `json:"iat"`
 }
 
 func newTokenService(secret string, ttl time.Duration) tokenService {
@@ -36,14 +39,30 @@ func newTokenService(secret string, ttl time.Duration) tokenService {
 }
 
 func (s tokenService) Sign(userID string, now time.Time) (string, error) {
-	header := map[string]string{
-		"alg": "HS256",
-		"typ": "JWT",
-	}
-	claims := tokenClaims{
+	return s.sign(tokenClaims{
 		Subject:   userID,
 		IssuedAt:  now.Unix(),
 		ExpiresAt: now.Add(s.ttl).Unix(),
+	})
+}
+
+func (s tokenService) SignUser(u *model.User, now time.Time) (string, error) {
+	if u == nil {
+		return "", errorx.ErrUnauthorized
+	}
+	return s.sign(tokenClaims{
+		Subject:   u.ID,
+		Name:      u.Name,
+		Identity:  u.Identity,
+		IssuedAt:  now.Unix(),
+		ExpiresAt: now.Add(s.ttl).Unix(),
+	})
+}
+
+func (s tokenService) sign(claims tokenClaims) (string, error) {
+	header := map[string]string{
+		"alg": "HS256",
+		"typ": "JWT",
 	}
 
 	headerJSON, err := json.Marshal(header)
@@ -60,29 +79,37 @@ func (s tokenService) Sign(userID string, now time.Time) (string, error) {
 }
 
 func (s tokenService) Verify(token string, now time.Time) (string, error) {
+	claims, err := s.VerifyClaims(token, now)
+	if err != nil {
+		return "", err
+	}
+	return claims.Subject, nil
+}
+
+func (s tokenService) VerifyClaims(token string, now time.Time) (tokenClaims, error) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
-		return "", errorx.ErrUnauthorized
+		return tokenClaims{}, errorx.ErrUnauthorized
 	}
 
 	unsigned := parts[0] + "." + parts[1]
 	want := s.signature(unsigned)
 	if !hmac.Equal([]byte(want), []byte(parts[2])) {
-		return "", errorx.ErrUnauthorized
+		return tokenClaims{}, errorx.ErrUnauthorized
 	}
 
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return "", errorx.ErrUnauthorized
+		return tokenClaims{}, errorx.ErrUnauthorized
 	}
 	var claims tokenClaims
 	if err := json.Unmarshal(payload, &claims); err != nil {
-		return "", errorx.ErrUnauthorized
+		return tokenClaims{}, errorx.ErrUnauthorized
 	}
 	if claims.Subject == "" || claims.ExpiresAt <= now.Unix() {
-		return "", errorx.ErrUnauthorized
+		return tokenClaims{}, errorx.ErrUnauthorized
 	}
-	return claims.Subject, nil
+	return claims, nil
 }
 
 func (s tokenService) signature(unsigned string) string {

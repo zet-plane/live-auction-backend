@@ -86,7 +86,7 @@ func optionalCurrentUser(req *http.Request) (*usermodel.User, error) {
 	if token == "" || token == header {
 		return nil, errorx.ErrUnauthorized
 	}
-	u, err := userhandler.AuthenticateToken(req.Context(), token)
+	u, err := userhandler.AuthenticateTokenClaims(req.Context(), token)
 	if err != nil {
 		return nil, err
 	}
