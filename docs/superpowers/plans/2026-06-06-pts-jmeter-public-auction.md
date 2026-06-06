@@ -6,8 +6,7 @@
 
 **Architecture:** The first deliverable is a self-contained JMeter directory with a `.jmx`, sample CSV, README, and evidence placeholder. The `.jmx` consumes CSV rows, logs in, issues a WebSocket ticket, opens one WSS connection, reads one first message, and closes the socket. Real data preparation and mixed-load scripting remain separate follow-up tasks.
 
-**Tech Stack:** Apache JMeter 5.x XML, Alibaba Cloud PTS JMeter scenario, JMeter WebSocket Samplers plugin by Peter Doornbosch, CSV Data Set Config, HTTP samplers, JSON extractors.
-
+**Tech Stack:** Apache JMeter 5.x XML, Alibaba Cloud PTS JMeter scenario, JSR223/Groovy sampler using Java 11 `java.net.http.WebSocket`, CSV Data Set Config, HTTP samplers, JSON extractors.
 ---
 
 ### Task 1: WSS Connect Sweep Upload Asset
