@@ -82,7 +82,7 @@ Agent 可以测试：
 
 - 支付和取消接口都需要登录用户。
 - 支付接口绑定 `PayOrderRequest`，字段 `result` 必填且只能为 `success`。
-- 当前支付 handler 只检查绑定错误；通过绑定后不再读取 `result` 的具体值。
+- 当前支付 handler 先处理绑定错误，再显式拒绝 `body.Result != "success"`；校验通过后不把具体 `result` 值传给订单服务。
 - 支付接口调用 `orderSvc.Pay(current, order_id)`。
 - 取消接口调用 `orderSvc.Cancel(current, order_id)`。
 - `orderSvc == nil` 时两个接口都返回 internal error。
