@@ -1,0 +1,317 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<jmeterTestPlan version="1.2" properties="5.0" jmeter="5.6.3">
+  <hashTree>
+    <TestPlan guiclass="TestPlanGui" testclass="TestPlan" testname="auction-public-wss-connect-sweep" enabled="true">
+      <stringProp name="TestPlan.comments">PTS public WSS connect sweep for live auction. Do not hardcode production URLs or credentials.</stringProp>
+      <boolProp name="TestPlan.functional_mode">false</boolProp>
+      <boolProp name="TestPlan.tearDown_on_shutdown">true</boolProp>
+      <boolProp name="TestPlan.serialize_threadgroups">false</boolProp>
+      <elementProp name="TestPlan.user_defined_variables" elementType="Arguments" guiclass="ArgumentsPanel" testclass="Arguments" testname="User Defined Variables" enabled="true">
+        <collectionProp name="Arguments.arguments"/>
+      </elementProp>
+    </TestPlan>
+    <hashTree>
+      <Arguments guiclass="ArgumentsPanel" testclass="Arguments" testname="PTS Variables" enabled="true">
+        <collectionProp name="Arguments.arguments">
+          <elementProp name="BASE_PROTOCOL" elementType="Argument">
+            <stringProp name="Argument.name">BASE_PROTOCOL</stringProp>
+            <stringProp name="Argument.value">${__P(BASE_PROTOCOL,https)}</stringProp>
+            <stringProp name="Argument.metadata">=</stringProp>
+          </elementProp>
+          <elementProp name="BASE_HOST" elementType="Argument">
+            <stringProp name="Argument.name">BASE_HOST</stringProp>
+            <stringProp name="Argument.value">${__P(BASE_HOST,example.invalid)}</stringProp>
+            <stringProp name="Argument.metadata">=</stringProp>
+          </elementProp>
+          <elementProp name="BASE_PORT" elementType="Argument">
+            <stringProp name="Argument.name">BASE_PORT</stringProp>
+            <stringProp name="Argument.value">${__P(BASE_PORT,443)}</stringProp>
+            <stringProp name="Argument.metadata">=</stringProp>
+          </elementProp>
+          <elementProp name="STREAM" elementType="Argument">
+            <stringProp name="Argument.name">STREAM</stringProp>
+            <stringProp name="Argument.value">${__P(STREAM,control)}</stringProp>
+            <stringProp name="Argument.metadata">=</stringProp>
+          </elementProp>
+          <elementProp name="CONNECT_TIMEOUT_MS" elementType="Argument">
+            <stringProp name="Argument.name">CONNECT_TIMEOUT_MS</stringProp>
+            <stringProp name="Argument.value">${__P(CONNECT_TIMEOUT_MS,15000)}</stringProp>
+            <stringProp name="Argument.metadata">=</stringProp>
+          </elementProp>
+          <elementProp name="REQUEST_TIMEOUT_MS" elementType="Argument">
+            <stringProp name="Argument.name">REQUEST_TIMEOUT_MS</stringProp>
+            <stringProp name="Argument.value">${__P(REQUEST_TIMEOUT_MS,15000)}</stringProp>
+            <stringProp name="Argument.metadata">=</stringProp>
+          </elementProp>
+        </collectionProp>
+      </Arguments>
+      <hashTree/>
+      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="WSS Connect Sweep Users" enabled="true">
+        <stringProp name="ThreadGroup.on_sample_error">continue</stringProp>
+        <elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController" testname="Loop Controller" enabled="true">
+          <boolProp name="LoopController.continue_forever">true</boolProp>
+          <intProp name="LoopController.loops">-1</intProp>
+        </elementProp>
+        <stringProp name="ThreadGroup.num_threads">${__P(THREADS,1)}</stringProp>
+        <stringProp name="ThreadGroup.ramp_time">${__P(RAMP_SECONDS,60)}</stringProp>
+        <boolProp name="ThreadGroup.scheduler">true</boolProp>
+        <stringProp name="ThreadGroup.duration">${__P(DURATION_SECONDS,300)}</stringProp>
+        <stringProp name="ThreadGroup.delay">0</stringProp>
+        <boolProp name="ThreadGroup.same_user_on_next_iteration">true</boolProp>
+      </ThreadGroup>
+      <hashTree>
+        <CSVDataSet guiclass="TestBeanGUI" testclass="CSVDataSet" testname="users.csv" enabled="true">
+          <stringProp name="filename">users.csv</stringProp>
+          <stringProp name="fileEncoding">UTF-8</stringProp>
+          <stringProp name="variableNames">user_index,username,password,user_id,room_id,item_id</stringProp>
+          <boolProp name="ignoreFirstLine">true</boolProp>
+          <stringProp name="delimiter">,</stringProp>
+          <boolProp name="quotedData">false</boolProp>
+          <boolProp name="recycle">false</boolProp>
+          <boolProp name="stopThread">true</boolProp>
+          <stringProp name="shareMode">shareMode.all</stringProp>
+        </CSVDataSet>
+        <hashTree/>
+        <CookieManager guiclass="CookiePanel" testclass="CookieManager" testname="HTTP Cookie Manager" enabled="true">
+          <collectionProp name="CookieManager.cookies"/>
+          <boolProp name="CookieManager.clearEachIteration">true</boolProp>
+          <boolProp name="CookieManager.controlledByThreadGroup">false</boolProp>
+        </CookieManager>
+        <hashTree/>
+        <HeaderManager guiclass="HeaderPanel" testclass="HeaderManager" testname="JSON Headers" enabled="true">
+          <collectionProp name="HeaderManager.headers">
+            <elementProp name="" elementType="Header">
+              <stringProp name="Header.name">Content-Type</stringProp>
+              <stringProp name="Header.value">application/json</stringProp>
+            </elementProp>
+            <elementProp name="" elementType="Header">
+              <stringProp name="Header.name">X-Agent-Test-Batch</stringProp>
+              <stringProp name="Header.value">${__P(BATCH_ID,agent_pts_auction_public_20260606)}</stringProp>
+            </elementProp>
+          </collectionProp>
+        </HeaderManager>
+        <hashTree/>
+        <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="HTTP Login" enabled="true">
+          <boolProp name="HTTPSampler.postBodyRaw">true</boolProp>
+          <elementProp name="HTTPsampler.Arguments" elementType="Arguments">
+            <collectionProp name="Arguments.arguments">
+              <elementProp name="" elementType="HTTPArgument">
+                <boolProp name="HTTPArgument.always_encode">false</boolProp>
+                <stringProp name="Argument.value">{&quot;account&quot;:&quot;${username}&quot;,&quot;password&quot;:&quot;${password}&quot;}</stringProp>
+                <stringProp name="Argument.metadata">=</stringProp>
+              </elementProp>
+            </collectionProp>
+          </elementProp>
+          <stringProp name="HTTPSampler.domain">${BASE_HOST}</stringProp>
+          <stringProp name="HTTPSampler.port">${BASE_PORT}</stringProp>
+          <stringProp name="HTTPSampler.protocol">${BASE_PROTOCOL}</stringProp>
+          <stringProp name="HTTPSampler.path">/api/v1/auth/login</stringProp>
+          <stringProp name="HTTPSampler.method">POST</stringProp>
+          <stringProp name="HTTPSampler.connect_timeout">${REQUEST_TIMEOUT_MS}</stringProp>
+          <stringProp name="HTTPSampler.response_timeout">${REQUEST_TIMEOUT_MS}</stringProp>
+          <boolProp name="HTTPSampler.follow_redirects">true</boolProp>
+          <boolProp name="HTTPSampler.auto_redirects">false</boolProp>
+          <boolProp name="HTTPSampler.use_keepalive">true</boolProp>
+          <boolProp name="HTTPSampler.DO_MULTIPART_POST">false</boolProp>
+        </HTTPSamplerProxy>
+        <hashTree>
+          <JSONPostProcessor guiclass="JSONPostProcessorGui" testclass="JSONPostProcessor" testname="Extract auth token" enabled="true">
+            <stringProp name="JSONPostProcessor.referenceNames">auth_token</stringProp>
+            <stringProp name="JSONPostProcessor.jsonPathExprs">$.data.token</stringProp>
+            <stringProp name="JSONPostProcessor.match_numbers">1</stringProp>
+            <stringProp name="JSONPostProcessor.defaultValues">AUTH_TOKEN_NOT_FOUND</stringProp>
+          </JSONPostProcessor>
+          <hashTree/>
+          <ResponseAssertion guiclass="AssertionGui" testclass="ResponseAssertion" testname="Login success" enabled="true">
+            <collectionProp name="Asserion.test_strings">
+              <stringProp name="49586">&quot;code&quot;:0</stringProp>
+            </collectionProp>
+            <stringProp name="Assertion.custom_message">Login failed for CSV user</stringProp>
+            <stringProp name="Assertion.test_field">Assertion.response_data</stringProp>
+            <boolProp name="Assertion.assume_success">false</boolProp>
+            <intProp name="Assertion.test_type">2</intProp>
+          </ResponseAssertion>
+          <hashTree/>
+        </hashTree>
+        <HeaderManager guiclass="HeaderPanel" testclass="HeaderManager" testname="Auth Headers" enabled="true">
+          <collectionProp name="HeaderManager.headers">
+            <elementProp name="" elementType="Header">
+              <stringProp name="Header.name">Authorization</stringProp>
+              <stringProp name="Header.value">Bearer ${auth_token}</stringProp>
+            </elementProp>
+            <elementProp name="" elementType="Header">
+              <stringProp name="Header.name">X-Agent-Test-Batch</stringProp>
+              <stringProp name="Header.value">${__P(BATCH_ID,agent_pts_auction_public_20260606)}</stringProp>
+            </elementProp>
+          </collectionProp>
+        </HeaderManager>
+        <hashTree>
+          <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="HTTP Issue WS Ticket" enabled="true">
+            <elementProp name="HTTPsampler.Arguments" elementType="Arguments">
+              <collectionProp name="Arguments.arguments"/>
+            </elementProp>
+            <stringProp name="HTTPSampler.domain">${BASE_HOST}</stringProp>
+            <stringProp name="HTTPSampler.port">${BASE_PORT}</stringProp>
+            <stringProp name="HTTPSampler.protocol">${BASE_PROTOCOL}</stringProp>
+            <stringProp name="HTTPSampler.path">/api/v1/ws-ticket</stringProp>
+            <stringProp name="HTTPSampler.method">POST</stringProp>
+            <stringProp name="HTTPSampler.connect_timeout">${REQUEST_TIMEOUT_MS}</stringProp>
+            <stringProp name="HTTPSampler.response_timeout">${REQUEST_TIMEOUT_MS}</stringProp>
+            <boolProp name="HTTPSampler.follow_redirects">true</boolProp>
+            <boolProp name="HTTPSampler.auto_redirects">false</boolProp>
+            <boolProp name="HTTPSampler.use_keepalive">true</boolProp>
+            <boolProp name="HTTPSampler.DO_MULTIPART_POST">false</boolProp>
+          </HTTPSamplerProxy>
+          <hashTree>
+            <JSONPostProcessor guiclass="JSONPostProcessorGui" testclass="JSONPostProcessor" testname="Extract ws ticket" enabled="true">
+              <stringProp name="JSONPostProcessor.referenceNames">ticket</stringProp>
+              <stringProp name="JSONPostProcessor.jsonPathExprs">$.data.ticket</stringProp>
+              <stringProp name="JSONPostProcessor.match_numbers">1</stringProp>
+              <stringProp name="JSONPostProcessor.defaultValues">WS_TICKET_NOT_FOUND</stringProp>
+            </JSONPostProcessor>
+            <hashTree/>
+            <ResponseAssertion guiclass="AssertionGui" testclass="ResponseAssertion" testname="Ticket success" enabled="true">
+              <collectionProp name="Asserion.test_strings">
+                <stringProp name="49586">&quot;code&quot;:0</stringProp>
+              </collectionProp>
+              <stringProp name="Assertion.custom_message">WS ticket request failed</stringProp>
+              <stringProp name="Assertion.test_field">Assertion.response_data</stringProp>
+              <boolProp name="Assertion.assume_success">false</boolProp>
+              <intProp name="Assertion.test_type">2</intProp>
+            </ResponseAssertion>
+            <hashTree/>
+          </hashTree>
+          <JSR223Sampler guiclass="TestBeanGUI" testclass="JSR223Sampler" testname="WSS Open And First Message ${STREAM}" enabled="true">
+            <stringProp name="cacheKey">auction-public-wss-jsr223</stringProp>
+            <stringProp name="filename"></stringProp>
+            <stringProp name="parameters"></stringProp>
+            <stringProp name="scriptLanguage">groovy</stringProp>
+            <stringProp name="script"><![CDATA[
+import java.net.URI
+import java.net.URLEncoder
+import java.net.http.HttpClient
+import java.net.http.WebSocket
+import java.time.Duration
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
+
+def value = { String name, String fallback ->
+    def v = vars.get(name)
+    if (v == null || v.length() == 0) {
+        v = props.getProperty(name, fallback)
+    }
+    return v
+}
+
+String baseProtocol = value('BASE_PROTOCOL', 'https')
+String wsProtocol = baseProtocol.equalsIgnoreCase('https') ? 'wss' : 'ws'
+String host = value('BASE_HOST', 'example.invalid')
+String port = value('BASE_PORT', '443')
+String stream = value('STREAM', 'control')
+long connectTimeoutMs = value('CONNECT_TIMEOUT_MS', '15000') as long
+long requestTimeoutMs = value('REQUEST_TIMEOUT_MS', '15000') as long
+String roomID = vars.get('room_id')
+String ticket = vars.get('ticket')
+
+if (roomID == null || roomID.length() == 0) {
+    throw new IllegalStateException('missing room_id from users.csv')
+}
+if (ticket == null || ticket.length() == 0 || ticket == 'WS_TICKET_NOT_FOUND') {
+    throw new IllegalStateException('missing ws ticket')
+}
+
+String authority = host
+if (port != null && port.length() > 0 && !((wsProtocol == 'wss' && port == '443') || (wsProtocol == 'ws' && port == '80'))) {
+    authority = host + ':' + port
+}
+String encodedRoomID = URLEncoder.encode(roomID, 'UTF-8')
+String encodedTicket = URLEncoder.encode(ticket, 'UTF-8')
+String encodedStream = URLEncoder.encode(stream, 'UTF-8')
+URI uri = new URI(wsProtocol + '://' + authority + '/ws/v1/rooms/' + encodedRoomID + '?ticket=' + encodedTicket + '&stream=' + encodedStream)
+
+CountDownLatch openLatch = new CountDownLatch(1)
+CountDownLatch messageLatch = new CountDownLatch(1)
+AtomicReference<String> firstMessage = new AtomicReference<>('')
+AtomicReference<Throwable> asyncFailure = new AtomicReference<>(null)
+
+HttpClient client = HttpClient.newBuilder()
+    .connectTimeout(Duration.ofMillis(connectTimeoutMs))
+    .build()
+
+WebSocket.Listener listener = [
+    onOpen: { WebSocket ws ->
+        openLatch.countDown()
+        ws.request(1)
+    },
+    onText: { WebSocket ws, CharSequence data, boolean last ->
+        firstMessage.set(String.valueOf(data))
+        messageLatch.countDown()
+        ws.request(1)
+        CompletableFuture.completedFuture(null)
+    },
+    onError: { WebSocket ws, Throwable error ->
+        asyncFailure.set(error)
+        openLatch.countDown()
+        messageLatch.countDown()
+    },
+    onClose: { WebSocket ws, int statusCode, String reason ->
+        messageLatch.countDown()
+        CompletableFuture.completedFuture(null)
+    }
+] as WebSocket.Listener
+
+WebSocket ws = null
+long started = System.nanoTime()
+try {
+    ws = client.newWebSocketBuilder()
+        .connectTimeout(Duration.ofMillis(connectTimeoutMs))
+        .buildAsync(uri, listener)
+        .get(connectTimeoutMs, TimeUnit.MILLISECONDS)
+
+    if (!openLatch.await(connectTimeoutMs, TimeUnit.MILLISECONDS)) {
+        throw new java.util.concurrent.TimeoutException('websocket open timeout')
+    }
+    Throwable openError = asyncFailure.get()
+    if (openError != null) {
+        throw openError
+    }
+    if (!messageLatch.await(requestTimeoutMs, TimeUnit.MILLISECONDS)) {
+        throw new java.util.concurrent.TimeoutException('first websocket message timeout')
+    }
+    Throwable messageError = asyncFailure.get()
+    if (messageError != null) {
+        throw messageError
+    }
+    String body = firstMessage.get()
+    if (body == null || body.length() == 0) {
+        throw new IllegalStateException('empty first websocket message')
+    }
+
+    long elapsedMs = (System.nanoTime() - started) / 1000000L
+    SampleResult.setSuccessful(true)
+    SampleResult.setResponseCode('101')
+    SampleResult.setResponseMessage('connected first_message_ms=' + elapsedMs)
+    SampleResult.setResponseData(('first_message_length=' + body.length()).getBytes('UTF-8'))
+} catch (Throwable t) {
+    SampleResult.setSuccessful(false)
+    SampleResult.setResponseCode('599')
+    SampleResult.setResponseMessage(t.getClass().getSimpleName() + ': ' + String.valueOf(t.getMessage()))
+    SampleResult.setResponseData(('wss_path=/ws/v1/rooms/' + roomID + '?stream=' + stream).getBytes('UTF-8'))
+} finally {
+    if (ws != null) {
+        try {
+            ws.sendClose(WebSocket.NORMAL_CLOSURE, 'done').get(1000, TimeUnit.MILLISECONDS)
+        } catch (Throwable ignored) {
+        }
+    }
+}
+]]></stringProp>
+          </JSR223Sampler>
+          <hashTree/>
+        </hashTree>
+      </hashTree>
+    </hashTree>
+  </hashTree>
+</jmeterTestPlan>

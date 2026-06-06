@@ -1,0 +1,3 @@
+user_index,username,password,user_id,room_id,item_id
+0,agent_pts_example_u000,example_password,user_example_000,room_example,item_example
+1,agent_pts_example_u001,example_password,user_example_001,room_example,item_example
