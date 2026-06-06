@@ -1286,16 +1286,38 @@ func TestGetRankingCoalescesRedisMissRebuildAcrossServices(t *testing.T) {
 	fc.states[itemID].BidCount = 2
 
 	var wg sync.WaitGroup
+	results := make(chan *itemdto.RankingResult, 2)
+	errs := make(chan error, 2)
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		_, _ = svcA.GetRanking(context.Background(), itemID, 1, 10)
+		result, err := svcA.GetRanking(context.Background(), itemID, 1, 10)
+		results <- result
+		errs <- err
 	}()
 	go func() {
 		defer wg.Done()
-		_, _ = svcB.GetRanking(context.Background(), itemID, 1, 10)
+		result, err := svcB.GetRanking(context.Background(), itemID, 1, 10)
+		results <- result
+		errs <- err
 	}()
 	wg.Wait()
+	close(results)
+	close(errs)
+
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("GetRanking returned error: %v", err)
+		}
+	}
+	for result := range results {
+		if result == nil || len(result.List) != 2 {
+			t.Fatalf("expected two ranking entries, got %+v", result)
+		}
+		if result.List[0].UserID != "u2" || result.List[0].Price != 300 {
+			t.Fatalf("expected u2/300 at rank 1, got %+v", result.List[0])
+		}
+	}
 
 	if store.listBidRankingCalls != 1 {
 		t.Fatalf("expected one distributed ListBidRanking rebuild, got %d", store.listBidRankingCalls)

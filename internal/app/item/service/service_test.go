@@ -475,8 +475,8 @@ type fakeCache struct {
 	ranking            map[string]map[string]int64
 	bidderNames        map[string]map[string]string
 	rankingMu          sync.Mutex
-	rankingLocks       map[string]string
-	rankingCooldowns   map[string]bool
+	rankingLocks       map[string]fakeRankingLease
+	rankingCooldowns   map[string]time.Time
 	listActiveCalls    atomic.Int32
 	listActiveStarted  chan struct{}
 	listActiveRelease  chan struct{}
@@ -504,9 +504,14 @@ func newFakeCache() *fakeCache {
 		roomCurrent:      map[string]string{},
 		ranking:          map[string]map[string]int64{},
 		bidderNames:      map[string]map[string]string{},
-		rankingLocks:     map[string]string{},
-		rankingCooldowns: map[string]bool{},
+		rankingLocks:     map[string]fakeRankingLease{},
+		rankingCooldowns: map[string]time.Time{},
 	}
+}
+
+type fakeRankingLease struct {
+	owner     string
+	expiresAt time.Time
 }
 
 func (c *fakeCache) SetItemDetail(_ context.Context, itemID string, detail itemcache.ItemDetailCache) error {
@@ -883,8 +888,10 @@ func (c *fakeCache) AppendBidLogEvent(_ context.Context, event itemcache.BidLogE
 }
 
 func (c *fakeCache) GetRanking(_ context.Context, itemID string, offset, limit int) ([]itemdto.BidderPrice, error) {
+	c.rankingMu.Lock()
 	m := c.ranking[itemID]
 	if len(m) == 0 {
+		c.rankingMu.Unlock()
 		return nil, nil
 	}
 	entries := make([]itemdto.BidderPrice, 0, len(m))
@@ -895,6 +902,7 @@ func (c *fakeCache) GetRanking(_ context.Context, itemID string, offset, limit i
 		}
 		entries = append(entries, itemdto.BidderPrice{UserID: uid, UserName: name, Price: price})
 	}
+	c.rankingMu.Unlock()
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Price > entries[j].Price })
 	if offset >= len(entries) {
 		return nil, nil
@@ -907,6 +915,8 @@ func (c *fakeCache) GetRanking(_ context.Context, itemID string, offset, limit i
 }
 
 func (c *fakeCache) SetRanking(_ context.Context, itemID string, entries []itemdto.BidderPrice) error {
+	c.rankingMu.Lock()
+	defer c.rankingMu.Unlock()
 	c.ranking[itemID] = map[string]int64{}
 	c.bidderNames[itemID] = map[string]string{}
 	for _, entry := range entries {
@@ -917,7 +927,10 @@ func (c *fakeCache) SetRanking(_ context.Context, itemID string, entries []itemd
 }
 
 func (c *fakeCache) GetUserRanking(_ context.Context, itemID, userID string) (*itemdto.CurrentUserRanking, error) {
-	entries, err := c.GetRanking(context.Background(), itemID, 0, len(c.ranking[itemID]))
+	c.rankingMu.Lock()
+	limit := len(c.ranking[itemID])
+	c.rankingMu.Unlock()
+	entries, err := c.GetRanking(context.Background(), itemID, 0, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -936,27 +949,36 @@ func (c *fakeCache) GetUserRanking(_ context.Context, itemID, userID string) (*i
 	return nil, nil
 }
 
-func (c *fakeCache) AcquireRankingRebuild(_ context.Context, itemID, owner string, _ time.Duration) (bool, error) {
+func (c *fakeCache) AcquireRankingRebuild(_ context.Context, itemID, owner string, ttl time.Duration) (bool, error) {
 	c.rankingMu.Lock()
 	defer c.rankingMu.Unlock()
-	if c.rankingLocks[itemID] != "" {
+	now := time.Now()
+	if lease := c.rankingLocks[itemID]; lease.owner != "" && now.Before(lease.expiresAt) {
 		return false, nil
 	}
-	c.rankingLocks[itemID] = owner
+	c.rankingLocks[itemID] = fakeRankingLease{owner: owner, expiresAt: now.Add(ttl)}
 	return true, nil
 }
 
-func (c *fakeCache) SetRankingRebuildCooldown(_ context.Context, itemID string, _ time.Duration) error {
+func (c *fakeCache) SetRankingRebuildCooldown(_ context.Context, itemID string, ttl time.Duration) error {
 	c.rankingMu.Lock()
 	defer c.rankingMu.Unlock()
-	c.rankingCooldowns[itemID] = true
+	c.rankingCooldowns[itemID] = time.Now().Add(ttl)
 	return nil
 }
 
 func (c *fakeCache) RankingRebuildCoolingDown(_ context.Context, itemID string) (bool, error) {
 	c.rankingMu.Lock()
 	defer c.rankingMu.Unlock()
-	return c.rankingCooldowns[itemID], nil
+	expiresAt := c.rankingCooldowns[itemID]
+	if expiresAt.IsZero() {
+		return false, nil
+	}
+	if time.Now().Before(expiresAt) {
+		return true, nil
+	}
+	delete(c.rankingCooldowns, itemID)
+	return false, nil
 }
 
 func TestCreateItemStoresRoomID(t *testing.T) {
