@@ -829,6 +829,29 @@ func TestUnicastDeliversToUser(t *testing.T) {
 	}
 }
 
+func TestSendToUserDeliversToLocalUserConnections(t *testing.T) {
+	h := NewHub(nil)
+	targetRoomConn := newTestConn("user_1", "room_1")
+	otherRoomConn := newTestConn("user_1", "room_2")
+	otherUserConn := newTestConn("user_2", "room_1")
+
+	h.Register(targetRoomConn)
+	h.Register(otherRoomConn)
+	h.Register(otherUserConn)
+
+	h.SendToUser("user_1", wsevent.Event{Type: "order_created"})
+
+	if got := len(targetRoomConn.high); got != 1 {
+		t.Fatalf("target room user high queue len = %d, want 1", got)
+	}
+	if got := len(otherRoomConn.high); got != 1 {
+		t.Fatalf("other room same user high queue len = %d, want 1", got)
+	}
+	if got := len(otherUserConn.high); got != 0 {
+		t.Fatalf("other user high queue len = %d, want 0", got)
+	}
+}
+
 func TestUnicastDeliversOnlyToMatchingUserStreams(t *testing.T) {
 	h := NewHub(nil)
 	control := NewConnWithStream("conn_control", "user_1", "room_1", newFakeSocket(), h, streamControl)

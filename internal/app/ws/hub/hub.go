@@ -202,8 +202,13 @@ func (h *Hub) SendToRoom(roomID string, event wsevent.Event) {
 }
 
 func (h *Hub) Unicast(addr string, event wsevent.Event) error {
-	start := time.Now()
 	userID := strings.TrimPrefix(addr, "user:")
+	h.SendToUser(userID, event)
+	return nil
+}
+
+func (h *Hub) SendToUser(userID string, event wsevent.Event) {
+	start := time.Now()
 	h.mu.RLock()
 	conns := append([]*Conn(nil), h.users[userID]...)
 	h.mu.RUnlock()
@@ -232,7 +237,6 @@ func (h *Hub) Unicast(addr string, event wsevent.Event) error {
 		Recipients: delivered,
 		Duration:   time.Since(start),
 	})
-	return nil
 }
 
 func (h *Hub) deliver(c *Conn, event wsevent.Event) bool {
