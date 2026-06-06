@@ -355,7 +355,10 @@ func deleteJSON(ctx context.Context, cfg Config, path string, token string) erro
 func doJSON(ctx context.Context, cfg Config, method string, path string, token string, body any, out any) error {
 	var reader io.Reader
 	if body != nil {
-		raw, _ := json.Marshal(body)
+		raw, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
 		reader = bytes.NewReader(raw)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, cfg.BaseURL+path, reader)

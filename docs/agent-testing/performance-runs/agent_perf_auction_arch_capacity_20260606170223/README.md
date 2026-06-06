@@ -1,6 +1,6 @@
 # Performance Run: agent_perf_auction_arch_capacity_20260606170223
 
-This directory contains the runner assets for the internal architecture capacity test approved on 2026-06-06.
+This directory contains the runner assets for the internal architecture capacity test planned on 2026-06-06 (execution requires explicit approval).
 
 Scope:
 

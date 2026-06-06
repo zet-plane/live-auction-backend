@@ -6,8 +6,7 @@
 
 **Architecture:** The first deliverable is a self-contained JMeter directory with a `.jmx`, sample CSV, README, and evidence placeholder. The `.jmx` consumes CSV rows, logs in, issues a WebSocket ticket, opens one WSS connection, reads one first message, and closes the socket. Real data preparation and mixed-load scripting remain separate follow-up tasks.
 
-**Tech Stack:** Apache JMeter 5.x XML, Alibaba Cloud PTS JMeter scenario, JMeter WebSocket Samplers plugin by Peter Doornbosch, CSV Data Set Config, HTTP samplers, JSON extractors.
-
+**Tech Stack:** Apache JMeter 5.x XML, Alibaba Cloud PTS JMeter scenario, JSR223/Groovy sampler using Java 11 `java.net.http.WebSocket`, CSV Data Set Config, HTTP samplers, JSON extractors.
 ---
 
 ### Task 1: WSS Connect Sweep Upload Asset
@@ -44,17 +43,10 @@ The JMX must contain:
 - JSON extractor for `data.token`.
 - HTTP ticket sampler: `POST /api/v1/ws-ticket`.
 - JSON extractor for `data.ticket`.
-- Open WebSocket sampler using:
-  - testclass `eu.luminis.jmeter.wssampler.OpenWebSocketSampler`
-  - guiclass `eu.luminis.jmeter.wssampler.OpenWebSocketSamplerGui`
-  - `server=${BASE_HOST}`
-  - `port=${BASE_PORT}`
-  - `path=/ws/v1/rooms/${room_id}?ticket=${ticket}&stream=${STREAM}`
-  - `TLS=true`
-  - `connectTimeout=${CONNECT_TIMEOUT_MS}`
-  - `readTimeout=${REQUEST_TIMEOUT_MS}`
-- Single Read WebSocket sampler for first message.
-- Close WebSocket sampler.
+- WebSocket connect + first-message check implemented as a JSR223/Groovy sampler using Java 11 `java.net.http.WebSocket` (no `eu.luminis.*` plugin samplers).
+  - Build URI: `/ws/v1/rooms/${room_id}?ticket=${ticket}&stream=${STREAM}`
+  - Enforce `CONNECT_TIMEOUT_MS` and `REQUEST_TIMEOUT_MS` in the sampler.
+  - Mark the sample failed if open or first message times out.
 
 - [ ] **Step 4: Verify XML and sensitive scan**
 
