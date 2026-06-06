@@ -52,6 +52,8 @@ remaining_ms = end_time_unix_ms - server_now
 
 ## Reconnect
 
+Reconnect must not depend on returning to the same backend pod.
+
 On reconnect, the client must:
 
 1. Fetch room detail.
@@ -59,4 +61,14 @@ On reconnect, the client must:
 3. Fetch ranking.
 4. Request fresh WS tickets.
 5. Reconnect in the mode active before disconnect: `all` for ordinary mode, or `control` then `market` for millisecond mode.
-6. Apply `auction_snapshot` only if its `auction_version` is greater than or equal to the local version.
+6. Wait for `auction_snapshot` from the new connection when an active room item exists.
+7. Apply `auction_snapshot` as the authoritative state for the current item.
+8. Resume incremental processing after the snapshot.
+
+Clients must keep the largest `auction_version` seen for each `item_id`.
+
+- If `auction_snapshot.auction_version` is greater than or equal to the local version, the snapshot replaces local auction state.
+- If an incremental event has an older `auction_version`, it must not overwrite current price, leader, ranking, winner, or end time.
+- `time_sync` only corrects clock offset and remaining time display. It must not overwrite an ended status, winner, or deal price.
+
+If a bid HTTP request times out while the WebSocket disconnects, retry the bid with the same `idempotency_key`. The server-side Redis Lua path treats the retry as the same bid attempt.
