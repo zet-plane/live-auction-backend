@@ -5,7 +5,6 @@ go 1.25.0
 require (
 	github.com/bwmarrin/snowflake v0.3.0
 	github.com/flamego/binding v1.3.0
-	github.com/flamego/cors v1.0.2
 	github.com/flamego/flamego v1.8.0
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/go-sql-driver/mysql v1.8.1
