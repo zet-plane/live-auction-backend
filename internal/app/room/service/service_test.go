@@ -483,6 +483,32 @@ func TestListRoomFeedReturnsOnlyLiveRoomsInStableOrder(t *testing.T) {
 	}
 }
 
+func TestListRoomFeedReturnsFullItemsInQueueOrder(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	reader := &fakeItemReader{items: map[string]itemdto.ItemListDTO{
+		"item_1": {ID: "item_1", RoomID: "room_a", Title: "First", Status: itemmodel.ItemPublished, CurrentPrice: 1000},
+		"item_2": {ID: "item_2", RoomID: "room_a", Title: "Second", Status: itemmodel.ItemOngoing, CurrentPrice: 1500},
+	}}
+	base := time.Date(2026, 6, 5, 10, 0, 0, 0, time.UTC)
+	addRoom(store, "room_a", model.RoomLive, base)
+	fc.queues["room_a"] = []string{"item_2", "item_1"}
+
+	result, err := NewService(store, fc, reader).ListRoomFeed(context.Background(), dto.RoomFeedInput{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListRoomFeed: %v", err)
+	}
+	if len(result.List) != 1 {
+		t.Fatalf("expected 1 live room, got %d", len(result.List))
+	}
+	if len(result.List[0].Item) != 2 {
+		t.Fatalf("expected 2 full items, got %d", len(result.List[0].Item))
+	}
+	if result.List[0].Item[0].ID != "item_2" || result.List[0].Item[1].ID != "item_1" {
+		t.Fatalf("expected item order [item_2 item_1], got [%s %s]", result.List[0].Item[0].ID, result.List[0].Item[1].ID)
+	}
+}
+
 func TestListRoomFeedReturnsNextBatchFromCursor(t *testing.T) {
 	store := newFakeStore()
 	base := time.Date(2026, 6, 5, 10, 0, 0, 0, time.UTC)

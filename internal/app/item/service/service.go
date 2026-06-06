@@ -11,7 +11,7 @@ import (
 	"github.com/zet-plane/live-auction-backend/internal/app/item/dao"
 	"github.com/zet-plane/live-auction-backend/internal/app/item/dto"
 	"github.com/zet-plane/live-auction-backend/internal/app/item/model"
-	orderservice "github.com/zet-plane/live-auction-backend/internal/app/order/service"
+	ordermodel "github.com/zet-plane/live-auction-backend/internal/app/order/model"
 	usermodel "github.com/zet-plane/live-auction-backend/internal/app/user/model"
 	"github.com/zet-plane/live-auction-backend/internal/core/observability"
 	"github.com/zet-plane/live-auction-backend/pkg/errorx"
@@ -25,7 +25,7 @@ type Service struct {
 	cache       itemcache.Cache
 	policy      dto.AuctionPolicy
 	now         func() time.Time
-	orderSvc    *orderservice.Service
+	orderSvc    OrderCreator
 	depositSvc  DepositChecker
 	broadcaster wsevent.Broadcaster
 
@@ -42,7 +42,11 @@ type DepositChecker interface {
 	HasPaidDeposit(ctx context.Context, itemID, userID string, requiredAmount int64) (bool, error)
 }
 
-func NewService(store dao.Store, policy dto.AuctionPolicy, cache itemcache.Cache, orderSvc *orderservice.Service, depositSvc DepositChecker, broadcaster wsevent.Broadcaster) *Service {
+type OrderCreator interface {
+	CreateOrder(ctx context.Context, itemID, userID string, price int64) (*ordermodel.Order, error)
+}
+
+func NewService(store dao.Store, policy dto.AuctionPolicy, cache itemcache.Cache, orderSvc OrderCreator, depositSvc DepositChecker, broadcaster wsevent.Broadcaster) *Service {
 	return &Service{
 		store:             store,
 		cache:             cache,

@@ -13,7 +13,6 @@ import (
 	itemmodel "github.com/zet-plane/live-auction-backend/internal/app/item/model"
 	orderdto "github.com/zet-plane/live-auction-backend/internal/app/order/dto"
 	ordermodel "github.com/zet-plane/live-auction-backend/internal/app/order/model"
-	orderservice "github.com/zet-plane/live-auction-backend/internal/app/order/service"
 	usermodel "github.com/zet-plane/live-auction-backend/internal/app/user/model"
 	"github.com/zet-plane/live-auction-backend/internal/core/observability"
 	"github.com/zet-plane/live-auction-backend/pkg/errorx"
@@ -853,8 +852,8 @@ func TestPlaceBidPriceCapEmitsSingleOrderCreatedToWinner(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()
 	fb := &fakeBroadcaster{}
-	orderSvc := orderservice.NewService(newFakeOrderStore(), 30*time.Minute)
-	svc := NewService(store, testPolicy, fc, orderSvc, nil, fb)
+	orders := &fakeOrderCreator{}
+	svc := NewService(store, testPolicy, fc, orders, nil, fb)
 	endTime := time.Now().Add(5 * time.Minute)
 	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 500, endTime)
 
@@ -902,6 +901,12 @@ func TestPlaceBidPriceCapEmitsSingleOrderCreatedToWinner(t *testing.T) {
 	if payload.AuctionVersion != 1 {
 		t.Fatalf("expected order_created auction_version 1, got %d", payload.AuctionVersion)
 	}
+}
+
+type fakeOrderCreator struct{}
+
+func (f *fakeOrderCreator) CreateOrder(_ context.Context, itemID, userID string, price int64) (*ordermodel.Order, error) {
+	return &ordermodel.Order{ID: "order_fake", ItemID: itemID, UserID: userID, Price: price}, nil
 }
 
 type fakeDepositChecker struct {
