@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/zet-plane/live-auction-backend/internal/app"
 	depositapp "github.com/zet-plane/live-auction-backend/internal/app/deposit"
@@ -17,6 +18,7 @@ import (
 	"github.com/zet-plane/live-auction-backend/internal/app/item/service"
 	orderapp "github.com/zet-plane/live-auction-backend/internal/app/order"
 	wsapp "github.com/zet-plane/live-auction-backend/internal/app/ws"
+	"github.com/zet-plane/live-auction-backend/internal/core/cronlease"
 	"github.com/zet-plane/live-auction-backend/internal/core/kernel"
 	"github.com/zet-plane/live-auction-backend/internal/core/observability"
 )
@@ -73,18 +75,23 @@ func (i *Item) Load(engine *kernel.Engine) error {
 		c = cache.NewRedisCache(engine.Cache)
 	}
 	svc := service.NewService(store, policy, c, orderapp.Svc, depositapp.Svc, wsapp.Hub)
-	svc.SetRankingRebuildOwner(bidLogConsumerName(os.Hostname))
+	leaseStore := cronlease.RedisStore{Client: engine.Cache}
+	leaseOwner := bidLogConsumerName(os.Hostname)
+	svc.SetRankingRebuildOwner(leaseOwner)
 	i.svc = svc
 	ItemReader = svc
 	handler.Init(svc)
 	router.RegisterRoutes(engine.Flame)
 	wsapp.SetSnapshotProvider(svc)
 	engine.Cron.AddFunc("@every 1s", observability.WrapCron("item.start_due_auctions", svc.StartDueAuctions))
-	engine.Cron.AddFunc("@every 1s", observability.WrapCron("item.settle_due_auctions", svc.SettleDueAuctions))
-	engine.Cron.AddFunc("@every 1s", observability.WrapCron("item.broadcast_time_sync", svc.BroadcastTimeSync))
-	engine.Cron.AddFunc("@every 1m", observability.WrapCron("item.end_expired_auctions_fallback", svc.EndExpiredAuctions))
+	engine.Cron.AddFunc("@every 1s", observability.WrapCron("item.settle_due_auctions",
+		cronlease.Wrap("item.settle_due_auctions", leaseOwner, 2*time.Second, leaseStore, svc.SettleDueAuctions)))
+	engine.Cron.AddFunc("@every 1s", observability.WrapCron("item.broadcast_time_sync",
+		cronlease.Wrap("item.broadcast_time_sync", leaseOwner, time.Second, leaseStore, svc.BroadcastTimeSync)))
+	engine.Cron.AddFunc("@every 1m", observability.WrapCron("item.end_expired_auctions_fallback",
+		cronlease.Wrap("item.end_expired_auctions_fallback", leaseOwner, 30*time.Second, leaseStore, svc.EndExpiredAuctions)))
 	if engine.Cache != nil {
-		reader := cache.NewBidLogStreamReader(engine.Cache, bidLogConsumerName(os.Hostname))
+		reader := cache.NewBidLogStreamReader(engine.Cache, leaseOwner)
 		if err := reader.EnsureGroup(engine.Context); err != nil {
 			return err
 		}
