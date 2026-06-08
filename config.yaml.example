@@ -26,6 +26,17 @@ auction:
   auto_extend_sec: 10
   max_extend_count: 6
   max_total_extend_sec: 300
+storage:
+  tos:
+    enabled: false
+    region: cn-beijing
+    endpoint: tos-cn-beijing.volces.com
+    bucket: live-auction-images
+    access_key_id: ""
+    secret_access_key: ""
+    public_base_url: https://img.example.com
+    upload_expires: 10m
+    image_max_size_bytes: 10485760
 observability:
   enabled: true
   service_name: live-auction-backend

@@ -83,6 +83,17 @@ func (c *GlobalConfig) ObservabilityMetricsInterval() time.Duration {
 	return parseDuration(c.Observability.MetricsInterval, 15*time.Second)
 }
 
+func (c *GlobalConfig) StorageTOSUploadExpires() time.Duration {
+	return parseDuration(c.Storage.TOS.UploadExpires, 10*time.Minute)
+}
+
+func (c *GlobalConfig) StorageTOSImageMaxSizeBytes() int64 {
+	if c.Storage.TOS.ImageMaxSizeBytes <= 0 {
+		return 10 * 1024 * 1024
+	}
+	return c.Storage.TOS.ImageMaxSizeBytes
+}
+
 func parseDuration(value string, fallback time.Duration) time.Duration {
 	d, err := time.ParseDuration(value)
 	if err != nil || d <= 0 {

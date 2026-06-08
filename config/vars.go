@@ -9,6 +9,7 @@ type GlobalConfig struct {
 	Auth          Auth          `yaml:"auth"          mapstructure:"auth"`
 	Security      Security      `yaml:"security"      mapstructure:"security"`
 	Auction       Auction       `yaml:"auction"       mapstructure:"auction"`
+	Storage       Storage       `yaml:"storage"       mapstructure:"storage"`
 	Observability Observability `yaml:"observability" mapstructure:"observability"`
 }
 
@@ -50,6 +51,22 @@ type Auction struct {
 	AutoExtendSec     int `yaml:"auto_extend_sec"       mapstructure:"auto_extend_sec"`
 	MaxExtendCount    int `yaml:"max_extend_count"      mapstructure:"max_extend_count"`
 	MaxTotalExtendSec int `yaml:"max_total_extend_sec"  mapstructure:"max_total_extend_sec"`
+}
+
+type Storage struct {
+	TOS TOSStorage `yaml:"tos" mapstructure:"tos"`
+}
+
+type TOSStorage struct {
+	Enabled           bool   `yaml:"enabled"              mapstructure:"enabled"`
+	Region            string `yaml:"region"               mapstructure:"region"`
+	Endpoint          string `yaml:"endpoint"             mapstructure:"endpoint"`
+	Bucket            string `yaml:"bucket"               mapstructure:"bucket"`
+	AccessKeyID       string `yaml:"access_key_id"        mapstructure:"access_key_id"`
+	SecretAccessKey   string `yaml:"secret_access_key"    mapstructure:"secret_access_key"`
+	PublicBaseURL     string `yaml:"public_base_url"      mapstructure:"public_base_url"`
+	UploadExpires     string `yaml:"upload_expires"       mapstructure:"upload_expires"`
+	ImageMaxSizeBytes int64  `yaml:"image_max_size_bytes" mapstructure:"image_max_size_bytes"`
 }
 
 type Observability struct {

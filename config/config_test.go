@@ -21,3 +21,37 @@ func TestObservabilityMetricsInterval(t *testing.T) {
 		t.Fatalf("bad interval fallback = %v, want 15s", got)
 	}
 }
+
+func TestStorageTOSUploadExpires(t *testing.T) {
+	cfg := &GlobalConfig{}
+	if got := cfg.StorageTOSUploadExpires(); got != 10*time.Minute {
+		t.Fatalf("default upload expires = %v, want 10m", got)
+	}
+
+	cfg.Storage.TOS.UploadExpires = "5m"
+	if got := cfg.StorageTOSUploadExpires(); got != 5*time.Minute {
+		t.Fatalf("configured upload expires = %v, want 5m", got)
+	}
+
+	cfg.Storage.TOS.UploadExpires = "bad"
+	if got := cfg.StorageTOSUploadExpires(); got != 10*time.Minute {
+		t.Fatalf("bad upload expires fallback = %v, want 10m", got)
+	}
+}
+
+func TestStorageTOSImageMaxSizeBytes(t *testing.T) {
+	cfg := &GlobalConfig{}
+	if got := cfg.StorageTOSImageMaxSizeBytes(); got != 10*1024*1024 {
+		t.Fatalf("default max size = %d, want 10485760", got)
+	}
+
+	cfg.Storage.TOS.ImageMaxSizeBytes = 2 * 1024 * 1024
+	if got := cfg.StorageTOSImageMaxSizeBytes(); got != 2*1024*1024 {
+		t.Fatalf("configured max size = %d, want 2097152", got)
+	}
+
+	cfg.Storage.TOS.ImageMaxSizeBytes = -1
+	if got := cfg.StorageTOSImageMaxSizeBytes(); got != 10*1024*1024 {
+		t.Fatalf("negative max size fallback = %d, want 10485760", got)
+	}
+}
