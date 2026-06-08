@@ -47,6 +47,26 @@ func TestOriginPolicyAllowsConfiguredOriginsExactly(t *testing.T) {
 	}
 }
 
+func TestOriginPolicyAllowsConfiguredLocalhostWildcardPorts(t *testing.T) {
+	policy := NewOriginPolicy("release", []string{"https://app.example.com", "http://localhost:*", "http://127.0.0.1:*"})
+
+	if !policy.Allows("http://localhost:5173") {
+		t.Fatal("localhost wildcard should allow Vite port")
+	}
+	if !policy.Allows("http://localhost:3000") {
+		t.Fatal("localhost wildcard should allow another local port")
+	}
+	if !policy.Allows("http://127.0.0.1:8080") {
+		t.Fatal("127.0.0.1 wildcard should allow local loopback port")
+	}
+	if policy.Allows("http://evil.example.com:5173") {
+		t.Fatal("localhost wildcard should not allow remote hosts")
+	}
+	if policy.Allows("https://localhost:5173") {
+		t.Fatal("http localhost wildcard should not allow https localhost")
+	}
+}
+
 func TestOriginPolicyWildcardAllowsAnyOrigin(t *testing.T) {
 	policy := NewOriginPolicy("release", []string{"*"})
 

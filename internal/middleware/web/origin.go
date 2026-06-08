@@ -11,13 +11,17 @@ import (
 )
 
 type OriginPolicy struct {
-	allowed        map[string]struct{}
-	allowAny       bool
-	allowLocalhost bool
+	allowed            map[string]struct{}
+	localhostWildcards map[string]struct{}
+	allowAny           bool
+	allowLocalhost     bool
 }
 
 func NewOriginPolicy(mode string, origins []string) OriginPolicy {
-	policy := OriginPolicy{allowed: make(map[string]struct{})}
+	policy := OriginPolicy{
+		allowed:            make(map[string]struct{}),
+		localhostWildcards: make(map[string]struct{}),
+	}
 	for _, origin := range origins {
 		origin = normalizeOrigin(origin)
 		if origin == "" {
@@ -25,6 +29,10 @@ func NewOriginPolicy(mode string, origins []string) OriginPolicy {
 		}
 		if origin == "*" {
 			policy.allowAny = true
+			continue
+		}
+		if key, ok := parseLocalhostWildcard(origin); ok {
+			policy.localhostWildcards[key] = struct{}{}
 			continue
 		}
 		policy.allowed[origin] = struct{}{}
@@ -42,6 +50,9 @@ func (p OriginPolicy) Allows(origin string) bool {
 		return true
 	}
 	if _, ok := p.allowed[origin]; ok {
+		return true
+	}
+	if p.allowsLocalhostWildcard(origin) {
 		return true
 	}
 	if p.allowLocalhost && isLocalhostOrigin(origin) {
@@ -99,12 +110,40 @@ func isLocalhostOrigin(origin string) bool {
 	if err != nil {
 		return false
 	}
-	switch u.Hostname() {
+	return isLocalhostHost(u.Hostname())
+}
+
+func isLocalhostHost(host string) bool {
+	switch strings.ToLower(host) {
 	case "localhost", "127.0.0.1", "::1":
 		return true
 	default:
 		return false
 	}
+}
+
+func parseLocalhostWildcard(origin string) (string, bool) {
+	if !strings.HasSuffix(origin, ":*") {
+		return "", false
+	}
+	u, err := url.Parse(strings.TrimSuffix(origin, ":*"))
+	if err != nil || u.Scheme == "" || !isLocalhostHost(u.Hostname()) {
+		return "", false
+	}
+	return strings.ToLower(u.Scheme) + "://" + strings.ToLower(u.Hostname()), true
+}
+
+func (p OriginPolicy) allowsLocalhostWildcard(origin string) bool {
+	if len(p.localhostWildcards) == 0 {
+		return false
+	}
+	u, err := url.Parse(origin)
+	if err != nil || u.Scheme == "" || !isLocalhostHost(u.Hostname()) {
+		return false
+	}
+	key := strings.ToLower(u.Scheme) + "://" + strings.ToLower(u.Hostname())
+	_, ok := p.localhostWildcards[key]
+	return ok
 }
 
 func isProductionMode(mode string) bool {
