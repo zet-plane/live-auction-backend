@@ -3,7 +3,6 @@ package handler
 import (
 	"context"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/flamego/binding"
@@ -225,28 +224,48 @@ func availabilityHealthData() (healthData, bool) {
 	snapshot := availabilityRuntime.Snapshot()
 	components := make(map[string]componentStatus)
 	if !snapshot.Valid {
-		components["control_plane"] = componentStatus{Status: "error", Error: snapshot.Error}
+		components["availability_mode"] = componentStatus{Status: "error", Error: snapshot.Error}
 		observability.DefaultRecorder().Availability(context.Background(), observability.AvailabilityMetric{Result: "invalid"})
 		return healthData{Status: "degraded", Components: components}, false
 	}
 
-	state := snapshot.State
-	components["control_plane"] = componentStatus{Status: "ok"}
-	components["mode"] = componentStatus{Status: "ok", Value: string(state.Mode)}
-	components["epoch"] = componentStatus{Status: "ok", Value: stringValue(state.Epoch)}
-	components["active_redis"] = componentStatus{Status: "ok", Value: string(state.ActiveRedis)}
-	components["mysql_state"] = componentStatus{Status: string(state.MySQLState)}
-	components["ticket"] = componentStatus{Status: "ok"}
-	components["presence"] = componentStatus{Status: wshub.PresenceStatus()}
+	components["availability_mode"] = componentStatus{Status: "ok", Value: string(snapshot.Mode)}
+	components["active_redis"] = componentStatus{Status: statusOK(snapshot.ActiveRedis != availability.RedisNone), Value: string(snapshot.ActiveRedis)}
+	components["cloud_redis"] = dependencyComponent(snapshot.CloudRedis)
+	components["local_redis"] = dependencyComponent(snapshot.LocalRedis)
+	components["mysql"] = dependencyComponent(snapshot.MySQL)
+	components["mysql_state"] = componentStatus{Status: "ok", Value: string(snapshot.MySQLState)}
+	presenceStatus := wshub.PresenceStatus()
+	components["presence"] = componentStatus{Status: statusOK(presenceStatus == "ok"), Value: presenceStatus}
+
+	overall := "ok"
+	ready := true
+	switch snapshot.Mode {
+	case availability.ModeLocalRedisActive, availability.ModeLocalRedisSwitching, availability.ModeMySQLBuffering:
+		overall = "degraded"
+	case availability.ModeAuctionProtected:
+		overall = "degraded"
+		ready = false
+	}
+
 	observability.DefaultRecorder().Availability(context.Background(), observability.AvailabilityMetric{
-		Mode:        string(state.Mode),
-		Epoch:       state.Epoch,
-		ActiveRedis: string(state.ActiveRedis),
-		Result:      "ok",
+		Mode:        string(snapshot.Mode),
+		ActiveRedis: string(snapshot.ActiveRedis),
+		Result:      overall,
 	})
-	return healthData{Status: "ok", Components: components}, true
+	return healthData{Status: overall, Components: components}, ready
 }
 
-func stringValue(v int64) string {
-	return strconv.FormatInt(v, 10)
+func dependencyComponent(status availability.DependencyStatus) componentStatus {
+	if !status.Healthy {
+		return componentStatus{Status: "error", Error: status.Error, Latency: status.Latency.String()}
+	}
+	return componentStatus{Status: "ok", Latency: status.Latency.String()}
+}
+
+func statusOK(ok bool) string {
+	if ok {
+		return "ok"
+	}
+	return "error"
 }

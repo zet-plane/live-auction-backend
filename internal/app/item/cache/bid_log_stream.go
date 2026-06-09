@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -64,7 +65,136 @@ func NewBidLogStreamReader(client *redis.Client, consumer string) *BidLogStreamR
 }
 
 func (r *BidLogStreamReader) EnsureGroup(ctx context.Context) error {
-	err := r.client.XGroupCreateMkStream(ctx, BidLogStreamName, BidLogConsumerGroup, "0").Err()
+	return ensureBidLogGroup(ctx, r.client)
+}
+
+type ActiveBidLogStreamReader struct {
+	provider activeRedisProvider
+	consumer string
+
+	mu             sync.Mutex
+	ensuredClients map[*redis.Client]struct{}
+	lastReadClient *redis.Client
+}
+
+func NewActiveBidLogStreamReader(provider activeRedisProvider, consumer string) *ActiveBidLogStreamReader {
+	return &ActiveBidLogStreamReader{
+		provider:       provider,
+		consumer:       consumer,
+		ensuredClients: make(map[*redis.Client]struct{}),
+	}
+}
+
+func (r *ActiveBidLogStreamReader) EnsureGroup(ctx context.Context) error {
+	client, err := r.activeClient()
+	if err != nil {
+		return err
+	}
+	return r.ensureGroup(ctx, client)
+}
+
+func (r *ActiveBidLogStreamReader) Read(ctx context.Context, count int) ([]BidLogStreamMessage, error) {
+	reader, client, err := r.currentReader(ctx)
+	if err != nil {
+		return nil, err
+	}
+	messages, err := reader.Read(ctx, count)
+	if err == nil {
+		r.rememberReadClient(client)
+	}
+	return messages, err
+}
+
+func (r *ActiveBidLogStreamReader) ReadPending(ctx context.Context, count int) ([]BidLogStreamMessage, error) {
+	reader, client, err := r.currentReader(ctx)
+	if err != nil {
+		return nil, err
+	}
+	messages, err := reader.ReadPending(ctx, count)
+	if err == nil {
+		r.rememberReadClient(client)
+	}
+	return messages, err
+}
+
+func (r *ActiveBidLogStreamReader) Ack(ctx context.Context, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	client := r.ackClient()
+	if client == nil {
+		var err error
+		client, err = r.activeClient()
+		if err != nil {
+			return err
+		}
+	}
+	if err := r.ensureGroup(ctx, client); err != nil {
+		return err
+	}
+	return NewBidLogStreamReader(client, r.consumer).Ack(ctx, ids)
+}
+
+func (r *ActiveBidLogStreamReader) currentReader(ctx context.Context) (*BidLogStreamReader, *redis.Client, error) {
+	client, err := r.activeClient()
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := r.ensureGroup(ctx, client); err != nil {
+		return nil, nil, err
+	}
+	return NewBidLogStreamReader(client, r.consumer), client, nil
+}
+
+func (r *ActiveBidLogStreamReader) activeClient() (*redis.Client, error) {
+	if r == nil || r.provider == nil {
+		return nil, errActiveRedisUnavailable
+	}
+	client, _, ok := r.provider.ActiveRedis()
+	if !ok || client == nil {
+		return nil, errActiveRedisUnavailable
+	}
+	return client, nil
+}
+
+func (r *ActiveBidLogStreamReader) ensureGroup(ctx context.Context, client *redis.Client) error {
+	if client == nil {
+		return errActiveRedisUnavailable
+	}
+	r.mu.Lock()
+	if _, ok := r.ensuredClients[client]; ok {
+		r.mu.Unlock()
+		return nil
+	}
+	r.mu.Unlock()
+
+	if err := ensureBidLogGroup(ctx, client); err != nil {
+		return err
+	}
+
+	r.mu.Lock()
+	r.ensuredClients[client] = struct{}{}
+	r.mu.Unlock()
+	return nil
+}
+
+func (r *ActiveBidLogStreamReader) rememberReadClient(client *redis.Client) {
+	r.mu.Lock()
+	r.lastReadClient = client
+	r.mu.Unlock()
+}
+
+func (r *ActiveBidLogStreamReader) ackClient() *redis.Client {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.lastReadClient
+}
+
+func ensureBidLogGroup(ctx context.Context, client *redis.Client) error {
+	if client == nil {
+		return errActiveRedisUnavailable
+	}
+	err := client.XGroupCreateMkStream(ctx, BidLogStreamName, BidLogConsumerGroup, "0").Err()
 	if err == nil {
 		return nil
 	}

@@ -118,24 +118,17 @@ var StartCmd = &cobra.Command{
 			logx.Fatalf("failed to create local redis client: %v", err)
 		}
 
-		statePath := cfg.Availability.StatePath
-		if statePath == "" {
-			statePath = "/availability/state.json"
-		}
-		watcher := availability.NewWatcher(statePath, availability.WatcherOptions{
-			Now:        time.Now,
-			StaleAfter: cfg.AvailabilityStaleThreshold(),
+		availabilityRuntime := availability.NewRuntime(cloudRedis, localRedis, db, availability.Options{
+			ProbeInterval:        cfg.AvailabilityRedisProbeInterval(),
+			FailoverAfter:        cfg.AvailabilityRedisFailoverThreshold(),
+			MySQLBufferingWindow: cfg.MySQLBufferingWindow(),
 		})
-		if err := watcher.Refresh(); err != nil {
-			logx.Warnw("availability state initial refresh failed", "err", err)
-		}
-		go watcher.Run(context.Background(), watcherRefreshInterval(cfg.AvailabilityStaleThreshold()))
-		availabilityRuntime := availability.NewRuntime(watcher, availability.NewRedisSelector(cloudRedis, localRedis))
 
 		engine, err := buildEngine(cfg, db, cloudRedis, localRedis, availabilityRuntime)
 		if err != nil {
 			logx.Fatalf("failed to initialize engine: %v", err)
 		}
+		go availabilityRuntime.Run(engine.Context)
 		if err := run(engine); err != nil {
 			logx.Fatalf("server stopped with error: %v", err)
 		}
@@ -232,12 +225,14 @@ func run(engine *kernel.Engine) error {
 		return err
 	}
 
-	engine.Cancel()
-	engine.Cron.Stop()
-
 	var wg sync.WaitGroup
 	stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer stopCancel()
+
+	err := srv.Shutdown(stopCtx)
+
+	engine.Cancel()
+	engine.Cron.Stop()
 
 	for _, mod := range appInitialize.GetApps() {
 		wg.Add(1)
@@ -245,18 +240,6 @@ func run(engine *kernel.Engine) error {
 	}
 	wg.Wait()
 
-	err := srv.Shutdown(stopCtx)
 	logx.Stop()
 	return err
-}
-
-func watcherRefreshInterval(staleAfter time.Duration) time.Duration {
-	if staleAfter <= 0 {
-		return time.Second
-	}
-	interval := staleAfter / 2
-	if interval < time.Second {
-		return time.Second
-	}
-	return interval
 }

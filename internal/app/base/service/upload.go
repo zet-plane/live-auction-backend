@@ -72,8 +72,11 @@ func NewUploadService(signer Signer, opts Options) *UploadService {
 }
 
 func (s *UploadService) SignImageUpload(ctx context.Context, current *usermodel.User, input dto.SignImageUploadInput) (dto.SignImageUploadResult, error) {
-	if s == nil || s.signer == nil || current == nil {
+	if s == nil || current == nil {
 		return dto.SignImageUploadResult{}, errorx.ErrInternal
+	}
+	if s.signer == nil {
+		return dto.SignImageUploadResult{}, errorx.ErrServiceUnavailable
 	}
 	contentType, ext, err := normalizeImage(input.Filename, input.ContentType)
 	if err != nil {

@@ -47,7 +47,7 @@ spec:
               if redis-cli -h redis ping | grep -q PONG; then
                 echo "redis reachable"
               else
-                echo "redis unavailable at startup; backend will use availability control plane"
+                echo "redis unavailable at startup; backend will use availability runtime"
               fi
       containers:
         - name: app
@@ -89,8 +89,6 @@ spec:
               mountPath: /config/config.yaml
               subPath: config.yaml
               readOnly: true
-            - name: availability-state
-              mountPath: /availability
           resources:
             requests:
               cpu: 100m
@@ -101,10 +99,6 @@ spec:
         - name: config
           secret:
             secretName: app-config
-        - name: availability-state
-          hostPath:
-            path: /var/lib/live-auction/availability
-            type: DirectoryOrCreate
 ---
 apiVersion: v1
 kind: Service

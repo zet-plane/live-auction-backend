@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/zet-plane/live-auction-backend/internal/core/availability"
 	"github.com/zet-plane/live-auction-backend/internal/core/observability"
 	"github.com/zet-plane/live-auction-backend/pkg/logx"
 )
@@ -18,6 +19,14 @@ type RedisStore struct {
 	Client *redis.Client
 }
 
+type activeRedisProvider interface {
+	ActiveRedis() (*redis.Client, availability.Snapshot, bool)
+}
+
+type ActiveRedisStore struct {
+	Provider activeRedisProvider
+}
+
 var ErrUnconfigured = errors.New("cron lease store unconfigured")
 
 func NewRedisStore(client *redis.Client) Store {
@@ -27,11 +36,29 @@ func NewRedisStore(client *redis.Client) Store {
 	return RedisStore{Client: client}
 }
 
+func NewActiveRedisStore(provider activeRedisProvider) Store {
+	if provider == nil {
+		return nil
+	}
+	return ActiveRedisStore{Provider: provider}
+}
+
 func (s RedisStore) Acquire(ctx context.Context, key, value string, ttl time.Duration) (bool, error) {
 	if s.Client == nil {
 		return false, ErrUnconfigured
 	}
 	return s.Client.SetNX(ctx, key, value, ttl).Result()
+}
+
+func (s ActiveRedisStore) Acquire(ctx context.Context, key, value string, ttl time.Duration) (bool, error) {
+	if s.Provider == nil {
+		return false, ErrUnconfigured
+	}
+	client, _, ok := s.Provider.ActiveRedis()
+	if !ok || client == nil {
+		return false, ErrUnconfigured
+	}
+	return client.SetNX(ctx, key, value, ttl).Result()
 }
 
 func WrapCron(name, podID string, ttl time.Duration, store Store, fn func(context.Context)) func() {

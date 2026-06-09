@@ -2056,10 +2056,13 @@ func TestSettleDueAuctionsMarksEndedAndKeepsSnapshot(t *testing.T) {
 
 func TestSettleDueAuctionsPausesWhileMySQLBuffering(t *testing.T) {
 	svc := newTestService(t)
-	svc.SetAvailabilitySnapshotForTest(availability.Snapshot{Valid: true, State: availability.State{
-		Version: 1, Mode: availability.ModeMySQLBuffering, Epoch: 5, ActiveRedis: availability.RedisCloud,
-		MySQLState: availability.MySQLBuffering, UpdatedAtUnixMS: time.Now().UnixMilli(),
-	}})
+	svc.SetAvailabilitySnapshotForTest(availability.Snapshot{
+		Valid:       true,
+		Mode:        availability.ModeMySQLBuffering,
+		ActiveRedis: availability.RedisCloud,
+		MySQLState:  availability.MySQLBuffering,
+		UpdatedAt:   time.Now(),
+	})
 
 	svc.SettleDueAuctions(context.Background())
 	if svc.cache.(*fakeCache).settleCalls != 0 {

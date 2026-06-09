@@ -49,21 +49,54 @@ func TestReadyzWithoutDBReturnsServiceUnavailable(t *testing.T) {
 	}
 }
 
-func TestReadyzStaysReadyWhenCloudRedisDownButControlPlaneValid(t *testing.T) {
+func TestReadyzReportsLocalRedisActiveAsDegradedOK(t *testing.T) {
 	prevAvailability := availabilityRuntime
 	t.Cleanup(func() { availabilityRuntime = prevAvailability })
-	InitAvailabilityForTest(availability.Snapshot{Valid: true, State: availability.State{
-		Version: 1, Mode: availability.ModeLocalRedisActive, Epoch: 2, ActiveRedis: availability.RedisLocal,
-		MySQLState: availability.MySQLHealthy, UpdatedAtUnixMS: time.Now().UnixMilli(), Reason: "cloud_redis_down",
-	}})
-	f := flamego.New()
-	f.Use(flamego.Renderer())
-	f.Get("/readyz", Readyz)
+	InitAvailabilityForTest(availability.Snapshot{
+		Valid:       true,
+		Mode:        availability.ModeLocalRedisActive,
+		ActiveRedis: availability.RedisLocal,
+		CloudRedis:  availability.DependencyStatus{Healthy: false, Error: "cloud down"},
+		LocalRedis:  availability.DependencyStatus{Healthy: true},
+		MySQL:       availability.DependencyStatus{Healthy: true},
+		MySQLState:  availability.MySQLHealthy,
+		Reason:      "local_sticky",
+		UpdatedAt:   time.Now(),
+	})
 
-	rec := httptest.NewRecorder()
-	f.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("readyz status = %d body=%s", rec.Code, rec.Body.String())
+	status, body := requestReadyzForTest()
+	if status != http.StatusOK {
+		t.Fatalf("readyz status = %d, want 200; body=%s", status, body)
+	}
+	if !strings.Contains(body, `"status":"degraded"`) {
+		t.Fatalf("readyz body missing degraded status: %s", body)
+	}
+	if !strings.Contains(body, `"active_redis":{"status":"ok","value":"local"}`) {
+		t.Fatalf("readyz body missing active redis local value: %s", body)
+	}
+}
+
+func TestReadyzReturns503WhenAuctionProtected(t *testing.T) {
+	prevAvailability := availabilityRuntime
+	t.Cleanup(func() { availabilityRuntime = prevAvailability })
+	InitAvailabilityForTest(availability.Snapshot{
+		Valid:       true,
+		Mode:        availability.ModeAuctionProtected,
+		ActiveRedis: availability.RedisNone,
+		CloudRedis:  availability.DependencyStatus{Healthy: false, Error: "cloud down"},
+		LocalRedis:  availability.DependencyStatus{Healthy: false, Error: "local down"},
+		MySQL:       availability.DependencyStatus{Healthy: true},
+		MySQLState:  availability.MySQLHealthy,
+		Reason:      "redis_down",
+		UpdatedAt:   time.Now(),
+	})
+
+	status, body := requestReadyzForTest()
+	if status != http.StatusServiceUnavailable {
+		t.Fatalf("readyz status = %d, want 503; body=%s", status, body)
+	}
+	if !strings.Contains(body, `"status":"degraded"`) {
+		t.Fatalf("readyz body missing degraded status: %s", body)
 	}
 }
 
@@ -73,10 +106,17 @@ func TestHealthIncludesPresenceDegraded(t *testing.T) {
 		availabilityRuntime = prevAvailability
 		wshub.SetPresenceStatusForTest("ok")
 	})
-	InitAvailabilityForTest(availability.Snapshot{Valid: true, State: availability.State{
-		Version: 1, Mode: availability.ModeLocalRedisActive, Epoch: 2, ActiveRedis: availability.RedisLocal,
-		MySQLState: availability.MySQLHealthy, UpdatedAtUnixMS: time.Now().UnixMilli(), Reason: "local_mode",
-	}})
+	InitAvailabilityForTest(availability.Snapshot{
+		Valid:       true,
+		Mode:        availability.ModeLocalRedisActive,
+		ActiveRedis: availability.RedisLocal,
+		CloudRedis:  availability.DependencyStatus{Healthy: false, Error: "cloud down"},
+		LocalRedis:  availability.DependencyStatus{Healthy: true},
+		MySQL:       availability.DependencyStatus{Healthy: true},
+		MySQLState:  availability.MySQLHealthy,
+		Reason:      "local_mode",
+		UpdatedAt:   time.Now(),
+	})
 	SetPresenceStatusForTest("degraded")
 	f := flamego.New()
 	f.Use(flamego.Renderer())
@@ -90,6 +130,15 @@ func TestHealthIncludesPresenceDegraded(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "presence") || !strings.Contains(rec.Body.String(), "degraded") {
 		t.Fatalf("health body missing presence degraded: %s", rec.Body.String())
 	}
+}
+
+func requestReadyzForTest() (int, string) {
+	f := flamego.New()
+	f.Use(flamego.Renderer())
+	f.Get("/readyz", Readyz)
+	rec := httptest.NewRecorder()
+	f.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	return rec.Code, rec.Body.String()
 }
 
 func TestSignImageUploadWithoutServiceReturnsInternal(t *testing.T) {
