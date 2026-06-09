@@ -26,8 +26,6 @@ import (
 type Service struct {
 	store                dao.Store
 	cache                itemcache.Cache
-	cloudCache           itemcache.Cache
-	localCache           itemcache.Cache
 	policy               dto.AuctionPolicy
 	availability         availabilityRuntime
 	mysqlBufferingWindow time.Duration
@@ -89,11 +87,6 @@ func (s *Service) SetAvailability(rt availabilityRuntime, mysqlBufferingWindow t
 	s.mysqlBufferingWindow = mysqlBufferingWindow
 }
 
-func (s *Service) SetRedisAuthorities(cloudCache, localCache itemcache.Cache) {
-	s.cloudCache = cloudCache
-	s.localCache = localCache
-}
-
 func (s *Service) SetAvailabilitySnapshotForTest(snapshot availability.Snapshot) {
 	s.SetAvailability(staticAvailability{snapshot: snapshot}, s.mysqlBufferingWindow)
 }
@@ -104,12 +97,12 @@ func (s staticAvailability) Snapshot() availability.Snapshot { return s.snapshot
 
 func (s *Service) availabilitySnapshot() availability.Snapshot {
 	if s.availability == nil {
-		return availability.Snapshot{Valid: true, State: availability.State{
+		return availability.Snapshot{
+			Valid:       true,
 			Mode:        availability.ModeNormalCloud,
-			Epoch:       0,
 			ActiveRedis: availability.RedisCloud,
 			MySQLState:  availability.MySQLHealthy,
-		}}
+		}
 	}
 	return s.availability.Snapshot()
 }
@@ -119,11 +112,16 @@ func (s *Service) shouldPauseSettlement() bool {
 	if !snapshot.Valid {
 		return true
 	}
-	switch snapshot.State.Mode {
-	case availability.ModeMySQLBuffering, availability.ModeAuctionProtected:
+	if snapshot.Mode == availability.ModeAuctionProtected {
 		return true
 	}
-	return snapshot.State.MySQLState == availability.MySQLDown || snapshot.State.MySQLState == availability.MySQLBuffering
+	if snapshot.MySQLBufferingExpired(s.now(), s.mysqlBufferingWindow) {
+		return true
+	}
+	if snapshot.Mode == availability.ModeMySQLBuffering {
+		return true
+	}
+	return false
 }
 
 func (s *Service) SetRankingRebuildOwner(owner string) {
@@ -477,9 +475,8 @@ func (s *Service) startItemWithRule(ctx context.Context, item *model.AuctionItem
 		return errorx.ErrInvalidRequest
 	}
 	if s.cache != nil {
-		snapshot := s.availabilitySnapshot()
 		state := itemcache.AuctionState{
-			AuthorityEpoch:    snapshot.State.Epoch,
+			AuthorityEpoch:    0,
 			AuthorityState:    itemcache.AuthorityReady,
 			RoomID:            item.RoomID,
 			CurrentPrice:      rule.StartPrice,
@@ -648,7 +645,7 @@ func normalizeListInput(query dto.ListItemsInput) dto.ListItemsInput {
 
 func (s *Service) EndExpiredAuctions(ctx context.Context) {
 	if s.shouldPauseSettlement() {
-		logx.Warnw("item.settlement paused by availability state", "mode", s.availabilitySnapshot().State.Mode)
+		logx.Warnw("item.settlement paused by availability state", "mode", s.availabilitySnapshot().Mode)
 		return
 	}
 
@@ -716,7 +713,7 @@ func (s *Service) EndExpiredAuctions(ctx context.Context) {
 
 func (s *Service) SettleDueAuctions(ctx context.Context) {
 	if s.shouldPauseSettlement() {
-		logx.Warnw("item.settlement paused by availability state", "mode", s.availabilitySnapshot().State.Mode)
+		logx.Warnw("item.settlement paused by availability state", "mode", s.availabilitySnapshot().Mode)
 		return
 	}
 

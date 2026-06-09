@@ -5,6 +5,7 @@ import (
 	"sort"
 
 	itemcache "github.com/zet-plane/live-auction-backend/internal/app/item/cache"
+	itemdto "github.com/zet-plane/live-auction-backend/internal/app/item/dto"
 	itemmodel "github.com/zet-plane/live-auction-backend/internal/app/item/model"
 )
 
@@ -44,6 +45,7 @@ func verifyBidLogContinuity(logs []*itemmodel.BidLog, epoch int64) (continuityRe
 }
 
 type availabilityRebuildStore interface {
+	FindItemWithRule(itemID string) (*itemmodel.AuctionItem, *itemmodel.AuctionRule, error)
 	ListActiveItemsForRebuild(limit int) ([]*itemmodel.AuctionItem, error)
 	ListBidLogsForItemEpoch(itemID string, authorityEpoch int64) ([]*itemmodel.BidLog, error)
 }
@@ -55,6 +57,7 @@ type availabilityRebuildCache interface {
 
 type availabilityRebuildConfig struct {
 	BatchSize int
+	Policy    itemdto.AuctionPolicy
 }
 
 type availabilityRebuildWorker struct {
@@ -66,6 +69,12 @@ type availabilityRebuildWorker struct {
 func newAvailabilityRebuildWorker(store availabilityRebuildStore, cache availabilityRebuildCache, cfg availabilityRebuildConfig) *availabilityRebuildWorker {
 	if cfg.BatchSize <= 0 {
 		cfg.BatchSize = 50
+	}
+	if cfg.Policy.ExtendTriggerSec <= 0 ||
+		cfg.Policy.AutoExtendSec <= 0 ||
+		cfg.Policy.MaxExtendCount <= 0 ||
+		cfg.Policy.MaxTotalExtendSec <= 0 {
+		cfg.Policy = itemdto.DefaultAuctionPolicy()
 	}
 	return &availabilityRebuildWorker{store: store, cache: cache, cfg: cfg}
 }
@@ -91,6 +100,9 @@ func (w *availabilityRebuildWorker) rebuildItem(ctx context.Context, itemID stri
 		_ = w.cache.SetItemAuthority(ctx, itemID, epoch, itemcache.AuthorityProtected)
 		return rebuildProtected
 	}
+	if len(logs) == 0 {
+		return w.rebuildNoBidItem(ctx, itemID, epoch)
+	}
 	continuity, ok := verifyBidLogContinuity(logs, epoch)
 	if !ok {
 		_ = w.cache.SetItemAuthority(ctx, itemID, epoch, itemcache.AuthorityProtected)
@@ -104,6 +116,39 @@ func (w *availabilityRebuildWorker) rebuildItem(ctx context.Context, itemID stri
 		DealPrice:      continuity.CurrentPrice,
 		LeaderUserID:   continuity.LeaderUserID,
 		BidCount:       continuity.BidCount,
+	}
+	if err := w.cache.InitAuctionState(ctx, itemID, state); err != nil {
+		_ = w.cache.SetItemAuthority(ctx, itemID, epoch, itemcache.AuthorityProtected)
+		return rebuildProtected
+	}
+	_ = w.cache.SetItemAuthority(ctx, itemID, epoch, itemcache.AuthorityReady)
+	return rebuildReady
+}
+
+func (w *availabilityRebuildWorker) rebuildNoBidItem(ctx context.Context, itemID string, epoch int64) rebuildResult {
+	item, rule, err := w.store.FindItemWithRule(itemID)
+	if err != nil || item == nil || rule == nil || item.Status != itemmodel.ItemOngoing {
+		_ = w.cache.SetItemAuthority(ctx, itemID, epoch, itemcache.AuthorityProtected)
+		return rebuildProtected
+	}
+	state := itemcache.AuctionState{
+		AuthorityEpoch:    epoch,
+		AuthorityState:    itemcache.AuthorityReady,
+		AuctionVersion:    0,
+		Status:            string(item.Status),
+		RoomID:            item.RoomID,
+		CurrentPrice:      rule.StartPrice,
+		DealPrice:         rule.StartPrice,
+		EndTime:           rule.EndTime,
+		EndTimeUnixMS:     rule.EndTime.UnixMilli(),
+		BidIncrement:      rule.BidIncrement,
+		PriceCap:          rule.PriceCap,
+		DepositAmount:     rule.DepositAmount,
+		ExtendTriggerSec:  w.cfg.Policy.ExtendTriggerSec,
+		AutoExtendSec:     w.cfg.Policy.AutoExtendSec,
+		MaxExtendCount:    w.cfg.Policy.MaxExtendCount,
+		MaxTotalExtendSec: w.cfg.Policy.MaxTotalExtendSec,
+		BidCount:          0,
 	}
 	if err := w.cache.InitAuctionState(ctx, itemID, state); err != nil {
 		_ = w.cache.SetItemAuthority(ctx, itemID, epoch, itemcache.AuthorityProtected)

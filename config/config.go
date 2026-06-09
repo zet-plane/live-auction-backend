@@ -87,8 +87,12 @@ func (c *GlobalConfig) StorageTOSUploadExpires() time.Duration {
 	return parseDuration(c.Storage.TOS.UploadExpires, 10*time.Minute)
 }
 
-func (c *GlobalConfig) AvailabilityStaleThreshold() time.Duration {
-	return parseDuration(c.Availability.StaleThreshold, 5*time.Second)
+func (c *GlobalConfig) AvailabilityRedisProbeInterval() time.Duration {
+	return parseDuration(c.Availability.RedisProbeInterval, time.Second)
+}
+
+func (c *GlobalConfig) AvailabilityRedisFailoverThreshold() time.Duration {
+	return parseDuration(c.Availability.RedisFailoverThreshold, 3*time.Second)
 }
 
 func (c *GlobalConfig) MySQLBufferingWindow() time.Duration {

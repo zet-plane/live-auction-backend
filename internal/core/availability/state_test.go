@@ -5,58 +5,47 @@ import (
 	"time"
 )
 
-func TestParseStateAcceptsValidState(t *testing.T) {
+func TestSnapshotHelpers(t *testing.T) {
 	now := time.UnixMilli(1710000000000)
-	raw := []byte(`{"version":1,"mode":"normal_cloud","epoch":12,"active_redis":"cloud","mysql_state":"healthy","mysql_buffering_started_at_unix_ms":0,"updated_at_unix_ms":1710000000000,"reason":"probe_ok"}`)
-
-	state, err := ParseState(raw, ParseOptions{Now: func() time.Time { return now }, LastEpoch: 11, StaleAfter: 5 * time.Second})
-	if err != nil {
-		t.Fatalf("ParseState() error = %v", err)
+	s := Snapshot{
+		Valid:       true,
+		Mode:        ModeLocalRedisActive,
+		ActiveRedis: RedisLocal,
+		CloudRedis:  DependencyStatus{Healthy: false, Error: "timeout"},
+		LocalRedis:  DependencyStatus{Healthy: true, Latency: 2 * time.Millisecond},
+		MySQL:       DependencyStatus{Healthy: true, Latency: time.Millisecond},
+		UpdatedAt:   now,
 	}
-	if state.Mode != ModeNormalCloud || state.Epoch != 12 || state.ActiveRedis != RedisCloud {
-		t.Fatalf("unexpected state: %+v", state)
+
+	if !s.RedisWritable() {
+		t.Fatal("expected redis writable")
 	}
-}
-
-func TestParseStateRejectsRegressingEpoch(t *testing.T) {
-	raw := []byte(`{"version":1,"mode":"normal_cloud","epoch":10,"active_redis":"cloud","mysql_state":"healthy","updated_at_unix_ms":1710000000000,"reason":"probe_ok"}`)
-
-	_, err := ParseState(raw, ParseOptions{Now: func() time.Time { return time.UnixMilli(1710000000000) }, LastEpoch: 11, StaleAfter: 5 * time.Second})
-	if err == nil {
-		t.Fatal("expected regressing epoch to fail")
+	if s.MySQLBufferingExpired(now.Add(11*time.Second), 10*time.Second) {
+		t.Fatal("local redis active without buffering start must not expire")
 	}
 }
 
-func TestParseStateRejectsStaleFile(t *testing.T) {
-	raw := []byte(`{"version":1,"mode":"local_redis_active","epoch":12,"active_redis":"local","mysql_state":"healthy","updated_at_unix_ms":1710000000000,"reason":"probe_ok"}`)
+func TestMySQLBufferingExpired(t *testing.T) {
+	start := time.UnixMilli(1710000000000)
+	s := Snapshot{
+		Valid:                       true,
+		Mode:                        ModeMySQLBuffering,
+		ActiveRedis:                 RedisCloud,
+		MySQLBufferingStartedAt:     start,
+		MySQLBufferingStartedUnixMS: start.UnixMilli(),
+	}
 
-	_, err := ParseState(raw, ParseOptions{Now: func() time.Time { return time.UnixMilli(1710000009000) }, LastEpoch: 12, StaleAfter: 5 * time.Second})
-	if err == nil {
-		t.Fatal("expected stale state to fail")
+	if s.MySQLBufferingExpired(start.Add(9*time.Second), 10*time.Second) {
+		t.Fatal("buffering expired too early")
+	}
+	if !s.MySQLBufferingExpired(start.Add(11*time.Second), 10*time.Second) {
+		t.Fatal("buffering should expire after window")
 	}
 }
 
-func TestParseStateRejectsFutureFile(t *testing.T) {
-	raw := []byte(`{"version":1,"mode":"normal_cloud","epoch":12,"active_redis":"cloud","mysql_state":"healthy","updated_at_unix_ms":1710000001000,"reason":"probe_ok"}`)
-
-	_, err := ParseState(raw, ParseOptions{Now: func() time.Time { return time.UnixMilli(1710000000000) }, LastEpoch: 12, StaleAfter: 5 * time.Second})
-	if err == nil {
-		t.Fatal("expected future state to fail")
-	}
-}
-
-func TestStateProtectsWhenBufferingWindowExpired(t *testing.T) {
-	state := State{
-		Version:                       1,
-		Mode:                          ModeMySQLBuffering,
-		Epoch:                         20,
-		ActiveRedis:                   RedisCloud,
-		MySQLState:                    MySQLBuffering,
-		MySQLBufferingStartedAtUnixMS: 1710000000000,
-		UpdatedAtUnixMS:               1710000000000,
-	}
-
-	if !state.MySQLBufferingExpired(time.UnixMilli(1710000010001), 10*time.Second) {
-		t.Fatal("expected buffering window to be expired")
+func TestProtectedSnapshotIsNotWritable(t *testing.T) {
+	s := Snapshot{Valid: true, Mode: ModeAuctionProtected, ActiveRedis: RedisNone}
+	if s.RedisWritable() {
+		t.Fatal("protected snapshot must not be writable")
 	}
 }

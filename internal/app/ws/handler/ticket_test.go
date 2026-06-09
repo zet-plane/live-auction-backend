@@ -20,7 +20,7 @@ type fakeTicketRedis struct {
 func TestTicketStoreUsesActiveRedisAuthority(t *testing.T) {
 	local := &fakeTicketRedis{}
 	InitTicketStoreForTest(activeTicketStore{
-		snapshot: availability.Snapshot{Valid: true, State: availability.State{Epoch: 8, ActiveRedis: availability.RedisLocal}},
+		snapshot: availability.Snapshot{Valid: true, Mode: availability.ModeLocalRedisActive, ActiveRedis: availability.RedisLocal},
 		local:    local,
 	})
 
@@ -28,14 +28,14 @@ func TestTicketStoreUsesActiveRedisAuthority(t *testing.T) {
 	if err != nil {
 		t.Fatalf("issueTicketForUser() error = %v", err)
 	}
-	if len(local.setKeys) != 1 || local.setKeys[0] != "ws:ticket:8:ticket_1" {
+	if len(local.setKeys) != 1 || local.setKeys[0] != "ws:ticket:0:ticket_1" {
 		t.Fatalf("set keys = %+v", local.setKeys)
 	}
 }
 
 func TestIssueTicketReturnsServiceUnavailableWhenAuthorityUnavailable(t *testing.T) {
 	InitTicketStoreForTest(activeTicketStore{
-		snapshot: availability.Snapshot{Valid: false, Error: "stale"},
+		snapshot: availability.Snapshot{Valid: false, Mode: availability.ModeAuctionProtected, ActiveRedis: availability.RedisNone, Error: "unavailable"},
 	})
 
 	f := flamego.New()

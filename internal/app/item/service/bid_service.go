@@ -45,17 +45,29 @@ func (s *Service) PlaceBid(ctx context.Context, current *usermodel.User, itemID 
 	snapshot := s.availabilitySnapshot()
 	if !snapshot.Valid {
 		bidResult = "rejected"
-		bidReason = "control_plane_invalid"
+		bidReason = "availability_invalid"
 		return nil, ErrAvailabilityUnavailable
 	}
-	if snapshot.State.Mode == availability.ModeAuctionProtected {
+	mysqlBufferingTimeout := snapshot.MySQLBufferingExpired(s.now(), s.mysqlBufferingWindow) ||
+		(snapshot.Mode == availability.ModeAuctionProtected && snapshot.Reason == "mysql_buffering_expired")
+	if snapshot.ActiveRedis == availability.RedisNone && !mysqlBufferingTimeout {
+		bidResult = "rejected"
+		bidReason = "redis_unavailable"
+		return nil, ErrAvailabilityUnavailable
+	}
+	if mysqlBufferingTimeout {
+		bidResult = "rejected"
+		bidReason = "mysql_buffering_timeout"
+		return nil, ErrAvailabilityUnavailable
+	}
+	if snapshot.Mode == availability.ModeAuctionProtected {
 		bidResult = "rejected"
 		bidReason = "auction_protected"
 		return nil, ErrAvailabilityUnavailable
 	}
-	if snapshot.State.MySQLBufferingExpired(s.now(), s.mysqlBufferingWindow) {
+	if !snapshot.RedisWritable() {
 		bidResult = "rejected"
-		bidReason = "mysql_buffering_timeout"
+		bidReason = "redis_unavailable"
 		return nil, ErrAvailabilityUnavailable
 	}
 	hot, err := s.bidHotConfig(ctx, itemID)
@@ -87,12 +99,17 @@ func (s *Service) PlaceBid(ctx context.Context, current *usermodel.User, itemID 
 			return nil, ErrDepositRequired
 		}
 	}
+	if snapshot.MySQLState == availability.MySQLBuffering && hot.PriceCap > 0 && input.Price >= hot.PriceCap {
+		bidResult = "rejected"
+		bidReason = "mysql_buffering_price_cap"
+		return nil, ErrAvailabilityUnavailable
+	}
 
 	bidID = "bid_" + snowflake.MakeUUID()
 	now := s.now()
 	streamStart := time.Now()
 	luaResult, err := s.cache.PlaceBidLua(ctx, hot.ItemID, itemcache.BidLuaArgs{
-		AuthorityEpoch:    snapshot.State.Epoch,
+		AuthorityEpoch:    0,
 		AuthorityState:    itemcache.AuthorityReady,
 		UserID:            current.ID,
 		UserName:          input.UserName,
@@ -328,8 +345,8 @@ func (s *Service) bidHotConfig(ctx context.Context, itemID string) (*itemcache.A
 		existing = state
 	}
 
-	if snapshot.Valid && snapshot.State.ActiveRedis == availability.RedisLocal && existing == nil {
-		if rebuildErr := s.rebuildLocalAuctionState(ctx, itemID, snapshot.State.Epoch); rebuildErr != nil {
+	if snapshot.Valid && snapshot.ActiveRedis == availability.RedisLocal && existing == nil {
+		if rebuildErr := s.rebuildLocalAuctionState(ctx, itemID, 0); rebuildErr != nil {
 			result = "rejected"
 			return nil, rebuildErr
 		}
@@ -344,26 +361,6 @@ func (s *Service) bidHotConfig(ctx context.Context, itemID string) (*itemcache.A
 			return nil, err
 		} else if ok && hot.Status == string(model.ItemOngoing) {
 			result = "rebuilt"
-			return hot, nil
-		}
-	}
-	if snapshot.Valid && snapshot.State.ActiveRedis == availability.RedisCloud && existing != nil && existing.AuthorityEpoch < snapshot.State.Epoch {
-		if reconcileErr := s.reconcileCloudAuctionStateFromLocal(ctx, itemID, snapshot.State.Epoch); reconcileErr != nil {
-			logx.Warnw("item.switchback reconcile failed", "item_id", itemID, "target_epoch", snapshot.State.Epoch, "err", reconcileErr)
-			result = "rejected"
-			return nil, reconcileErr
-		}
-		if state, stateOK, stateErr := s.cache.GetAuctionState(ctx, itemID); stateErr != nil {
-			result = "error"
-			return nil, stateErr
-		} else if stateOK {
-			existing = state
-		}
-		if hot, ok, err := s.cache.GetAuctionHotConfig(ctx, itemID); err != nil {
-			result = "error"
-			return nil, err
-		} else if ok && hot.Status == string(model.ItemOngoing) {
-			result = "reconciled"
 			return hot, nil
 		}
 	}
@@ -599,98 +596,17 @@ func (s *Service) rebuildRankingOnce(ctx context.Context, itemID string, limit i
 
 func (s *Service) rebuildLocalAuctionState(ctx context.Context, itemID string, epoch int64) error {
 	_, err, _ := s.rankingRebuilds.Do("availability-rebuild:"+itemID+":"+strconv.FormatInt(epoch, 10), func() (any, error) {
-		worker := newAvailabilityRebuildWorker(s.store, s.cache, availabilityRebuildConfig{BatchSize: 1})
+		worker := newAvailabilityRebuildWorker(s.store, s.cache, availabilityRebuildConfig{BatchSize: 1, Policy: s.policy})
 		switch worker.rebuildItem(ctx, itemID, epoch) {
 		case rebuildReady:
 			return nil, nil
 		case rebuildProtected:
-			if epoch > 0 {
-				if err := s.rebuildLocalAuctionStateFromSourceEpoch(ctx, itemID, epoch, epoch-1); err == nil {
-					return nil, nil
-				}
-			}
 			return nil, ErrAvailabilityUnavailable
 		default:
 			return nil, ErrAvailabilityUnavailable
 		}
 	})
 	return err
-}
-
-func (s *Service) rebuildLocalAuctionStateFromSourceEpoch(ctx context.Context, itemID string, authorityEpoch int64, sourceEpoch int64) error {
-	logs, err := s.store.ListBidLogsForItemEpoch(itemID, sourceEpoch)
-	if err != nil {
-		_ = s.cache.SetItemAuthority(ctx, itemID, authorityEpoch, itemcache.AuthorityProtected)
-		return err
-	}
-	continuity, ok := verifyBidLogContinuity(logs, sourceEpoch)
-	if !ok {
-		_ = s.cache.SetItemAuthority(ctx, itemID, authorityEpoch, itemcache.AuthorityProtected)
-		return ErrAvailabilityUnavailable
-	}
-	item, rule, err := s.store.FindItemWithRule(itemID)
-	if err != nil {
-		_ = s.cache.SetItemAuthority(ctx, itemID, authorityEpoch, itemcache.AuthorityProtected)
-		return err
-	}
-	state := itemcache.AuctionState{
-		AuthorityEpoch:    authorityEpoch,
-		AuthorityState:    itemcache.AuthorityReady,
-		AuctionVersion:    continuity.AuctionVersion,
-		Status:            string(item.Status),
-		RoomID:            item.RoomID,
-		CurrentPrice:      continuity.CurrentPrice,
-		DealPrice:         continuity.CurrentPrice,
-		LeaderUserID:      continuity.LeaderUserID,
-		EndTime:           rule.EndTime,
-		EndTimeUnixMS:     rule.EndTime.UnixMilli(),
-		BidIncrement:      rule.BidIncrement,
-		PriceCap:          rule.PriceCap,
-		DepositAmount:     rule.DepositAmount,
-		ExtendTriggerSec:  s.policy.ExtendTriggerSec,
-		AutoExtendSec:     s.policy.AutoExtendSec,
-		MaxExtendCount:    s.policy.MaxExtendCount,
-		MaxTotalExtendSec: s.policy.MaxTotalExtendSec,
-		BidCount:          continuity.BidCount,
-	}
-	if err := s.cache.InitAuctionState(ctx, itemID, state); err != nil {
-		_ = s.cache.SetItemAuthority(ctx, itemID, authorityEpoch, itemcache.AuthorityProtected)
-		return err
-	}
-	if err := s.cache.SetItemAuthority(ctx, itemID, authorityEpoch, itemcache.AuthorityReady); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (s *Service) reconcileCloudAuctionStateFromLocal(ctx context.Context, authorityItemID string, authorityEpoch int64) error {
-	if s.cloudCache == nil || s.localCache == nil {
-		logx.Warnw("item.switchback missing redis authorities", "item_id", authorityItemID)
-		return ErrAvailabilityUnavailable
-	}
-	localState, ok, err := s.localCache.GetAuctionState(ctx, authorityItemID)
-	if err != nil || !ok || localState == nil {
-		logx.Warnw("item.switchback local state unavailable", "item_id", authorityItemID, "ok", ok, "err", err)
-		return ErrAvailabilityUnavailable
-	}
-	cloudState := *localState
-	cloudState.AuthorityEpoch = authorityEpoch
-	cloudState.AuthorityState = itemcache.AuthorityReady
-	if err := s.cloudCache.InitAuctionState(ctx, authorityItemID, cloudState); err != nil {
-		logx.Warnw("item.switchback init cloud state failed", "item_id", authorityItemID, "err", err)
-		return err
-	}
-	if err := s.cloudCache.SetItemAuthority(ctx, authorityItemID, authorityEpoch, itemcache.AuthorityReady); err != nil {
-		logx.Warnw("item.switchback set cloud authority failed", "item_id", authorityItemID, "err", err)
-		return err
-	}
-	if localState.EndTimeUnixMS > 0 {
-		if err := s.cloudCache.ScheduleAuctionEnd(ctx, authorityItemID, localState.EndTimeUnixMS); err != nil {
-			logx.Warnw("item.switchback schedule cloud ending failed", "item_id", authorityItemID, "err", err)
-			return err
-		}
-	}
-	return nil
 }
 
 func (s *Service) waitForRankingRebuild(ctx context.Context, itemID string, limit int) []dto.BidderPrice {

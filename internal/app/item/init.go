@@ -77,18 +77,12 @@ func (i *Item) Load(engine *kernel.Engine) error {
 	}
 	svc := service.NewService(store, policy, c, orderapp.Svc, depositapp.Svc, wsapp.Hub)
 	svc.SetAvailability(engine.Availability, engine.Config.MySQLBufferingWindow())
-	if engine.CloudRedis != nil || engine.LocalRedis != nil {
-		var cloudCache cache.Cache
-		var localCache cache.Cache
-		if engine.CloudRedis != nil {
-			cloudCache = cache.NewRedisCache(engine.CloudRedis)
-		}
-		if engine.LocalRedis != nil {
-			localCache = cache.NewRedisCache(engine.LocalRedis)
-		}
-		svc.SetRedisAuthorities(cloudCache, localCache)
+	var leaseStore cronlease.Store
+	if engine.Availability != nil {
+		leaseStore = cronlease.NewActiveRedisStore(engine.Availability)
+	} else {
+		leaseStore = cronlease.NewRedisStore(engine.Cache)
 	}
-	leaseStore := cronlease.NewRedisStore(engine.Cache)
 	leaseOwner := bidLogConsumerName(os.Hostname)
 	svc.SetRankingRebuildOwner(leaseOwner)
 	i.svc = svc
@@ -104,7 +98,10 @@ func (i *Item) Load(engine *kernel.Engine) error {
 		cronlease.WrapCron("item.broadcast_time_sync", leaseOwner, time.Second, leaseStore, svc.BroadcastTimeSync))
 	engine.Cron.AddFunc("@every 1m",
 		cronlease.WrapCron("item.end_expired_auctions_fallback", leaseOwner, 30*time.Second, leaseStore, svc.EndExpiredAuctions))
-	if engine.Cache != nil {
+	if engine.Availability != nil {
+		reader := cache.NewActiveBidLogStreamReader(engine.Availability, leaseOwner)
+		svc.StartBidLogWorker(engine.Context, reader)
+	} else if engine.Cache != nil {
 		reader := cache.NewBidLogStreamReader(engine.Cache, leaseOwner)
 		if err := reader.EnsureGroup(engine.Context); err != nil {
 			return err

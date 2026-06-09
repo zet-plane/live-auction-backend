@@ -147,6 +147,7 @@ type OrderMetric struct {
 type AvailabilityMetric struct {
 	Mode        string
 	Epoch       int64
+	EpochValid  bool
 	ActiveRedis string
 	Result      string
 }
@@ -584,7 +585,9 @@ func (r *OTelRecorder) Availability(ctx context.Context, m AvailabilityMetric) {
 		attribute.String("result", SafeReason(m.Result)),
 	)
 	r.availabilityCount.Add(ctx, 1, opts)
-	r.availabilityEpoch.Record(ctx, m.Epoch, opts)
+	if m.EpochValid {
+		r.availabilityEpoch.Record(ctx, m.Epoch, opts)
+	}
 }
 
 func SafeReason(reason string) string {

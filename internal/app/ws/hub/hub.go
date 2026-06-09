@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -26,6 +27,8 @@ type presenceStore interface {
 type activeRedisProvider interface {
 	ActiveRedis() (*redis.Client, availability.Snapshot, bool)
 }
+
+var errActiveRedisUnavailable = errors.New("active redis unavailable")
 
 var presenceStatus atomic.Value
 
@@ -395,7 +398,7 @@ func NewActivePresenceStore(provider activeRedisProvider) presenceStore {
 func (s activePresenceStore) JoinRoom(ctx context.Context, roomID, userID string) error {
 	client, _, ok := s.provider.ActiveRedis()
 	if !ok {
-		return availability.ErrInvalidState
+		return errActiveRedisUnavailable
 	}
 	return redisPresenceStore{client: client}.JoinRoom(ctx, roomID, userID)
 }
@@ -403,7 +406,7 @@ func (s activePresenceStore) JoinRoom(ctx context.Context, roomID, userID string
 func (s activePresenceStore) LeaveRoom(ctx context.Context, roomID, userID string) error {
 	client, _, ok := s.provider.ActiveRedis()
 	if !ok {
-		return availability.ErrInvalidState
+		return errActiveRedisUnavailable
 	}
 	return redisPresenceStore{client: client}.LeaveRoom(ctx, roomID, userID)
 }

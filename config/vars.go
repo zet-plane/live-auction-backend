@@ -39,15 +39,10 @@ type Redis struct {
 }
 
 type Availability struct {
-	StatePath                   string `yaml:"state_path"                       mapstructure:"state_path"`
-	StaleThreshold              string `yaml:"stale_threshold"                  mapstructure:"stale_threshold"`
-	RedisFailoverThreshold      string `yaml:"redis_failover_threshold"         mapstructure:"redis_failover_threshold"`
-	MySQLBufferingWindow        string `yaml:"mysql_buffering_window"           mapstructure:"mysql_buffering_window"`
-	LocalRedis                  Redis  `yaml:"local_redis"                      mapstructure:"local_redis"`
-	RebuildBatchSize            int    `yaml:"rebuild_batch_size"               mapstructure:"rebuild_batch_size"`
-	RebuildWorkerCount          int    `yaml:"rebuild_worker_count"             mapstructure:"rebuild_worker_count"`
-	BidWaitWhileRebuildingMinMS int    `yaml:"bid_wait_while_rebuilding_min_ms" mapstructure:"bid_wait_while_rebuilding_min_ms"`
-	BidWaitWhileRebuildingMaxMS int    `yaml:"bid_wait_while_rebuilding_max_ms" mapstructure:"bid_wait_while_rebuilding_max_ms"`
+	RedisProbeInterval     string `yaml:"redis_probe_interval"      mapstructure:"redis_probe_interval"`
+	RedisFailoverThreshold string `yaml:"redis_failover_threshold"  mapstructure:"redis_failover_threshold"`
+	MySQLBufferingWindow   string `yaml:"mysql_buffering_window"    mapstructure:"mysql_buffering_window"`
+	LocalRedis             Redis  `yaml:"local_redis"               mapstructure:"local_redis"`
 }
 
 type Auth struct {

@@ -55,3 +55,16 @@ func TestStorageTOSImageMaxSizeBytes(t *testing.T) {
 		t.Fatalf("negative max size fallback = %d, want 10485760", got)
 	}
 }
+
+func TestAvailabilityDurationFallbacks(t *testing.T) {
+	cfg := &GlobalConfig{}
+	if got := cfg.AvailabilityRedisProbeInterval(); got != time.Second {
+		t.Fatalf("redis probe fallback = %v, want 1s", got)
+	}
+	if got := cfg.AvailabilityRedisFailoverThreshold(); got != 3*time.Second {
+		t.Fatalf("redis failover fallback = %v, want 3s", got)
+	}
+	if got := cfg.MySQLBufferingWindow(); got != 10*time.Second {
+		t.Fatalf("mysql buffering fallback = %v, want 10s", got)
+	}
+}

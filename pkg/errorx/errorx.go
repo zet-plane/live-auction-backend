@@ -19,9 +19,10 @@ func New(httpStatus, code int, msg string) *CodeError {
 }
 
 var (
-	ErrInvalidRequest  = New(http.StatusBadRequest, 40001, "invalid request")
-	ErrInvalidIdentity = New(http.StatusBadRequest, 40001, "invalid identity")
-	ErrUnauthorized    = New(http.StatusUnauthorized, 40101, "unauthorized")
-	ErrNotFound        = New(http.StatusNotFound, 40401, "not found")
-	ErrInternal        = New(http.StatusInternalServerError, 50001, "internal server error")
+	ErrInvalidRequest     = New(http.StatusBadRequest, 40001, "invalid request")
+	ErrInvalidIdentity    = New(http.StatusBadRequest, 40001, "invalid identity")
+	ErrUnauthorized       = New(http.StatusUnauthorized, 40101, "unauthorized")
+	ErrNotFound           = New(http.StatusNotFound, 40401, "not found")
+	ErrServiceUnavailable = New(http.StatusServiceUnavailable, 50301, "service unavailable")
+	ErrInternal           = New(http.StatusInternalServerError, 50001, "internal server error")
 )

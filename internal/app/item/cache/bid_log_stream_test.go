@@ -1,12 +1,15 @@
 package cache
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/zet-plane/live-auction-backend/internal/core/availability"
 )
 
 func TestNewBidLogXAddArgsDoesNotTrimAcceptedBidEvents(t *testing.T) {
@@ -195,4 +198,118 @@ func TestParseBidLogStreamMessagesReturnsDeadLetterError(t *testing.T) {
 	if !errors.Is(err, deadLetterErr) {
 		t.Fatalf("expected dead-letter error, got %v", err)
 	}
+}
+
+func TestActiveBidLogStreamReaderReadsFromCurrentActiveRedis(t *testing.T) {
+	cloud, cloudHook := newBidLogStreamHookedClient()
+	local, localHook := newBidLogStreamHookedClient()
+	provider := &fakeBidLogActiveRedisProvider{client: local}
+	reader := NewActiveBidLogStreamReader(provider, "consumer-1")
+
+	messages, err := reader.Read(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+	if len(messages) != 1 || messages[0].Event.BidID != "bid_local" {
+		t.Fatalf("messages = %+v, want local bid", messages)
+	}
+	if got := localHook.count("xreadgroup"); got != 1 {
+		t.Fatalf("local xreadgroup calls = %d, want 1", got)
+	}
+	if got := cloudHook.count("xreadgroup"); got != 0 {
+		t.Fatalf("cloud xreadgroup calls = %d, want 0", got)
+	}
+	_ = cloud.Close()
+	_ = local.Close()
+}
+
+func TestActiveBidLogStreamReaderAcksReadSourceAfterActiveRedisSwitches(t *testing.T) {
+	cloud, cloudHook := newBidLogStreamHookedClient()
+	local, localHook := newBidLogStreamHookedClient()
+	provider := &fakeBidLogActiveRedisProvider{client: cloud}
+	reader := NewActiveBidLogStreamReader(provider, "consumer-1")
+
+	messages, err := reader.Read(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+	if len(messages) != 1 || messages[0].ID == "" {
+		t.Fatalf("messages = %+v, want one cloud message", messages)
+	}
+
+	provider.client = local
+	if err := reader.Ack(context.Background(), []string{messages[0].ID}); err != nil {
+		t.Fatalf("Ack() error = %v", err)
+	}
+	if got := cloudHook.count("xack"); got != 1 {
+		t.Fatalf("cloud xack calls = %d, want 1", got)
+	}
+	if got := localHook.count("xack"); got != 0 {
+		t.Fatalf("local xack calls = %d, want 0", got)
+	}
+	_ = cloud.Close()
+	_ = local.Close()
+}
+
+type fakeBidLogActiveRedisProvider struct {
+	client *redis.Client
+}
+
+func (p *fakeBidLogActiveRedisProvider) ActiveRedis() (*redis.Client, availability.Snapshot, bool) {
+	return p.client, availability.Snapshot{Valid: true, ActiveRedis: availability.RedisLocal}, p.client != nil
+}
+
+type bidLogStreamHook struct {
+	mu    sync.Mutex
+	calls map[string]int
+}
+
+func newBidLogStreamHookedClient() (*redis.Client, *bidLogStreamHook) {
+	hook := &bidLogStreamHook{calls: make(map[string]int)}
+	client := redis.NewClient(&redis.Options{Addr: "127.0.0.1:0"})
+	client.AddHook(hook)
+	return client, hook
+}
+
+func (h *bidLogStreamHook) DialHook(next redis.DialHook) redis.DialHook {
+	return next
+}
+
+func (h *bidLogStreamHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return next
+}
+
+func (h *bidLogStreamHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		name := strings.ToLower(cmd.Name())
+		h.mu.Lock()
+		h.calls[name]++
+		h.mu.Unlock()
+
+		switch c := cmd.(type) {
+		case *redis.StatusCmd:
+			c.SetVal("OK")
+		case *redis.XStreamSliceCmd:
+			c.SetVal([]redis.XStream{{
+				Stream: BidLogStreamName,
+				Messages: []redis.XMessage{{
+					ID:     "1-0",
+					Values: bidLogStreamValues(BidLogEvent{BidID: "bid_local", ItemID: "item_1", RoomID: "room_1", UserID: "user_1", Price: 1200, CreatedAtUnixMS: 1780560000123, AuthorityEpoch: 0, AuctionVersion: 1}),
+				}},
+			}})
+		case *redis.XAutoClaimCmd:
+			c.SetVal(nil, "0-0")
+		case *redis.IntCmd:
+			c.SetVal(1)
+		default:
+			return next(ctx, cmd)
+		}
+		return nil
+	}
+}
+
+func (h *bidLogStreamHook) count(command string) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.calls[command]
 }

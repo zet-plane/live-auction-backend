@@ -49,7 +49,7 @@ func InitTicketAuthority(rt activeRedis) {
 
 func InitTicket(r *redis.Client) {
 	ticketAuthority = activeTicketStore{
-		snapshot: availability.Snapshot{Valid: true, State: availability.State{Epoch: 0, ActiveRedis: availability.RedisCloud}},
+		snapshot: availability.Snapshot{Valid: true, Mode: availability.ModeNormalCloud, ActiveRedis: availability.RedisCloud},
 		cloud:    r,
 		cloudGet: r,
 	}
@@ -91,7 +91,7 @@ func issueTicketForUser(ctx context.Context, ticket, userID string, ttl time.Dur
 	if !ok || !snapshot.Valid {
 		return ErrTicketAuthorityUnavailable
 	}
-	return client.Set(ctx, ticketKey(snapshot.State.Epoch, ticket), userID, ttl).Err()
+	return client.Set(ctx, ticketKey(0, ticket), userID, ttl).Err()
 }
 
 func consumeTicket(ctx context.Context, ticket string) (string, error) {
@@ -99,7 +99,7 @@ func consumeTicket(ctx context.Context, ticket string) (string, error) {
 	if !ok || !snapshot.Valid {
 		return "", ErrTicketAuthorityUnavailable
 	}
-	return client.GetDel(ctx, ticketKey(snapshot.State.Epoch, ticket)).Result()
+	return client.GetDel(ctx, ticketKey(0, ticket)).Result()
 }
 
 func (s activeTicketStore) activeSetter() (redisStringSetter, availability.Snapshot, bool) {
@@ -107,7 +107,7 @@ func (s activeTicketStore) activeSetter() (redisStringSetter, availability.Snaps
 		client, snapshot, ok := s.runtime.ActiveRedis()
 		return client, snapshot, ok
 	}
-	if s.snapshot.State.ActiveRedis == availability.RedisLocal && s.local != nil {
+	if s.snapshot.ActiveRedis == availability.RedisLocal && s.local != nil {
 		return s.local, s.snapshot, true
 	}
 	if s.cloud != nil {
@@ -121,10 +121,10 @@ func (s activeTicketStore) activeGetter() (redisStringGetDeleter, availability.S
 		client, snapshot, ok := s.runtime.ActiveRedis()
 		return client, snapshot, ok
 	}
-	if s.snapshot.State.ActiveRedis == availability.RedisLocal && s.localGet != nil {
+	if s.snapshot.ActiveRedis == availability.RedisLocal && s.localGet != nil {
 		return s.localGet, s.snapshot, true
 	}
-	if s.snapshot.State.ActiveRedis == availability.RedisLocal && s.local != nil {
+	if s.snapshot.ActiveRedis == availability.RedisLocal && s.local != nil {
 		if getter, ok := s.local.(redisStringGetDeleter); ok {
 			return getter, s.snapshot, true
 		}
