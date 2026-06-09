@@ -24,7 +24,7 @@ data:
     receivers:
       - name: feishu
         webhook_configs:
-          - url: 'http://prometheusalert:8080/prometheusalert?type=fs&tpl=prometheus-fs'
+          - url: 'http://feishu-webhook:8080/alert'
             send_resolved: true
 ---
 apiVersion: apps/v1
