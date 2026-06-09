@@ -14,6 +14,8 @@ import (
 var ErrTOSDisabled = errors.New("tos storage disabled")
 var ErrTOSConfig = errors.New("invalid tos storage config")
 
+const publicReadACL = "public-read"
+
 type tosClient interface {
 	PreSignedPostSignature(context.Context, *tos.PreSingedPostSignatureInput) (*tos.PreSingedPostSignatureOutput, error)
 }
@@ -55,10 +57,16 @@ func (s *TOSPostSigner) SignImageUpload(ctx context.Context, input baseservice.S
 		Bucket:  s.bucket,
 		Key:     input.ObjectKey,
 		Expires: int64(input.Expires.Seconds()),
-		Conditions: []tos.PostSignatureCondition{{
-			Key:   "Content-Type",
-			Value: input.ContentType,
-		}},
+		Conditions: []tos.PostSignatureCondition{
+			{
+				Key:   "Content-Type",
+				Value: input.ContentType,
+			},
+			{
+				Key:   "x-tos-acl",
+				Value: publicReadACL,
+			},
+		},
 		ContentLengthRange: &tos.ContentLengthRange{
 			RangeStart: 1,
 			RangeEnd:   input.Size,
@@ -96,5 +104,6 @@ func postFieldsFromSignature(objectKey, contentType string, out signatureOutput)
 		"x-tos-credential": out.Credential,
 		"x-tos-date":       out.Date,
 		"x-tos-signature":  out.Signature,
+		"x-tos-acl":        publicReadACL,
 	}
 }
