@@ -4,8 +4,8 @@ metadata:
   name: feishu-webhook-secret
   namespace: live-auction
 stringData:
-  FEISHU_WEBHOOK: "replace-with-feishu-webhook-url"
-  FEISHU_SECRET: "replace-with-feishu-signing-secret"
+  FEISHU_WEBHOOK: "https://open.feishu.cn/open-apis/bot/v2/hook/35ac5c5f-e9a0-4ca4-8adc-04ce909ae02d"
+  FEISHU_SECRET: "xyogWb9XWdGdB2wJ5OH60e"
 ---
 apiVersion: v1
 kind: ConfigMap
