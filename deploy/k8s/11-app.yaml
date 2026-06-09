@@ -4,7 +4,7 @@ metadata:
   name: live-auction-backend
   namespace: live-auction
 spec:
-  replicas: 2
+  replicas: 3
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -44,13 +44,25 @@ spec:
             - sh
             - -c
             - |
-              until redis-cli -h redis ping | grep -q PONG; do
-                echo "waiting for redis..."
-                sleep 2
-              done
+              if redis-cli -h redis ping | grep -q PONG; then
+                echo "redis reachable"
+              else
+                echo "redis unavailable at startup; backend will use availability control plane"
+              fi
       containers:
         - name: app
           image: ghcr.io/zet-plane/live-auction-backend:latest
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_UID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: service.instance.id=$(POD_UID),k8s.pod.name=$(POD_NAME),k8s.namespace.name=live-auction,k8s.deployment.name=live-auction-backend
           ports:
             - containerPort: 8080
           startupProbe:
@@ -77,6 +89,8 @@ spec:
               mountPath: /config/config.yaml
               subPath: config.yaml
               readOnly: true
+            - name: availability-state
+              mountPath: /availability
           resources:
             requests:
               cpu: 100m
@@ -87,6 +101,10 @@ spec:
         - name: config
           secret:
             secretName: app-config
+        - name: availability-state
+          hostPath:
+            path: /var/lib/live-auction/availability
+            type: DirectoryOrCreate
 ---
 apiVersion: v1
 kind: Service
