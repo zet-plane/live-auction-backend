@@ -15,9 +15,6 @@ resources:
   - 10-grafana.yaml
   - 11-app.yaml
   - 12-ingress.yaml
-  - 13-alertmanager.yaml
-  - 14-alert-rules.yaml
-  - 15-feishu-webhook.yaml
 configMapGenerator:
   - name: grafana-dashboard-performance
     namespace: live-auction
