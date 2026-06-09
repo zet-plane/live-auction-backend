@@ -262,13 +262,18 @@ func TestRemoveLeavesPresenceAfterLastSameUserRoomStreamConnection(t *testing.T)
 }
 
 type fakePresenceStore struct {
-	mu      sync.Mutex
-	joins   []string
-	leaves  []string
-	leaveCh chan struct{}
+	mu       sync.Mutex
+	joins    []string
+	leaves   []string
+	leaveCh  chan struct{}
+	joinErr  error
+	leaveErr error
 }
 
 func (s *fakePresenceStore) JoinRoom(_ context.Context, roomID, userID string) error {
+	if s.joinErr != nil {
+		return s.joinErr
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.joins = append(s.joins, roomID+"/"+userID)
@@ -276,6 +281,9 @@ func (s *fakePresenceStore) JoinRoom(_ context.Context, roomID, userID string) e
 }
 
 func (s *fakePresenceStore) LeaveRoom(_ context.Context, roomID, userID string) error {
+	if s.leaveErr != nil {
+		return s.leaveErr
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.leaves = append(s.leaves, roomID+"/"+userID)
@@ -417,6 +425,19 @@ func TestClosingReplacedConnectionDoesNotRemoveNewPresence(t *testing.T) {
 
 	h.closeConn(newConn)
 	waitFor(t, func() bool { return presence.leaveCount() == 1 })
+}
+
+func TestPresenceFailureMarksDegraded(t *testing.T) {
+	SetPresenceStatusForTest("ok")
+	t.Cleanup(func() { SetPresenceStatusForTest("ok") })
+
+	h := NewHub(nil)
+	presence := &fakePresenceStore{joinErr: errors.New("boom")}
+	h.presence = presence
+	c := newTestConn("user_1", "room_1")
+
+	h.Register(c)
+	waitFor(t, func() bool { return PresenceStatus() == "degraded" })
 }
 
 func TestFanoutDeliversToRoom(t *testing.T) {

@@ -2,7 +2,6 @@ package handler
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 
 	"github.com/flamego/flamego"
@@ -49,8 +48,11 @@ func ServeWS(c flamego.Context, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	key := fmt.Sprintf("ws:ticket:%s", ticket)
-	userID, err := redisClient.GetDel(context.Background(), key).Result()
+	userID, err := consumeTicket(context.Background(), ticket)
+	if err == ErrTicketAuthorityUnavailable {
+		http.Error(w, "ticket authority unavailable", http.StatusServiceUnavailable)
+		return
+	}
 	if err != nil {
 		http.Error(w, "invalid or expired ticket", http.StatusUnauthorized)
 		return

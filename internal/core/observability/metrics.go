@@ -27,6 +27,7 @@ type Recorder interface {
 	WSTimeSync(context.Context, WSTimeSyncMetric)
 	WSEventBus(context.Context, WSEventBusMetric)
 	OrderAuctionCreate(context.Context, OrderMetric)
+	Availability(context.Context, AvailabilityMetric)
 }
 
 type HTTPRequestMetric struct {
@@ -143,6 +144,13 @@ type OrderMetric struct {
 	Result string
 }
 
+type AvailabilityMetric struct {
+	Mode        string
+	Epoch       int64
+	ActiveRedis string
+	Result      string
+}
+
 type NoopRecorder struct{}
 
 func (NoopRecorder) HTTPRequest(context.Context, HTTPRequestMetric)                     {}
@@ -162,6 +170,7 @@ func (NoopRecorder) WSWrite(context.Context, WSWriteMetric)                     
 func (NoopRecorder) WSTimeSync(context.Context, WSTimeSyncMetric)                       {}
 func (NoopRecorder) WSEventBus(context.Context, WSEventBusMetric)                       {}
 func (NoopRecorder) OrderAuctionCreate(context.Context, OrderMetric)                    {}
+func (NoopRecorder) Availability(context.Context, AvailabilityMetric)                   {}
 
 var defaultRecorder Recorder = NoopRecorder{}
 
@@ -215,6 +224,8 @@ type OTelRecorder struct {
 	wsTimeSyncWriteLag    metric.Float64Histogram
 	wsEventBusCount       metric.Int64Counter
 	orderCount            metric.Int64Counter
+	availabilityCount     metric.Int64Counter
+	availabilityEpoch     metric.Int64Gauge
 }
 
 func NewRecorder() (*OTelRecorder, error) {
@@ -367,6 +378,14 @@ func NewRecorder() (*OTelRecorder, error) {
 	if err != nil {
 		return nil, err
 	}
+	availabilityCount, err := meter.Int64Counter("availability.state.count")
+	if err != nil {
+		return nil, err
+	}
+	availabilityEpoch, err := meter.Int64Gauge("availability.state.epoch")
+	if err != nil {
+		return nil, err
+	}
 	return &OTelRecorder{
 		httpCount:             httpCount,
 		httpDuration:          httpDuration,
@@ -405,6 +424,8 @@ func NewRecorder() (*OTelRecorder, error) {
 		wsTimeSyncWriteLag:    wsTimeSyncWriteLag,
 		wsEventBusCount:       wsEventBusCount,
 		orderCount:            orderCount,
+		availabilityCount:     availabilityCount,
+		availabilityEpoch:     availabilityEpoch,
 	}, nil
 }
 
@@ -554,6 +575,16 @@ func (r *OTelRecorder) WSEventBus(ctx context.Context, m WSEventBusMetric) {
 
 func (r *OTelRecorder) OrderAuctionCreate(ctx context.Context, m OrderMetric) {
 	r.orderCount.Add(ctx, 1, metric.WithAttributes(attribute.String("result", m.Result)))
+}
+
+func (r *OTelRecorder) Availability(ctx context.Context, m AvailabilityMetric) {
+	opts := metric.WithAttributes(
+		attribute.String("mode", SafeReason(m.Mode)),
+		attribute.String("active_redis", SafeReason(m.ActiveRedis)),
+		attribute.String("result", SafeReason(m.Result)),
+	)
+	r.availabilityCount.Add(ctx, 1, opts)
+	r.availabilityEpoch.Record(ctx, m.Epoch, opts)
 }
 
 func SafeReason(reason string) string {

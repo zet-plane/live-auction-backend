@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/zet-plane/live-auction-backend/config"
 	"github.com/zet-plane/live-auction-backend/internal/app/appInitialize"
+	"github.com/zet-plane/live-auction-backend/internal/core/availability"
 	"github.com/zet-plane/live-auction-backend/internal/core/cache"
 	"github.com/zet-plane/live-auction-backend/internal/core/database"
 	"github.com/zet-plane/live-auction-backend/internal/core/kernel"
@@ -93,16 +94,45 @@ var StartCmd = &cobra.Command{
 			}()
 		}
 
-		rdb, err := cache.Open(cache.Config{
-			Addr:     cfg.Redis.Addr,
-			Password: cfg.Redis.Password,
-			DB:       cfg.Redis.DB,
+		cloudRedis, err := cache.Open(cache.Config{
+			Addr:        cfg.Redis.Addr,
+			Password:    cfg.Redis.Password,
+			DB:          cfg.Redis.DB,
+			DisablePing: true,
 		})
 		if err != nil {
-			logx.Fatalf("failed to connect redis: %v", err)
+			logx.Fatalf("failed to create cloud redis client: %v", err)
 		}
 
-		engine, err := buildEngine(cfg, db, rdb)
+		localRedisCfg := cfg.Availability.LocalRedis
+		if localRedisCfg.Addr == "" {
+			localRedisCfg = cfg.Redis
+		}
+		localRedis, err := cache.Open(cache.Config{
+			Addr:        localRedisCfg.Addr,
+			Password:    localRedisCfg.Password,
+			DB:          localRedisCfg.DB,
+			DisablePing: true,
+		})
+		if err != nil {
+			logx.Fatalf("failed to create local redis client: %v", err)
+		}
+
+		statePath := cfg.Availability.StatePath
+		if statePath == "" {
+			statePath = "/availability/state.json"
+		}
+		watcher := availability.NewWatcher(statePath, availability.WatcherOptions{
+			Now:        time.Now,
+			StaleAfter: cfg.AvailabilityStaleThreshold(),
+		})
+		if err := watcher.Refresh(); err != nil {
+			logx.Warnw("availability state initial refresh failed", "err", err)
+		}
+		go watcher.Run(context.Background(), watcherRefreshInterval(cfg.AvailabilityStaleThreshold()))
+		availabilityRuntime := availability.NewRuntime(watcher, availability.NewRedisSelector(cloudRedis, localRedis))
+
+		engine, err := buildEngine(cfg, db, cloudRedis, localRedis, availabilityRuntime)
 		if err != nil {
 			logx.Fatalf("failed to initialize engine: %v", err)
 		}
@@ -116,7 +146,7 @@ func init() {
 	StartCmd.PersistentFlags().StringVarP(&configPath, "config", "c", "config.yaml", "path to config file")
 }
 
-func buildEngine(cfg *config.Config, db *gorm.DB, rdb *redis.Client) (*kernel.Engine, error) {
+func buildEngine(cfg *config.Config, db *gorm.DB, cloudRedis, localRedis *redis.Client, availabilityRuntime *availability.Runtime) (*kernel.Engine, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	flamego.SetEnv(flamego.EnvType(cfg.Mode))
@@ -142,13 +172,16 @@ func buildEngine(cfg *config.Config, db *gorm.DB, rdb *redis.Client) (*kernel.En
 	c := appCron.New()
 
 	engine := &kernel.Engine{
-		Context: ctx,
-		Cancel:  cancel,
-		Flame:   f,
-		DB:      db,
-		Cache:   rdb,
-		Config:  cfg,
-		Cron:    c,
+		Context:      ctx,
+		Cancel:       cancel,
+		Flame:        f,
+		DB:           db,
+		Cache:        cloudRedis,
+		CloudRedis:   cloudRedis,
+		LocalRedis:   localRedis,
+		Availability: availabilityRuntime,
+		Config:       cfg,
+		Cron:         c,
 	}
 
 	apps := appInitialize.GetApps()
@@ -215,4 +248,15 @@ func run(engine *kernel.Engine) error {
 	err := srv.Shutdown(stopCtx)
 	logx.Stop()
 	return err
+}
+
+func watcherRefreshInterval(staleAfter time.Duration) time.Duration {
+	if staleAfter <= 0 {
+		return time.Second
+	}
+	interval := staleAfter / 2
+	if interval < time.Second {
+		return time.Second
+	}
+	return interval
 }

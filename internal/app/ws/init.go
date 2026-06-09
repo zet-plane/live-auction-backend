@@ -30,10 +30,20 @@ type WS struct {
 func (w *WS) Info() string { return w.Name }
 
 func (w *WS) Load(engine *kernel.Engine) error {
-	localHub := wshub.NewHub(engine.Cache)
+	localHub := wshub.NewHub(nil)
+	if engine.Availability != nil {
+		localHub.SetPresenceStore(wshub.NewActivePresenceStore(engine.Availability))
+	} else if engine.Cache != nil {
+		localHub.SetPresenceStore(wshub.NewRedisPresenceStore(engine.Cache))
+	}
 	localSnapshotTarget = localHub
 	Hub = localHub
-	if engine.Cache != nil {
+	if engine.Availability != nil {
+		Hub = bus.NewBroadcaster(bus.NewActiveRedisPublisher(engine.Availability), bus.Options{PodID: podID()})
+		subCtx, cancel := context.WithCancel(engine.Context)
+		w.cancel = cancel
+		go bus.NewSubscriber(localHub).RunActive(subCtx, engine.Availability)
+	} else if engine.Cache != nil {
 		Hub = bus.NewBroadcaster(bus.NewRedisPublisher(engine.Cache), bus.Options{PodID: podID()})
 		subCtx, cancel := context.WithCancel(engine.Context)
 		w.cancel = cancel
@@ -41,7 +51,11 @@ func (w *WS) Load(engine *kernel.Engine) error {
 	}
 	handler.Init(localHub)
 	handler.ConfigureOriginChecker(web.NewOriginPolicy(engine.Config.Mode, engine.Config.Security.AllowedOrigins))
-	handler.InitTicket(engine.Cache)
+	if engine.Availability != nil {
+		handler.InitTicketAuthority(engine.Availability)
+	} else {
+		handler.InitTicket(engine.Cache)
+	}
 	router.RegisterRoutes(engine.Flame)
 	return nil
 }

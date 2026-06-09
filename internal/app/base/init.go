@@ -31,6 +31,7 @@ func (b *Base) Load(engine *kernel.Engine) error {
 		Expires:       engine.Config.StorageTOSUploadExpires(),
 	})
 	handler.Init(engine.DB, engine.Cache, uploadSvc)
+	handler.InitAvailability(engine.Availability)
 	router.RegisterRoutes(engine.Flame)
 	return nil
 }

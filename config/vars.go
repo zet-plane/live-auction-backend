@@ -6,6 +6,7 @@ type GlobalConfig struct {
 	HTTP          HTTP          `yaml:"http"          mapstructure:"http"`
 	Database      Database      `yaml:"database"      mapstructure:"database"`
 	Redis         Redis         `yaml:"redis"         mapstructure:"redis"`
+	Availability  Availability  `yaml:"availability"  mapstructure:"availability"`
 	Auth          Auth          `yaml:"auth"          mapstructure:"auth"`
 	Security      Security      `yaml:"security"      mapstructure:"security"`
 	Auction       Auction       `yaml:"auction"       mapstructure:"auction"`
@@ -35,6 +36,18 @@ type Redis struct {
 	Addr     string `yaml:"addr"     mapstructure:"addr"`
 	Password string `yaml:"password" mapstructure:"password"`
 	DB       int    `yaml:"db"       mapstructure:"db"`
+}
+
+type Availability struct {
+	StatePath                   string `yaml:"state_path"                       mapstructure:"state_path"`
+	StaleThreshold              string `yaml:"stale_threshold"                  mapstructure:"stale_threshold"`
+	RedisFailoverThreshold      string `yaml:"redis_failover_threshold"         mapstructure:"redis_failover_threshold"`
+	MySQLBufferingWindow        string `yaml:"mysql_buffering_window"           mapstructure:"mysql_buffering_window"`
+	LocalRedis                  Redis  `yaml:"local_redis"                      mapstructure:"local_redis"`
+	RebuildBatchSize            int    `yaml:"rebuild_batch_size"               mapstructure:"rebuild_batch_size"`
+	RebuildWorkerCount          int    `yaml:"rebuild_worker_count"             mapstructure:"rebuild_worker_count"`
+	BidWaitWhileRebuildingMinMS int    `yaml:"bid_wait_while_rebuilding_min_ms" mapstructure:"bid_wait_while_rebuilding_min_ms"`
+	BidWaitWhileRebuildingMaxMS int    `yaml:"bid_wait_while_rebuilding_max_ms" mapstructure:"bid_wait_while_rebuilding_max_ms"`
 }
 
 type Auth struct {

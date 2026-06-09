@@ -87,6 +87,14 @@ func (c *GlobalConfig) StorageTOSUploadExpires() time.Duration {
 	return parseDuration(c.Storage.TOS.UploadExpires, 10*time.Minute)
 }
 
+func (c *GlobalConfig) AvailabilityStaleThreshold() time.Duration {
+	return parseDuration(c.Availability.StaleThreshold, 5*time.Second)
+}
+
+func (c *GlobalConfig) MySQLBufferingWindow() time.Duration {
+	return parseDuration(c.Availability.MySQLBufferingWindow, 10*time.Second)
+}
+
 func (c *GlobalConfig) StorageTOSImageMaxSizeBytes() int64 {
 	if c.Storage.TOS.ImageMaxSizeBytes <= 0 {
 		return 10 * 1024 * 1024

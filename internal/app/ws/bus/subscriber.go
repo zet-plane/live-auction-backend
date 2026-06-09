@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 	"github.com/zet-plane/live-auction-backend/pkg/logx"
@@ -64,5 +65,47 @@ func (s *Subscriber) Run(ctx context.Context, client *redis.Client) {
 				logx.Warnw("ws bus dispatch failed", "channel", msg.Channel, "err", err)
 			}
 		}
+	}
+}
+
+func (s *Subscriber) RunActive(ctx context.Context, provider ActiveRedisProvider) {
+	for {
+		client, _, ok := provider.ActiveRedis()
+		if !ok || client == nil {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(200 * time.Millisecond):
+				continue
+			}
+		}
+
+		pubsub := client.Subscribe(ctx, ChannelRoom, ChannelUser)
+		ch := pubsub.Channel()
+		ticker := time.NewTicker(500 * time.Millisecond)
+		resubscribe := false
+		for !resubscribe {
+			select {
+			case <-ctx.Done():
+				ticker.Stop()
+				_ = pubsub.Close()
+				return
+			case <-ticker.C:
+				nextClient, _, nextOK := provider.ActiveRedis()
+				if !nextOK || nextClient != client {
+					resubscribe = true
+				}
+			case msg, ok := <-ch:
+				if !ok {
+					resubscribe = true
+					continue
+				}
+				if err := s.DispatchPayload([]byte(msg.Payload)); err != nil {
+					logx.Warnw("ws bus dispatch failed", "channel", msg.Channel, "err", err)
+				}
+			}
+		}
+		ticker.Stop()
+		_ = pubsub.Close()
 	}
 }

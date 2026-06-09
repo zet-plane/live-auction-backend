@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/flamego/binding"
@@ -11,6 +12,9 @@ import (
 	"github.com/zet-plane/live-auction-backend/internal/app/base/dto"
 	"github.com/zet-plane/live-auction-backend/internal/app/base/service"
 	usermodel "github.com/zet-plane/live-auction-backend/internal/app/user/model"
+	wshub "github.com/zet-plane/live-auction-backend/internal/app/ws/hub"
+	"github.com/zet-plane/live-auction-backend/internal/core/availability"
+	"github.com/zet-plane/live-auction-backend/internal/core/observability"
 	"github.com/zet-plane/live-auction-backend/internal/middleware/response"
 	"github.com/zet-plane/live-auction-backend/internal/middleware/web"
 	"github.com/zet-plane/live-auction-backend/pkg/errorx"
@@ -19,9 +23,10 @@ import (
 )
 
 var (
-	db        *gorm.DB
-	cache     *redis.Client
-	uploadSvc *service.UploadService
+	db                  *gorm.DB
+	cache               *redis.Client
+	availabilityRuntime interface{ Snapshot() availability.Snapshot }
+	uploadSvc           *service.UploadService
 )
 
 func Init(d *gorm.DB, c *redis.Client, u *service.UploadService) {
@@ -30,10 +35,25 @@ func Init(d *gorm.DB, c *redis.Client, u *service.UploadService) {
 	uploadSvc = u
 }
 
+func InitAvailability(rt interface{ Snapshot() availability.Snapshot }) {
+	availabilityRuntime = rt
+}
+
+func InitAvailabilityForTest(snapshot availability.Snapshot) {
+	availabilityRuntime = staticAvailability{snapshot: snapshot}
+}
+
+type staticAvailability struct{ snapshot availability.Snapshot }
+
+func (s staticAvailability) Snapshot() availability.Snapshot { return s.snapshot }
+
+func SetPresenceStatusForTest(status string) { wshub.SetPresenceStatusForTest(status) }
+
 type componentStatus struct {
 	Status  string `json:"status"`
 	Latency string `json:"latency,omitempty"`
 	Error   string `json:"error,omitempty"`
+	Value   string `json:"value,omitempty"`
 }
 
 type healthData struct {
@@ -76,6 +96,16 @@ func SignImageUpload(r flamego.Render, req *http.Request, current *usermodel.Use
 }
 
 func Readyz(r flamego.Render) {
+	if availabilityRuntime != nil {
+		data, ok := availabilityHealthData()
+		if !ok {
+			response.Success(r, http.StatusServiceUnavailable, "degraded", data)
+			return
+		}
+		response.OK(r, data)
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
@@ -132,6 +162,16 @@ func Readyz(r flamego.Render) {
 // @Success 503 {object} response.Body{data=healthData}
 // @Router /health [get]
 func Health(r flamego.Render) {
+	if availabilityRuntime != nil {
+		data, ok := availabilityHealthData()
+		if !ok {
+			response.Success(r, http.StatusServiceUnavailable, "degraded", data)
+			return
+		}
+		response.OK(r, data)
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
@@ -179,4 +219,34 @@ func Health(r flamego.Render) {
 		return
 	}
 	response.OK(r, data)
+}
+
+func availabilityHealthData() (healthData, bool) {
+	snapshot := availabilityRuntime.Snapshot()
+	components := make(map[string]componentStatus)
+	if !snapshot.Valid {
+		components["control_plane"] = componentStatus{Status: "error", Error: snapshot.Error}
+		observability.DefaultRecorder().Availability(context.Background(), observability.AvailabilityMetric{Result: "invalid"})
+		return healthData{Status: "degraded", Components: components}, false
+	}
+
+	state := snapshot.State
+	components["control_plane"] = componentStatus{Status: "ok"}
+	components["mode"] = componentStatus{Status: "ok", Value: string(state.Mode)}
+	components["epoch"] = componentStatus{Status: "ok", Value: stringValue(state.Epoch)}
+	components["active_redis"] = componentStatus{Status: "ok", Value: string(state.ActiveRedis)}
+	components["mysql_state"] = componentStatus{Status: string(state.MySQLState)}
+	components["ticket"] = componentStatus{Status: "ok"}
+	components["presence"] = componentStatus{Status: wshub.PresenceStatus()}
+	observability.DefaultRecorder().Availability(context.Background(), observability.AvailabilityMetric{
+		Mode:        string(state.Mode),
+		Epoch:       state.Epoch,
+		ActiveRedis: string(state.ActiveRedis),
+		Result:      "ok",
+	})
+	return healthData{Status: "ok", Components: components}, true
+}
+
+func stringValue(v int64) string {
+	return strconv.FormatInt(v, 10)
 }

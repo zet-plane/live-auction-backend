@@ -4,9 +4,11 @@ import (
 	"context"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/zet-plane/live-auction-backend/internal/core/availability"
 	"github.com/zet-plane/live-auction-backend/internal/core/observability"
 	"github.com/zet-plane/live-auction-backend/pkg/logx"
 	"github.com/zet-plane/live-auction-backend/pkg/wsevent"
@@ -19,6 +21,28 @@ type SnapshotProvider interface {
 type presenceStore interface {
 	JoinRoom(ctx context.Context, roomID, userID string) error
 	LeaveRoom(ctx context.Context, roomID, userID string) error
+}
+
+type activeRedisProvider interface {
+	ActiveRedis() (*redis.Client, availability.Snapshot, bool)
+}
+
+var presenceStatus atomic.Value
+
+func init() {
+	presenceStatus.Store("ok")
+}
+
+func PresenceStatus() string {
+	return presenceStatus.Load().(string)
+}
+
+func SetPresenceStatusForTest(status string) {
+	presenceStatus.Store(status)
+}
+
+func markPresenceDegraded() {
+	presenceStatus.Store("degraded")
 }
 
 type Hub struct {
@@ -45,6 +69,12 @@ func NewHub(redisClient *redis.Client) *Hub {
 func (h *Hub) SetSnapshotProvider(provider SnapshotProvider) {
 	h.mu.Lock()
 	h.snapshotProvider = provider
+	h.mu.Unlock()
+}
+
+func (h *Hub) SetPresenceStore(store presenceStore) {
+	h.mu.Lock()
+	h.presence = store
 	h.mu.Unlock()
 }
 
@@ -334,18 +364,48 @@ func (h *Hub) closeConnWithReason(c *Conn, reason string) {
 
 func (h *Hub) syncPresenceOnJoin(roomID, userID string) {
 	if err := h.presence.JoinRoom(context.Background(), roomID, userID); err != nil {
+		markPresenceDegraded()
 		logx.Warnw("ws.hub sync presence join failed", "room_id", roomID, "user_id", userID, "err", err)
 	}
 }
 
 func (h *Hub) syncPresenceOnLeave(roomID, userID string) {
 	if err := h.presence.LeaveRoom(context.Background(), roomID, userID); err != nil {
+		markPresenceDegraded()
 		logx.Warnw("ws.hub sync presence leave failed", "room_id", roomID, "user_id", userID, "err", err)
 	}
 }
 
 type redisPresenceStore struct {
 	client *redis.Client
+}
+
+func NewRedisPresenceStore(client *redis.Client) presenceStore {
+	return redisPresenceStore{client: client}
+}
+
+type activePresenceStore struct {
+	provider activeRedisProvider
+}
+
+func NewActivePresenceStore(provider activeRedisProvider) presenceStore {
+	return activePresenceStore{provider: provider}
+}
+
+func (s activePresenceStore) JoinRoom(ctx context.Context, roomID, userID string) error {
+	client, _, ok := s.provider.ActiveRedis()
+	if !ok {
+		return availability.ErrInvalidState
+	}
+	return redisPresenceStore{client: client}.JoinRoom(ctx, roomID, userID)
+}
+
+func (s activePresenceStore) LeaveRoom(ctx context.Context, roomID, userID string) error {
+	client, _, ok := s.provider.ActiveRedis()
+	if !ok {
+		return availability.ErrInvalidState
+	}
+	return redisPresenceStore{client: client}.LeaveRoom(ctx, roomID, userID)
 }
 
 func (s redisPresenceStore) JoinRoom(ctx context.Context, roomID, userID string) error {

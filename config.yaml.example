@@ -15,6 +15,19 @@ redis:
   addr: 127.0.0.1:6379
   password: ""
   db: 0
+availability:
+  state_path: /availability/state.json
+  stale_threshold: 5s
+  redis_failover_threshold: 3s
+  mysql_buffering_window: 10s
+  local_redis:
+    addr: redis:6379
+    password: ""
+    db: 0
+  rebuild_batch_size: 50
+  rebuild_worker_count: 2
+  bid_wait_while_rebuilding_min_ms: 100
+  bid_wait_while_rebuilding_max_ms: 300
 auth:
   token_secret: live-auction-development-secret
   token_ttl: 24h

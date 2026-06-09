@@ -3,8 +3,11 @@ package bus
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
+	"github.com/redis/go-redis/v9"
+	"github.com/zet-plane/live-auction-backend/internal/core/availability"
 	"github.com/zet-plane/live-auction-backend/internal/core/observability"
 	"github.com/zet-plane/live-auction-backend/pkg/wsevent"
 )
@@ -50,6 +53,14 @@ func TestBroadcasterPublishesRoomFanoutEnvelope(t *testing.T) {
 	}
 	if env.SourcePod != "pod_a" {
 		t.Fatalf("source pod = %q, want pod_a", env.SourcePod)
+	}
+}
+
+func TestActiveRedisPublisherReturnsUnavailableWithoutAuthority(t *testing.T) {
+	publisher := NewActiveRedisPublisher(fakeActiveRedisProvider{})
+	err := publisher.Publish(context.Background(), ChannelRoom, "{}")
+	if !errors.Is(err, ErrEventBusUnavailable) {
+		t.Fatalf("err = %v, want ErrEventBusUnavailable", err)
 	}
 }
 
@@ -159,6 +170,12 @@ func TestSubscriberRecordsMetricForInvalidJSONPayload(t *testing.T) {
 type captureBusRecorder struct {
 	observability.NoopRecorder
 	events []observability.WSEventBusMetric
+}
+
+type fakeActiveRedisProvider struct{}
+
+func (fakeActiveRedisProvider) ActiveRedis() (*redis.Client, availability.Snapshot, bool) {
+	return nil, availability.Snapshot{}, false
 }
 
 func (r *captureBusRecorder) WSEventBus(_ context.Context, m observability.WSEventBusMetric) {

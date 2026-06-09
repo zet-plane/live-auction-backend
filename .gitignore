@@ -12,3 +12,13 @@ deploy/k8s/01-secrets.yaml
 *.pem
 
 .worktrees/
+
+AccessKey.txt
+
+tmp/failover.local.yaml
+tmp/failover-compose.yml
+tmp/failover-state.json
+tmp/failover-user.json
+tmp/failover-business.json
+tmp/failover-business-latest.json
+tmp/final-failover-summary.json

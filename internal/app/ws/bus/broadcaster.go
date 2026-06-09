@@ -3,10 +3,13 @@ package bus
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/zet-plane/live-auction-backend/internal/core/availability"
 	"github.com/zet-plane/live-auction-backend/internal/core/observability"
+	"github.com/zet-plane/live-auction-backend/pkg/errorx"
 	"github.com/zet-plane/live-auction-backend/pkg/wsevent"
 )
 
@@ -24,6 +27,28 @@ func NewRedisPublisher(client *redis.Client) *RedisPublisher {
 
 func (p *RedisPublisher) Publish(ctx context.Context, channel, payload string) error {
 	return p.client.Publish(ctx, channel, payload).Err()
+}
+
+type ActiveRedisProvider interface {
+	ActiveRedis() (*redis.Client, availability.Snapshot, bool)
+}
+
+var ErrEventBusUnavailable = errorx.New(http.StatusServiceUnavailable, 50302, "websocket event bus temporarily unavailable")
+
+type ActiveRedisPublisher struct {
+	provider ActiveRedisProvider
+}
+
+func NewActiveRedisPublisher(provider ActiveRedisProvider) *ActiveRedisPublisher {
+	return &ActiveRedisPublisher{provider: provider}
+}
+
+func (p *ActiveRedisPublisher) Publish(ctx context.Context, channel, payload string) error {
+	client, _, ok := p.provider.ActiveRedis()
+	if !ok {
+		return ErrEventBusUnavailable
+	}
+	return client.Publish(ctx, channel, payload).Err()
 }
 
 type Options struct {

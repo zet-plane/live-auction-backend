@@ -9,9 +9,10 @@ import (
 )
 
 type Config struct {
-	Addr     string
-	Password string
-	DB       int
+	Addr        string
+	Password    string
+	DB          int
+	DisablePing bool
 }
 
 func Open(cfg Config) (*redis.Client, error) {
@@ -31,6 +32,9 @@ func Open(cfg Config) (*redis.Client, error) {
 		return nil, fmt.Errorf("instrument redis metrics: %w", err)
 	}
 
+	if cfg.DisablePing {
+		return client, nil
+	}
 	if err := client.Ping(context.Background()).Err(); err != nil {
 		return nil, fmt.Errorf("ping redis: %w", err)
 	}
