@@ -52,6 +52,8 @@ docs/agent-testing/
 │   └── ws.md
 ├── flows/
 │   └── auction-lifecycle.md
+├── failover/
+│   └── *-plan.md
 ├── concurrency/
 │   └── *-plan.md
 ├── performance-runs/
@@ -90,6 +92,7 @@ docs/agent-testing/
 - `templates/`：通用协议模板、模块测试契约模板和 Go runner 模板。
 - `modules/`：单模块测试契约。
 - `flows/`：跨模块流程测试契约。
+- `failover/`：Redis/MySQL 可用性、降级和故障恢复测试计划。
 - `concurrency/`：并发一致性测试计划草案、审核记录和执行许可记录。
 - `performance-runs/`：性能压测 runner 代码、脱敏复跑说明和脱敏证据摘要。
 - `reports/`：测试报告和报告写作规则。

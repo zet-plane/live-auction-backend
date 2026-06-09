@@ -22,8 +22,9 @@ Because of this, simply changing `replicas: 1` to `replicas: 2` or `3` would spl
 3. Deliver room fanout and user unicast events to WebSocket clients connected to any backend pod.
 4. Recover correct auction state after WebSocket reconnect with an authoritative snapshot.
 5. Prevent multi-pod cron duplication from amplifying database scans or broadcast traffic.
-6. Add Kubernetes probes and rollout settings for safe multi-replica operation.
-7. Keep the first implementation compatible with the current module layout.
+6. Prevent multi-pod ranking cache rebuilds from stampeding MySQL.
+7. Add Kubernetes probes and rollout settings for safe multi-replica operation.
+8. Keep the first implementation compatible with the current module layout.
 
 ## Non-Goals
 
@@ -42,6 +43,7 @@ Use the current backend as a multi-replica monolith:
 - Redis also becomes the cross-pod WebSocket event bus.
 - Each pod keeps local WebSocket connections and only performs local delivery after receiving bus events.
 - Cron execution is protected by Redis leases.
+- Ranking cache rebuilds keep the current in-process `singleflight`, but add a Redis lease so only one pod rebuilds a missing ranking for an item at a time.
 
 This is the smallest architecture that preserves current code boundaries while making multiple backend replicas semantically correct.
 
@@ -203,6 +205,43 @@ Notes:
 - Order status updates should remain conditional and idempotent.
 - If Redis is unavailable, high-risk auction cron jobs should skip execution rather than run independently on every pod.
 
+## Ranking Rebuild Coalescing
+
+The current ranking read path uses Go `singleflight.Group` to coalesce concurrent Redis ranking misses before rebuilding from MySQL bid logs. That only works inside one process. With multiple backend pods, the same hot item can miss Redis on every pod and each pod can run its own MySQL `ListBidRanking` rebuild.
+
+Keep the in-process `singleflight`, but treat it as the inner guard only. Add a Redis-backed distributed rebuild lease around the MySQL rebuild:
+
+```text
+SET auction:item:{item_id}:ranking:rebuild_lock {pod_id}:{token} NX PX 1000
+```
+
+Recommended behavior:
+
+1. `GetRanking` first reads Redis ranking as it does today.
+2. If Redis returns entries, return them.
+3. If Redis misses and `shouldRebuildRanking` says rebuild is useful, enter the existing local `singleflight`.
+4. Inside the local `singleflight`, try to acquire the Redis rebuild lock for the item.
+5. The lock owner rebuilds from MySQL, writes the ranking back to Redis, and returns the rebuilt entries.
+6. A pod that does not get the lock waits briefly with jitter, re-reads Redis ranking, and returns the fresh Redis result if available.
+7. If the lock holder crashes, the lock TTL expires and a later request can rebuild.
+8. If MySQL returns no entries for an item whose Redis state has bids, set a short rebuild cooldown marker so empty or lagging bid-log windows do not cause every request to retry the rebuild immediately.
+
+Suggested keys:
+
+| Key | Purpose | TTL |
+| --- | --- | ---: |
+| `auction:item:{item_id}:ranking:rebuild_lock` | Distributed singleflight lock for MySQL ranking rebuild | 1s |
+| `auction:item:{item_id}:ranking:rebuild_cooldown` | Short marker after empty/error rebuild windows | 1-2s |
+
+This does not make ranking reads strictly serialized. It only prevents cache-miss rebuild storms across pods. Redis Lua remains the authority for accepted bids, while Redis ranking and MySQL bid logs remain read models.
+
+Failure behavior:
+
+- Redis ranking read fails: keep current safe fallback behavior.
+- Rebuild lock acquisition fails because Redis is unavailable: do not add another MySQL stampede path; either use the existing MySQL fallback only when cache is nil, or return the best safe empty/current-user response.
+- Lock not acquired: do not query MySQL from the losing pod; wait and re-read Redis.
+- Rebuild succeeds but Redis write fails: return rebuilt entries to the current request, record/log the Redis write failure, and rely on TTL retry for later requests.
+
 ## Health Checks
 
 Split health into three concepts.
@@ -290,6 +329,7 @@ Add metrics for:
 - Event bus publishes by result and event type.
 - Event bus deliveries by pod, scope, target, result, and event type.
 - Event bus subscription reconnects and errors.
+- Ranking rebuild lease acquisition, skip, cooldown, and rebuild result.
 - Local WS recipients and dropped deliveries.
 - Cron lease acquisition result.
 - Cron skipped due to lease not acquired.
@@ -341,18 +381,20 @@ Agent online tests, following `docs/agent-testing/README.md`:
 2. Implement Redis Pub/Sub publisher and subscriber.
 3. Wire backend startup so the WS module creates the distributed broadcaster when Redis is available.
 4. Add reconnect snapshot tests and client event-version contract documentation.
-5. Add Redis cron lease helper and wrap item and order cron jobs.
-6. Add `/livez` and `/readyz`; keep `/health` for detailed diagnostics.
-7. Update k3s Deployment probes and rollout strategy with `replicas: 2`.
-8. Run unit tests.
-9. Run agent-guided online validation with 2 replicas.
-10. Increase to 3 replicas only after evidence shows stable fanout, reconnect, and cron lease behavior.
+5. Add Redis-backed distributed coalescing for ranking rebuilds while keeping local `singleflight`.
+6. Add Redis cron lease helper and wrap item and order cron jobs.
+7. Add `/livez` and `/readyz`; keep `/health` for detailed diagnostics.
+8. Update k3s Deployment probes and rollout strategy with `replicas: 2`.
+9. Run unit tests.
+10. Run agent-guided online validation with 2 replicas.
+11. Increase to 3 replicas only after evidence shows stable fanout, reconnect, ranking rebuild coalescing, and cron lease behavior.
 
 ## Open Decisions
 
 1. Pub/Sub channel layout can be either global by scope or sharded by room. First version should use global scope channels for simplicity.
 2. Client protocol should expose `auction_version` consistently across all auction-related events before relying on strict client dedupe.
 3. Redis HA is outside this implementation, but production readiness should treat it as the next infrastructure milestone.
+4. Ranking rebuild lock TTL should start at 1 second and be tuned from observed MySQL rebuild latency.
 
 ## Acceptance Criteria
 
@@ -361,6 +403,7 @@ Agent online tests, following `docs/agent-testing/README.md`:
 - A user unicast event reaches the target user regardless of which pod holds the connection.
 - Reconnecting to a different pod sends an authoritative `auction_snapshot`.
 - Concurrent cron instances do not all execute the same leased job.
+- Concurrent ranking Redis misses across multiple pods result in one MySQL rebuild per item per lock window.
 - Rolling update keeps at least one backend pod Ready.
-- Unit tests cover broadcaster, subscriber, cron lease, and reconnect snapshot behavior.
+- Unit tests cover broadcaster, subscriber, ranking rebuild lease, cron lease, and reconnect snapshot behavior.
 - Online evidence shows no message loss for normal bid, extend, end, and order-created events under a multi-pod test batch.

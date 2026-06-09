@@ -100,6 +100,8 @@ agent 每档至少采集：
 
 - runner 输出。
 - Prometheus 指标摘要。
+- 客户端按接口端到端指标：每个 request mix endpoint 的 P50 / P95 / P99 / max、请求数、失败数、超时数、状态码和业务码。
+- 服务侧按 route 指标：和 request mix endpoint 对齐的 HTTP route/method/status RPS、P50 / P95 / P99。
 - 应用错误日志摘要。
 - MySQL / Redis 指标摘要。
 - 业务状态抽样对账结果。
@@ -109,7 +111,7 @@ agent 每档至少采集：
 出现以下任一情况，agent 必须立即停止压测或要求人工立即停止：
 
 - HTTP 5xx、超时率或业务错误率连续超过计划阈值。
-- P99 延迟连续超过计划阈值。
+- 客户端按接口 P99 或服务侧按 route P99 连续超过计划阈值。
 - MySQL 或 Redis 出现明显 timeout、连接池耗尽、慢查询激增或锁等待激增。
 - Pod restart、panic、OOM、goroutine 或内存持续异常上升。
 - WebSocket 连接失败率、丢消息数或广播延迟超过计划阈值。

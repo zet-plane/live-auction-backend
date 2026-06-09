@@ -101,6 +101,8 @@ Apifox 对齐偏差：（接口契约测试时填写；无偏差写"无"）
 
 - 测试命令和退出码。
 - HTTP 请求和响应摘要。
+- 性能压测每档的客户端按接口端到端 P50 / P95 / P99 / max、请求数、失败数、超时数、状态码和业务码。
+- 性能压测每档的服务侧按 route/method/status HTTP RPS、P50 / P95 / P99；全局服务侧 HTTP histogram 只能作为背景信号。
 - WebSocket 消息摘要。
 - MySQL 查询结果摘要。
 - Redis 查询结果摘要。
@@ -227,6 +229,20 @@ subagent：
 | 验证点 | 证据 | 结果 |
 | --- | --- | --- |
 |  |  |  |
+
+## 性能核心指标
+
+> 性能压测必须填写；非性能测试写“不适用”。
+
+| 阶段 | 接口 | Client E2E P95 | Client E2E P99 | Server route P95 | Server route P99 | RPS | HTTP 失败 | 超时 | 业务失败 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+|  |  |  |  |  |  |  |  |  |  |
+
+说明：
+
+- Client E2E 是压测源视角端到端耗时。
+- Server route 是服务侧按 route/method/status 过滤或分组后的指标。
+- 禁止只用混合接口 Client E2E 或全局 Server HTTP P95/P99 得出单接口结论。
 
 ## 通过项
 

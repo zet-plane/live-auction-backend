@@ -6,6 +6,8 @@ config.yaml
 
 deploy/k8s/01-secrets.yaml
 
+deploy/online_config.yaml
+
 *.log
 *.log.gz
 

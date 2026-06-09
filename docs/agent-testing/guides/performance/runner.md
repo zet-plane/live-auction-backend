@@ -174,11 +174,38 @@ CLIENT_E2E_P50:
 CLIENT_E2E_P95:
 CLIENT_E2E_P99:
 CLIENT_E2E_MAX:
+CLIENT_E2E_BY_ENDPOINT:
+  ENDPOINT:
+  TOTAL:
+  SUCCESS:
+  HTTP_FAILURES:
+  BUSINESS_FAILS:
+  TIMEOUTS:
+  P50:
+  P95:
+  P99:
+  MAX:
 STATUS_CODES:
 BUSINESS_CODES:
 ```
 
-`CLIENT_E2E_P50/P95/P99/MAX` 是压测源看到的端到端耗时，包含本机调度、HTTP client、DNS/TLS、公网链路、Ingress、服务内处理和响应传回。它用于记录外部体验和网络噪声，不作为服务端接口性能优化的默认硬判停条件。服务端接口性能必须优先使用 Prometheus `server_http_p95/server_http_p99` 时间线判断。runner 还必须输出吞吐、成功/失败/超时计数、派生失败率、状态码分布和业务码分布；只输出延迟分位不能作为压测证据。
+`CLIENT_E2E_P50/P95/P99/MAX` 是压测源看到的端到端耗时，包含本机调度、HTTP client、DNS/TLS、公网链路、Ingress、服务内处理和响应传回。它用于记录外部体验和网络噪声。
+
+业务链路压测必须输出 `CLIENT_E2E_BY_ENDPOINT`。每个 endpoint 对应 request mix 中的一个稳定业务接口名称，例如 `bid`、`ranking`、`item_detail`、`room_detail`。禁止只用混合 `CLIENT_E2E_P95/P99` 代表单接口体验。
+
+服务端接口性能必须使用和 endpoint 对齐的 Prometheus route 指标判断，例如：
+
+```text
+SERVER_HTTP_BY_ROUTE:
+  ROUTE:
+  METHOD:
+  RPS:
+  P50:
+  P95:
+  P99:
+```
+
+如果 runner 通过 Prometheus 查询输出服务侧指标，必须按 route/method/status 维度过滤或分组；全局 `server_http_p95/server_http_p99` 只能作为背景信号，不能作为业务接口验收结论。runner 还必须输出吞吐、成功/失败/超时计数、派生失败率、状态码分布和业务码分布；只输出延迟分位不能作为压测证据。
 
 ## 清理边界
 

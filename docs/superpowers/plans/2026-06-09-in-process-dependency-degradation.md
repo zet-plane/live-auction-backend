@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace the file-backed availability coordinator with an in-process dependency degradation runtime that supports cloud Redis to local Redis failover, MySQL short-window buffering, and protective rejection after the buffering window expires.
+**Goal:** Replace the file-backed availability control plane with an in-process dependency degradation runtime that supports cloud Redis to local Redis failover, MySQL short-window buffering, and protective rejection after the buffering window expires.
 
 **Architecture:** Keep the existing `Availability.ActiveRedis()` integration contract so item cache, WebSocket bus, ticket authority, presence, and cron users can continue to route through one active Redis runtime. Replace watcher/file state with local probe state, make local Redis sticky after cloud Redis failover, and use MySQL bid logs as the rebuild source while accepting rollback to the durable point.
 
@@ -16,7 +16,7 @@
 - Modify `internal/core/availability/authority.go`: replace `RedisSelector`/watcher-backed runtime with probe-backed `Runtime`, `Options`, `Probe`, and `ActiveRedis()`.
 - Delete or stop using `internal/core/availability/watcher.go`, `internal/core/availability/store.go`, and their tests after replacing coverage with runtime tests.
 - Modify `config/vars.go` and `config/config.go`: replace control-plane config fields with probe/failover/buffering durations.
-- Modify `config.yaml.example` and active deployment app config: replace file-backed availability settings with probe settings.
+- Modify `config.yaml.example` and deployment config maps: remove `state_path`/`stale_threshold`; add probe settings.
 - Modify `cmd/server/server.go`: create cloud Redis and local Redis clients, create availability runtime, run probe loop on engine context, and remove watcher setup.
 - Modify `internal/core/kernel/kernel.go`: keep `CloudRedis`, `LocalRedis`, and `Availability`; `Cache` remains cloud Redis for compatibility and cron lease defaults until callers are migrated.
 - Modify `internal/app/base/handler/health.go`: report runtime probe data instead of control-plane file data.
@@ -598,6 +598,9 @@ func TestAvailabilityDurationFallbacks(t *testing.T) {
 	if got := cfg.AvailabilityRedisFailoverThreshold(); got != 3*time.Second {
 		t.Fatalf("redis failover fallback = %v, want 3s", got)
 	}
+	if got := cfg.AvailabilityMySQLProbeInterval(); got != time.Second {
+		t.Fatalf("mysql probe fallback = %v, want 1s", got)
+	}
 	if got := cfg.MySQLBufferingWindow(); got != 10*time.Second {
 		t.Fatalf("mysql buffering fallback = %v, want 10s", got)
 	}
@@ -622,6 +625,8 @@ In `config/vars.go`, replace `Availability` with:
 type Availability struct {
 	RedisProbeInterval     string `yaml:"redis_probe_interval"      mapstructure:"redis_probe_interval"`
 	RedisFailoverThreshold string `yaml:"redis_failover_threshold"  mapstructure:"redis_failover_threshold"`
+	RedisRecoverThreshold  string `yaml:"redis_recover_threshold"   mapstructure:"redis_recover_threshold"`
+	MySQLProbeInterval     string `yaml:"mysql_probe_interval"      mapstructure:"mysql_probe_interval"`
 	MySQLBufferingWindow   string `yaml:"mysql_buffering_window"    mapstructure:"mysql_buffering_window"`
 	LocalRedis             Redis  `yaml:"local_redis"               mapstructure:"local_redis"`
 }
@@ -640,6 +645,13 @@ func (c *GlobalConfig) AvailabilityRedisFailoverThreshold() time.Duration {
 	return parseDuration(c.Availability.RedisFailoverThreshold, 3*time.Second)
 }
 
+func (c *GlobalConfig) AvailabilityRedisRecoverThreshold() time.Duration {
+	return parseDuration(c.Availability.RedisRecoverThreshold, 30*time.Second)
+}
+
+func (c *GlobalConfig) AvailabilityMySQLProbeInterval() time.Duration {
+	return parseDuration(c.Availability.MySQLProbeInterval, time.Second)
+}
 ```
 
 Keep the existing `MySQLBufferingWindow()` helper, but make sure it reads `c.Availability.MySQLBufferingWindow`.
@@ -688,6 +700,8 @@ In `config.yaml.example`, make the availability block exactly:
 availability:
   redis_probe_interval: 1s
   redis_failover_threshold: 3s
+  redis_recover_threshold: 30s
+  mysql_probe_interval: 1s
   mysql_buffering_window: 10s
   local_redis:
     addr: redis:6379
@@ -845,7 +859,7 @@ func statusOK(ok bool) string {
 }
 ```
 
-Remove the old file-coordinator component output from this function.
+Remove the old `epoch` and `control_plane` component output from this function.
 
 - [ ] **Step 4: Run health tests**
 
@@ -1238,28 +1252,30 @@ Expected: PASS.
 ## Task 7: Deployment And Config Cleanup
 
 **Files:**
-- Modify: active deployment app config manifest; currently `deploy/k8s/01-secrets.example.yaml`
-- Modify: any config files that contain old file-backed availability settings.
-- Modify: docs that directly instruct mounting shared availability state files, only if they describe the current implementation path.
+- Modify: `deploy/k8s/02-configmaps.yaml`
+- Modify: any config files that contain `availability.state_path`
+- Modify: docs that directly instruct mounting `/availability/state.json`, only if they describe the current implementation path.
 
-- [ ] **Step 1: Find old availability config references**
+- [ ] **Step 1: Find control-plane config references**
 
 Run:
 
 ```bash
-rtk rg -n "old file-backed availability settings|shared availability state files|probe settings" config.yaml.example deploy config docs/superpowers/specs/2026-06-09-in-process-dependency-degradation-design.md
+rtk rg -n "state_path|stale_threshold|/availability/state.json|control_plane|local_redis_switching|redis_failover_threshold|mysql_buffering_window" config.yaml.example deploy config docs/superpowers/specs/2026-06-09-in-process-dependency-degradation-design.md
 ```
 
 Expected: shows references to update. Do not modify older historical specs except the new dependency degradation spec unless they are used as active implementation instructions.
 
-- [ ] **Step 2: Update deployment app config**
+- [ ] **Step 2: Update deployment config map**
 
-In the active deployment app config manifest, make the backend config `availability` block match:
+In `deploy/k8s/02-configmaps.yaml`, make the backend config `availability` block match:
 
 ```yaml
 availability:
   redis_probe_interval: 1s
   redis_failover_threshold: 3s
+  redis_recover_threshold: 30s
+  mysql_probe_interval: 1s
   mysql_buffering_window: 10s
   local_redis:
     addr: redis:6379
@@ -1269,14 +1285,14 @@ availability:
 
 - [ ] **Step 3: Remove state file mount references from active manifests**
 
-If active backend deployment manifests mount shared availability state files or directories, remove those volume mounts and volumes. Leave unrelated observability or data volume mounts alone.
+If active backend deployment manifests mount `/availability/state.json` or `/availability`, remove those volume mounts and volumes. Leave unrelated observability or data volume mounts alone.
 
 - [ ] **Step 4: Run config/deployment grep again**
 
 Run:
 
 ```bash
-rtk rg -n "old file-backed availability settings|shared availability state files" config.yaml.example deploy/k8s
+rtk rg -n "state_path|stale_threshold|/availability/state.json|control_plane" config.yaml.example deploy/k8s
 ```
 
 Expected: no matches in active config or deployment manifests.
@@ -1342,5 +1358,5 @@ Expected: commit succeeds.
 
 - Spec coverage: Redis failover, local sticky behavior, allowed Redis rollback, MySQL buffering window, protective rejection, health reporting, config cleanup, and fake-test requirements are each covered by tasks.
 - No local-to-cloud Redis sync is included; this was explicitly removed from scope.
-- No shared availability coordinator or state file remains in active implementation tasks.
+- No shared control plane or `/availability/state.json` remains in active implementation tasks.
 - TDD coverage is front-loaded for runtime, config, health, item service, rebuild, and WS compatibility.

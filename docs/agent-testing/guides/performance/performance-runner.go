@@ -77,17 +77,34 @@ func loadConfig() Config {
 // ── PERFORMANCE TYPES ───────────────────────────────────────────────────────
 
 type RequestSpec struct {
-	Method string
-	Path   string
-	Body   []byte
+	Endpoint string
+	Method   string
+	Path     string
+	Body     []byte
 }
 
 type RequestResult struct {
+	Endpoint     string
 	StatusCode   int
 	BusinessCode string
 	Duration     time.Duration
 	BodyBytes    int
 	Err          string
+}
+
+type EndpointSummary struct {
+	Total         int64
+	Success       int64
+	HTTPFailures  int64
+	BusinessFails int64
+	Timeouts      int64
+	P50           time.Duration
+	P95           time.Duration
+	P99           time.Duration
+	Max           time.Duration
+	StatusCodes   map[int]int64
+	BusinessCodes map[string]int64
+	latencies     []time.Duration
 }
 
 type StageSummary struct {
@@ -108,6 +125,7 @@ type StageSummary struct {
 	Max           time.Duration
 	StatusCodes   map[int]int64
 	BusinessCodes map[string]int64
+	EndpointStats map[string]*EndpointSummary
 	StopReason    string
 }
 
@@ -116,7 +134,7 @@ type StageSummary struct {
 func buildRequest(stage StageConfig, workerID int, seq uint64) RequestSpec {
 	// Default workload is intentionally safe. Replace with the approved target
 	// request after the performance plan is approved.
-	return RequestSpec{Method: http.MethodGet, Path: "/health"}
+	return RequestSpec{Endpoint: "health", Method: http.MethodGet, Path: "/health"}
 }
 
 func classifyBusiness(body []byte) string {
@@ -249,6 +267,7 @@ func runStage(ctx context.Context, cfg Config, client *http.Client, stage StageC
 		Concurrency:   stage.Concurrency,
 		StatusCodes:   map[int]int64{},
 		BusinessCodes: map[string]int64{},
+		EndpointStats: map[string]*EndpointSummary{},
 	}
 	var latencies []time.Duration
 	for result := range results {
@@ -257,6 +276,7 @@ func runStage(ctx context.Context, cfg Config, client *http.Client, stage StageC
 		if result.Duration > summary.Max {
 			summary.Max = result.Duration
 		}
+		recordEndpointResult(&summary, result)
 		if result.Err != "" {
 			if strings.Contains(result.Err, "timeout") || strings.Contains(result.Err, "deadline") {
 				summary.Timeouts++
@@ -283,10 +303,65 @@ func runStage(ctx context.Context, cfg Config, client *http.Client, stage StageC
 	summary.P50 = percentile(latencies, 0.50)
 	summary.P95 = percentile(latencies, 0.95)
 	summary.P99 = percentile(latencies, 0.99)
+	finalizeEndpointSummaries(summary.EndpointStats)
 	if stopRequested(cfg.StopFile) {
 		summary.StopReason = "stop_file_present"
 	}
 	return summary
+}
+
+func recordEndpointResult(summary *StageSummary, result RequestResult) {
+	endpoint := result.Endpoint
+	if endpoint == "" {
+		endpoint = "unknown"
+	}
+	stats := summary.EndpointStats[endpoint]
+	if stats == nil {
+		stats = &EndpointSummary{
+			StatusCodes:   map[int]int64{},
+			BusinessCodes: map[string]int64{},
+		}
+		summary.EndpointStats[endpoint] = stats
+	}
+	stats.Total++
+	stats.latencies = append(stats.latencies, result.Duration)
+	if result.Duration > stats.Max {
+		stats.Max = result.Duration
+	}
+	if result.Err != "" {
+		if strings.Contains(result.Err, "timeout") || strings.Contains(result.Err, "deadline") {
+			stats.Timeouts++
+		}
+		stats.HTTPFailures++
+		return
+	}
+	stats.StatusCodes[result.StatusCode]++
+	stats.BusinessCodes[result.BusinessCode]++
+	if isBusinessSuccess(result.StatusCode, result.BusinessCode) {
+		stats.Success++
+	} else if result.StatusCode >= 200 && result.StatusCode < 500 {
+		stats.BusinessFails++
+	} else {
+		stats.HTTPFailures++
+	}
+}
+
+func finalizeEndpointSummaries(all map[string]*EndpointSummary) {
+	for _, stats := range all {
+		sort.Slice(stats.latencies, func(i, j int) bool { return stats.latencies[i] < stats.latencies[j] })
+		stats.P50 = percentile(stats.latencies, 0.50)
+		stats.P95 = percentile(stats.latencies, 0.95)
+		stats.P99 = percentile(stats.latencies, 0.99)
+	}
+}
+
+func sortedEndpointNames(all map[string]*EndpointSummary) []string {
+	names := make([]string, 0, len(all))
+	for name := range all {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func doRequest(ctx context.Context, cfg Config, client *http.Client, stage StageConfig, workerID int, n uint64) RequestResult {
@@ -297,7 +372,7 @@ func doRequest(ctx context.Context, cfg Config, client *http.Client, stage Stage
 	}
 	req, err := http.NewRequestWithContext(ctx, spec.Method, cfg.BaseURL+spec.Path, body)
 	if err != nil {
-		return RequestResult{Err: err.Error()}
+		return RequestResult{Endpoint: spec.Endpoint, Err: err.Error()}
 	}
 	if len(spec.Body) > 0 {
 		req.Header.Set("Content-Type", "application/json")
@@ -312,11 +387,12 @@ func doRequest(ctx context.Context, cfg Config, client *http.Client, stage Stage
 	resp, err := client.Do(req)
 	duration := time.Since(start)
 	if err != nil {
-		return RequestResult{Duration: duration, Err: err.Error()}
+		return RequestResult{Endpoint: spec.Endpoint, Duration: duration, Err: err.Error()}
 	}
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	return RequestResult{
+		Endpoint:     spec.Endpoint,
 		StatusCode:   resp.StatusCode,
 		BusinessCode: classifyBusiness(respBody),
 		Duration:     duration,
@@ -405,10 +481,28 @@ func printStageSummary(s StageSummary) {
 	fmt.Printf("  ERROR_RATE: %.4f\n", ratio(s.HTTPFailures+s.BusinessFails, s.Total))
 	fmt.Printf("  TIMEOUT_RATE: %.4f\n", ratio(s.Timeouts, s.Total))
 	fmt.Printf("  BUSINESS_FAILURE_RATE: %.4f\n", ratio(s.BusinessFails, s.Total))
-	fmt.Printf("  P50: %s\n", s.P50)
-	fmt.Printf("  P95: %s\n", s.P95)
-	fmt.Printf("  P99: %s\n", s.P99)
-	fmt.Printf("  MAX: %s\n", s.Max)
+	fmt.Printf("  CLIENT_E2E_P50: %s\n", s.P50)
+	fmt.Printf("  CLIENT_E2E_P95: %s\n", s.P95)
+	fmt.Printf("  CLIENT_E2E_P99: %s\n", s.P99)
+	fmt.Printf("  CLIENT_E2E_MAX: %s\n", s.Max)
+	fmt.Println("  CLIENT_E2E_BY_ENDPOINT:")
+	for _, name := range sortedEndpointNames(s.EndpointStats) {
+		stats := s.EndpointStats[name]
+		fmt.Printf("    ENDPOINT: %s\n", name)
+		fmt.Printf("      TOTAL: %d\n", stats.Total)
+		fmt.Printf("      SUCCESS: %d\n", stats.Success)
+		fmt.Printf("      HTTP_FAILURES: %d\n", stats.HTTPFailures)
+		fmt.Printf("      BUSINESS_FAILS: %d\n", stats.BusinessFails)
+		fmt.Printf("      TIMEOUTS: %d\n", stats.Timeouts)
+		fmt.Printf("      ERROR_RATE: %.4f\n", ratio(stats.HTTPFailures+stats.BusinessFails, stats.Total))
+		fmt.Printf("      TIMEOUT_RATE: %.4f\n", ratio(stats.Timeouts, stats.Total))
+		fmt.Printf("      P50: %s\n", stats.P50)
+		fmt.Printf("      P95: %s\n", stats.P95)
+		fmt.Printf("      P99: %s\n", stats.P99)
+		fmt.Printf("      MAX: %s\n", stats.Max)
+		fmt.Printf("      STATUS_CODES: %s\n", jsonLine(stats.StatusCodes))
+		fmt.Printf("      BUSINESS_CODES: %s\n", jsonLine(stats.BusinessCodes))
+	}
 	fmt.Printf("  STATUS_CODES: %s\n", jsonLine(s.StatusCodes))
 	fmt.Printf("  BUSINESS_CODES: %s\n", jsonLine(s.BusinessCodes))
 	if s.StopReason != "" {

@@ -10,7 +10,7 @@ The deployment assumption is:
 - All backend pods can reach the cloud MySQL endpoint at the same time, or none of them can.
 - A local Redis is available as a temporary real-time auction authority when cloud Redis is unreachable.
 
-Because pod-level observations are not expected to split, every pod can run the same local probe loop and reach the same operating mode without shared file locks or a separate controller.
+Because pod-level observations are not expected to split, every pod can run the same local probe loop and reach the same operating mode without `/availability/state.json`, file locks, or a separate controller.
 
 ## Goals
 
@@ -180,6 +180,8 @@ Keep an `availability` section, but remove control-plane fields.
 availability:
   redis_probe_interval: 1s
   redis_failover_threshold: 3s
+  redis_recover_threshold: 30s
+  mysql_probe_interval: 1s
   mysql_buffering_window: 10s
   local_redis:
     addr: redis:6379
@@ -187,7 +189,13 @@ availability:
     db: 0
 ```
 
-Remove shared file mount requirements, file lock settings, and controller-writer settings.
+Remove:
+
+- `state_path`
+- `stale_threshold`
+- shared file mount requirements
+- file lock settings
+- control-plane writer settings
 
 ## Code Change Plan
 
@@ -200,7 +208,7 @@ Remove shared file mount requirements, file lock settings, and controller-writer
    - MySQL down within window means allow bids but pause side effects.
    - MySQL down after window means reject new writes.
 6. Make local Redis rebuild explicitly tolerate rollback to MySQL persisted bid logs.
-7. Remove deployment/config references to shared availability state files.
+7. Remove deployment/config references to `/availability/state.json`.
 
 ## Tests
 

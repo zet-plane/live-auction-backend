@@ -16,6 +16,8 @@ data:
     exporters:
       prometheus:
         endpoint: 0.0.0.0:8889
+        resource_to_telemetry_conversion:
+          enabled: true
       otlp/tempo:
         endpoint: tempo:4317
         tls:
@@ -188,9 +190,22 @@ data:
             grpc:
               endpoint: 0.0.0.0:4317
 
+    ingester:
+      max_block_duration: 5m
+      max_block_bytes: 134217728
+      complete_block_timeout: 1m
+
+    compactor:
+      compaction:
+        block_retention: 48h
+        max_block_bytes: 134217728
+
     storage:
       trace:
         backend: local
+        blocklist_poll: 30s
+        wal:
+          path: /var/tempo/wal
         local:
           path: /var/tempo/traces
 ---

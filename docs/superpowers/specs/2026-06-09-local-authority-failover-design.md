@@ -41,6 +41,7 @@ Current code also has conflicts with this availability goal:
 - Do not claim Redis rebuild from MySQL is lossless when cloud Redis may have accepted bids that were not yet persisted to MySQL.
 - Do not make the shared state file carry high-frequency business data.
 - Do not solve multi-node Kubernetes shared control-plane storage in the first version. This design targets the current single-node k3s environment.
+- Do not solve cold-start dependency failures in the first version. MySQL initContainers, server startup, and schema migration may still require MySQL before the backend is running. This design focuses on dependency failures after backend pods are already serving traffic.
 
 ## Operating Modes
 
@@ -81,6 +82,7 @@ Example content:
   "epoch": 12,
   "active_redis": "cloud",
   "mysql_state": "healthy",
+  "mysql_buffering_started_at_unix_ms": 0,
   "updated_at_unix_ms": 1710000000000,
   "reason": "probe_ok"
 }
@@ -95,10 +97,13 @@ Fields:
 | `epoch` | Monotonic authority epoch. |
 | `active_redis` | `cloud` or `local`. |
 | `mysql_state` | `healthy`, `down`, `buffering`, or `recovering`. |
+| `mysql_buffering_started_at_unix_ms` | Start time for the 10-second MySQL buffering window. Use `0` when not buffering. |
 | `updated_at_unix_ms` | Last successful control-plane write time. |
 | `reason` | Safe internal reason for mode changes. No credentials or DSNs. |
 
 All backend pods watch this file with fsnotify or polling and keep an in-memory snapshot. Business hot paths read only the in-memory snapshot, not the file.
+
+The first version intentionally keeps this file small. It is a coarse mode and epoch decision point, not a detailed workflow database. If more detailed per-item recovery state is needed, store it in the active Redis authority or MySQL, not in the shared file.
 
 If the file is missing, malformed, stale, has an unsupported version, or has an epoch lower than the last seen epoch, pods fail closed:
 
@@ -144,6 +149,16 @@ Flow:
 The system must not accept writes to both Redis authorities for the same item.
 
 An item may become `ready` only if rebuild can prove MySQL contains the complete accepted bid history needed for that item. If cloud Redis may have accepted bids that have not yet reached MySQL, that item must enter `protected` until recovery or manual verification resolves the gap.
+
+The first version uses item-level sequence evidence:
+
+- Each accepted bid carries `authority_epoch` and `auction_version`.
+- The active Redis state stores the current `authority_epoch`, latest `auction_version`, bid count, leader, and current price.
+- Each Redis Stream bid-log event includes `authority_epoch` and `auction_version`.
+- MySQL `bid_logs` stores `authority_epoch` and `auction_version`.
+- Rebuild marks an item `ready` only when MySQL bid logs for that item are continuous for the authority epoch being rebuilt and match the expected current price, leader, and bid count.
+
+If cloud Redis is unreachable and the system cannot read the latest Redis state or stream watermark needed to prove that MySQL is complete, the item must remain `protected`. This is expected behavior, not a recovery failure.
 
 If cloud Redis is unavailable and local Redis is also unavailable, the service stays alive but auction writes enter protection. Safe reads may continue from MySQL where possible, and `/health` reports both Redis authorities unavailable.
 
@@ -226,6 +241,8 @@ The bid Lua must validate:
 
 This prevents a request using an old authority decision from writing after failover.
 
+For a newly accepted bid, the Lua script increments the item `auction_version`, writes it to Redis state, and includes it in the bid-log Stream event. Idempotent retries return the original accepted bid and do not create a new version.
+
 ## MySQL Failure Path
 
 When MySQL is unreachable but Redis remains available, Redis may continue as real-time authority for a short buffering window.
@@ -233,7 +250,7 @@ When MySQL is unreachable but Redis remains available, Redis may continue as rea
 Flow:
 
 1. Probe detects MySQL unavailable.
-2. Controller writes `mode=mysql_buffering`, `mysql_state=buffering`.
+2. Controller writes `mode=mysql_buffering`, `mysql_state=buffering`, and `mysql_buffering_started_at_unix_ms`.
 3. Redis continues accepting bids for at most 10 seconds.
 4. Accepted bids remain in Redis Stream/backlog as not-yet-persisted durable records.
 5. Settlement, order creation, deposit refund, and compensation side effects pause.
@@ -248,6 +265,18 @@ Hard rule:
 ```text
 Any bid accepted while MySQL is unavailable must be persisted to MySQL and verified before settlement, order creation, deposit refunds, or final winner confirmation.
 ```
+
+The 10-second buffering window is enforced from the shared control-plane timestamp, not independently by each pod. If the timestamp is missing, stale, or already beyond the window, bid writes fail closed and affected ongoing items enter protection.
+
+Redis Stream recovery must be idempotent:
+
+- `bid_logs.id` / `bid_id` must be unique.
+- `(item_id, authority_epoch, auction_version)` must be unique.
+- When an idempotency key is present, `(item_id, user_id, idempotency_key)` should be unique.
+- Bid-log workers may process the same Stream message more than once.
+- Duplicate already-persisted bid logs do not count as persistence failure.
+- MySQL transient failures must keep messages pending, not dead-letter them.
+- Dead letters are only for unrecoverable malformed messages.
 
 ## Settlement And Side Effects
 
@@ -266,12 +295,29 @@ When MySQL recovers:
 
 1. Resume bid-log workers.
 2. Drain pending and new stream entries.
-3. Retry dead-letterable messages when safe.
+3. Retry pending and backlog messages until MySQL persistence is complete.
 4. Compare Redis item state with MySQL bid logs.
 5. Mark items settlement-safe.
 6. Resume settlement cron only for settlement-safe items.
 
 If a single item fails verification, protect only that item where possible.
+
+## WebSocket And Presence In Local Redis Mode
+
+Local Redis mode keeps the auction-facing WebSocket path available where correctness can be preserved.
+
+Continue using local Redis for:
+
+- WebSocket ticket issuance and verification for new tickets.
+- New WebSocket connections after clients re-fetch tickets.
+- Market-event broadcast for accepted bids and auction state changes.
+- Reconnect snapshots that let clients recover missed market events.
+
+Old tickets signed or stored under the previous authority may fail after a Redis authority switch. Clients should re-fetch a ticket and reconnect. This is acceptable because the reconnect snapshot is the recovery mechanism for missed events.
+
+Presence is best-effort in the first version. Online counts and room user lists may be temporarily inaccurate after the authority switch because local Redis may not contain the previous presence set. Health should report `presence=degraded` while presence is rebuilding through reconnects, heartbeats, joins, and leaves. Presence must not affect bid acceptance, settlement, or winner confirmation.
+
+Settlement, order creation, deposit refunds, compensation, and final winner confirmation remain paused until MySQL backlog persistence and item verification complete.
 
 ## Health Semantics
 
@@ -314,6 +360,8 @@ It should include:
 - protected item count
 - bid-log backlog and pending count
 - settlement paused status
+- WebSocket ticket status
+- presence status
 
 It must not include credentials, DSNs, full tickets, or secret values.
 
@@ -391,12 +439,18 @@ Unit tests:
 
 - State file parser rejects stale, malformed, unsupported, and regressing epoch files.
 - State file writer uses atomic replace and preserves monotonic epoch.
+- MySQL buffering window is enforced from the shared control-plane timestamp.
 - Bid service rejects writes when control-plane state is invalid.
 - Bid service waits briefly for `rebuilding` and proceeds only after `ready`.
 - Bid Lua rejects mismatched epoch and non-ready item state.
+- Bid Lua increments `auction_version` for new accepted bids and preserves it for idempotent retries.
 - Rebuild worker commits only when token and epoch match.
+- Rebuild worker protects an item when MySQL bid logs are not continuous for the required epoch/version.
+- Bid-log worker treats duplicate already-persisted bid logs as successful idempotent recovery.
 - MySQL buffering pauses settlement.
 - MySQL buffering beyond 10 seconds protects ongoing items.
+- WebSocket ticket issuance uses the active Redis authority.
+- Presence degraded state is reported without blocking bid acceptance.
 
 Integration-style tests with fakes:
 
@@ -423,12 +477,14 @@ Agent/online tests:
 4. Adjust `/livez`, `/readyz`, and `/health` semantics.
 5. Add active Redis selection to cache wiring.
 6. Add item authority state and epoch checks to bid path.
-7. Add local Redis rebuild worker with batch limits, locks, cooldown, negative cache, and jitter.
-8. Add MySQL buffering mode and 10-second protection timer.
-9. Pause settlement and side effects while MySQL backlog is unverified.
-10. Add observability and alerts.
-11. Update Kubernetes deployment with hostPath mount and non-blocking Redis startup.
-12. Add recovery and switchback workflow.
+7. Add `authority_epoch`, `auction_version`, and idempotency persistence to bid-log writes.
+8. Add local Redis rebuild worker with batch limits, locks, cooldown, negative cache, jitter, and continuity verification.
+9. Add MySQL buffering mode and shared 10-second protection timer.
+10. Pause settlement and side effects while MySQL backlog is unverified.
+11. Route WebSocket tickets and market-event broadcast through the active Redis authority; report presence as degraded when rebuilding.
+12. Add observability and alerts.
+13. Update Kubernetes deployment with hostPath mount and non-blocking Redis startup.
+14. Add recovery and switchback workflow.
 
 ## First-Version Defaults
 

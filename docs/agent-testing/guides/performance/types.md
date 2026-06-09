@@ -81,9 +81,14 @@ LoadModel:
 
 ```text
 Thresholds:
-  p50:
-  p95:
-  p99:
+  client_e2e_p50:
+  client_e2e_p95:
+  client_e2e_p99:
+  client_e2e_by_endpoint:
+  server_http_p50:
+  server_http_p95:
+  server_http_p99:
+  server_http_by_route:
   actual_qps:
   error_rate:
   timeout_rate:
@@ -121,10 +126,22 @@ timeouts:
 error_rate:
 timeout_rate:
 business_failure_rate:
-p50:
-p95:
-p99:
-max:
+client_e2e_p50:
+client_e2e_p95:
+client_e2e_p99:
+client_e2e_max:
+client_e2e_by_endpoint:
+  endpoint:
+  request_share:
+  total:
+  success:
+  http_failures:
+  business_failures:
+  timeouts:
+  p50:
+  p95:
+  p99:
+  max:
 status_codes:
 business_codes:
 ```
@@ -132,6 +149,14 @@ business_codes:
 线上或线上等价压测还必须采集资源和依赖观测：
 
 ```text
+server_http_by_route:
+  route:
+  method:
+  status:
+  rps:
+  p50:
+  p95:
+  p99:
 app_cpu:
 app_memory:
 gc:
@@ -143,6 +168,8 @@ redis_summary:
 load_source_cpu:
 load_source_network:
 ```
+
+`client_e2e_by_endpoint` 和 `server_http_by_route` 是核心指标。正式业务链路压测不得只给全局客户端延迟，也不得只给全局服务侧 HTTP histogram。客户端指标用于回答公网或压测源视角的用户体验；服务侧 route 指标用于回答后端接口处理和接库链路是否有瓶颈。两者口径不同，报告必须分开呈现。
 
 业务链路压测还必须执行抽样对账。没有业务对账时，不能只凭延迟分位和 HTTP 状态码写 `passed`。
 
