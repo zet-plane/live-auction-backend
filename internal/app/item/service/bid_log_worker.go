@@ -83,12 +83,15 @@ func (w *bidLogWorker) drainOnce(ctx context.Context) error {
 	for _, message := range messages {
 		event := message.Event
 		logs = append(logs, &itemmodel.BidLog{
-			ID:        event.BidID,
-			ItemID:    event.ItemID,
-			RoomID:    event.RoomID,
-			UserID:    event.UserID,
-			Price:     event.Price,
-			CreatedAt: time.UnixMilli(event.CreatedAtUnixMS),
+			ID:             event.BidID,
+			ItemID:         event.ItemID,
+			RoomID:         event.RoomID,
+			UserID:         event.UserID,
+			Price:          event.Price,
+			AuthorityEpoch: event.AuthorityEpoch,
+			AuctionVersion: event.AuctionVersion,
+			IdempotencyKey: event.IdempotencyKey,
+			CreatedAt:      time.UnixMilli(event.CreatedAtUnixMS),
 		})
 		ids = append(ids, message.ID)
 	}

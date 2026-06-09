@@ -16,6 +16,7 @@ import (
 	ordermodel "github.com/zet-plane/live-auction-backend/internal/app/order/model"
 	orderservice "github.com/zet-plane/live-auction-backend/internal/app/order/service"
 	usermodel "github.com/zet-plane/live-auction-backend/internal/app/user/model"
+	"github.com/zet-plane/live-auction-backend/internal/core/availability"
 	"github.com/zet-plane/live-auction-backend/internal/core/observability"
 	"github.com/zet-plane/live-auction-backend/pkg/errorx"
 	"github.com/zet-plane/live-auction-backend/pkg/wsevent"
@@ -102,6 +103,127 @@ func TestPlaceBidSucceeds(t *testing.T) {
 	}
 	if fc.bidLogEvents[0].RoomID != "room_1" {
 		t.Fatalf("expected room_id room_1, got %q", fc.bidLogEvents[0].RoomID)
+	}
+}
+
+func newBidServiceFixture(t *testing.T) (*Service, *usermodel.User, string) {
+	t.Helper()
+	store := newFakeStore()
+	fc := newFakeCache()
+	svc := NewService(store, testPolicy, fc, nil, nil, nil)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 1000, 100, 0, time.Now().Add(5*time.Minute))
+	return svc, bidder, itemID
+}
+
+func TestPlaceBidRejectsWhenControlPlaneInvalid(t *testing.T) {
+	svc, current, itemID := newBidServiceFixture(t)
+	svc.SetAvailabilitySnapshotForTest(availability.Snapshot{Valid: false, Error: "stale"})
+
+	_, err := svc.PlaceBid(context.Background(), current, itemID, itemdto.PlaceBidInput{Price: 1200, UserName: "Alice", IdempotencyKey: "idem_1"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, ErrAvailabilityUnavailable) {
+		t.Fatalf("err = %v, want availability unavailable", err)
+	}
+}
+
+func TestPlaceBidRejectsWhenMySQLBufferingWindowExpired(t *testing.T) {
+	svc, current, itemID := newBidServiceFixture(t)
+	svc.now = func() time.Time { return time.UnixMilli(1710000011000) }
+	svc.SetAvailabilitySnapshotForTest(availability.Snapshot{Valid: true, State: availability.State{
+		Version: 1, Mode: availability.ModeMySQLBuffering, Epoch: 4, ActiveRedis: availability.RedisCloud,
+		MySQLState: availability.MySQLBuffering, MySQLBufferingStartedAtUnixMS: 1710000000000,
+		UpdatedAtUnixMS: 1710000010000, Reason: "mysql_down",
+	}})
+
+	_, err := svc.PlaceBid(context.Background(), current, itemID, itemdto.PlaceBidInput{Price: 1200, UserName: "Alice", IdempotencyKey: "idem_1"})
+	if err == nil {
+		t.Fatal("expected buffering timeout error")
+	}
+}
+
+func TestPlaceBidRebuildsLocalStateFromPreviousEpoch(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	svc := NewService(store, testPolicy, fc, nil, nil, nil)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 1000, 100, 0, time.Now().Add(5*time.Minute))
+	delete(fc.states, itemID)
+	store.bidLogsByEpoch[itemID+":30"] = []*itemmodel.BidLog{
+		{ID: "bid_1", ItemID: itemID, UserID: bidder.ID, Price: 1100, AuthorityEpoch: 30, AuctionVersion: 1},
+	}
+	svc.SetAvailabilitySnapshotForTest(availability.Snapshot{Valid: true, State: availability.State{
+		Version: 1, Mode: availability.ModeLocalRedisActive, Epoch: 31, ActiveRedis: availability.RedisLocal,
+		MySQLState: availability.MySQLHealthy, UpdatedAtUnixMS: time.Now().UnixMilli(),
+	}})
+
+	result, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
+		Price:          1200,
+		UserName:       bidder.Name,
+		IdempotencyKey: "idem_local_rebuild",
+	})
+	if err != nil {
+		t.Fatalf("PlaceBid failed: %v", err)
+	}
+	if result.CurrentPrice != 1200 {
+		t.Fatalf("current_price = %d, want 1200", result.CurrentPrice)
+	}
+	if fc.states[itemID] == nil || fc.states[itemID].AuthorityEpoch != 31 {
+		t.Fatalf("rebuilt state = %+v", fc.states[itemID])
+	}
+}
+
+func TestPlaceBidSwitchesBackToCloudUsingLocalState(t *testing.T) {
+	store := newFakeStore()
+	active := newFakeCache()
+	cloud := newFakeCache()
+	local := newFakeCache()
+	svc := NewService(store, testPolicy, active, nil, nil, nil)
+	svc.SetRedisAuthorities(cloud, local)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 1000, 100, 0, time.Now().Add(5*time.Minute))
+
+	cloud.states[itemID] = &itemcache.AuctionState{
+		AuthorityEpoch:    40,
+		AuthorityState:    itemcache.AuthorityReady,
+		AuctionVersion:    1,
+		Status:            "ongoing",
+		RoomID:            "room_1",
+		CurrentPrice:      1100,
+		DealPrice:         1100,
+		LeaderUserID:      bidder.ID,
+		EndTimeUnixMS:     time.Now().Add(5 * time.Minute).UnixMilli(),
+		BidIncrement:      100,
+		ExtendTriggerSec:  testPolicy.ExtendTriggerSec,
+		AutoExtendSec:     testPolicy.AutoExtendSec,
+		MaxExtendCount:    testPolicy.MaxExtendCount,
+		MaxTotalExtendSec: testPolicy.MaxTotalExtendSec,
+	}
+	localState := *cloud.states[itemID]
+	localState.AuthorityEpoch = 41
+	localState.AuctionVersion = 2
+	localState.CurrentPrice = 1200
+	localState.DealPrice = 1200
+	localState.BidCount = 2
+	local.states[itemID] = &localState
+	active.states = cloud.states
+	svc.SetAvailabilitySnapshotForTest(availability.Snapshot{Valid: true, State: availability.State{
+		Version: 1, Mode: availability.ModeNormalCloud, Epoch: 42, ActiveRedis: availability.RedisCloud,
+		MySQLState: availability.MySQLHealthy, UpdatedAtUnixMS: time.Now().UnixMilli(),
+	}})
+
+	result, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
+		Price:          1300,
+		UserName:       bidder.Name,
+		IdempotencyKey: "idem_switchback",
+	})
+	if err != nil {
+		t.Fatalf("PlaceBid failed: %v", err)
+	}
+	if result.CurrentPrice != 1300 {
+		t.Fatalf("current_price = %d, want 1300", result.CurrentPrice)
+	}
+	if cloud.states[itemID] == nil || cloud.states[itemID].AuthorityEpoch != 42 {
+		t.Fatalf("cloud state = %+v", cloud.states[itemID])
 	}
 }
 

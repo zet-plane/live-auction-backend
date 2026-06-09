@@ -22,6 +22,9 @@ const (
 	bidLogFieldUserID          = "user_id"
 	bidLogFieldPrice           = "price"
 	bidLogFieldCreatedAtUnixMS = "created_at_unix_ms"
+	bidLogFieldAuthorityEpoch  = "authority_epoch"
+	bidLogFieldAuctionVersion  = "auction_version"
+	bidLogFieldIdempotencyKey  = "idempotency_key"
 )
 
 const bidLogPendingMinIdle = 30 * time.Second
@@ -45,6 +48,9 @@ func bidLogStreamValues(event BidLogEvent) map[string]any {
 		bidLogFieldUserID:          event.UserID,
 		bidLogFieldPrice:           strconv.FormatInt(event.Price, 10),
 		bidLogFieldCreatedAtUnixMS: strconv.FormatInt(event.CreatedAtUnixMS, 10),
+		bidLogFieldAuthorityEpoch:  strconv.FormatInt(event.AuthorityEpoch, 10),
+		bidLogFieldAuctionVersion:  strconv.FormatInt(event.AuctionVersion, 10),
+		bidLogFieldIdempotencyKey:  event.IdempotencyKey,
 	}
 }
 
@@ -194,6 +200,15 @@ func bidLogEventFromStreamValues(values map[string]any) (BidLogEvent, error) {
 	if err != nil {
 		return BidLogEvent{}, err
 	}
+	authorityEpoch, err := requiredStreamInt64(values, bidLogFieldAuthorityEpoch)
+	if err != nil {
+		return BidLogEvent{}, err
+	}
+	auctionVersion, err := requiredStreamInt64(values, bidLogFieldAuctionVersion)
+	if err != nil {
+		return BidLogEvent{}, err
+	}
+	idempotencyKey := optionalStreamString(values, bidLogFieldIdempotencyKey)
 	return BidLogEvent{
 		BidID:           bidID,
 		ItemID:          itemID,
@@ -201,6 +216,9 @@ func bidLogEventFromStreamValues(values map[string]any) (BidLogEvent, error) {
 		UserID:          userID,
 		Price:           price,
 		CreatedAtUnixMS: createdAtUnixMS,
+		AuthorityEpoch:  authorityEpoch,
+		AuctionVersion:  auctionVersion,
+		IdempotencyKey:  idempotencyKey,
 	}, nil
 }
 
@@ -214,6 +232,21 @@ func requiredStreamInt64(values map[string]any, field string) (int64, error) {
 		return 0, fmt.Errorf("invalid %s: %w", field, err)
 	}
 	return n, nil
+}
+
+func optionalStreamString(values map[string]any, field string) string {
+	raw, ok := values[field]
+	if !ok {
+		return ""
+	}
+	switch v := raw.(type) {
+	case string:
+		return v
+	case []byte:
+		return string(v)
+	default:
+		return ""
+	}
 }
 
 func requiredStreamString(values map[string]any, field string) (string, error) {

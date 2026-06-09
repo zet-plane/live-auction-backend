@@ -14,6 +14,9 @@ import (
 )
 
 type AuctionState struct {
+	AuthorityEpoch    int64
+	AuthorityState    string
+	AuctionVersion    int64
 	Status            string
 	RoomID            string
 	CurrentPrice      int64
@@ -57,6 +60,8 @@ type ItemDetailCache struct {
 }
 
 type BidLuaArgs struct {
+	AuthorityEpoch    int64
+	AuthorityState    string
 	UserID            string
 	UserName          string
 	BidID             string
@@ -95,6 +100,9 @@ type BidLogEvent struct {
 	UserID          string
 	Price           int64
 	CreatedAtUnixMS int64
+	AuthorityEpoch  int64
+	AuctionVersion  int64
+	IdempotencyKey  string
 }
 
 type BidLogStreamMessage struct {
@@ -116,6 +124,13 @@ const (
 	ItemDetailTTL    = 24 * time.Hour
 )
 
+const (
+	AuthorityRebuilding = "rebuilding"
+	AuthorityReady      = "ready"
+	AuthorityProtected  = "protected"
+	AuthorityEnded      = "ended"
+)
+
 type Cache interface {
 	SetItemDetail(ctx context.Context, itemID string, detail ItemDetailCache) error
 	GetItemDetail(ctx context.Context, itemID string) (*ItemDetailCache, bool, error)
@@ -131,6 +146,8 @@ type Cache interface {
 	ListDueAuctionEnds(ctx context.Context, nowUnixMS int64, limit int) ([]string, error)
 	ListActiveAuctionEnds(ctx context.Context, limit int) ([]string, error)
 	SettleAuctionLua(ctx context.Context, itemID string, nowUnixMS int64) (*SettlementResult, bool, error)
+	SetItemAuthority(ctx context.Context, itemID string, epoch int64, state string) error
+	GetItemAuthority(ctx context.Context, itemID string) (epoch int64, state string, ok bool, err error)
 	PushToRoomQueue(ctx context.Context, roomID, itemID string, score float64) error
 	RemoveFromRoomQueue(ctx context.Context, roomID, itemID string) error
 	SetRoomCurrentItem(ctx context.Context, roomID, itemID string) error
@@ -189,6 +206,10 @@ func (c *RedisCache) DeleteItemDetail(ctx context.Context, itemID string) error 
 
 func itemStateKey(itemID string) string {
 	return "auction:item:" + itemID + ":state"
+}
+
+func itemAuthorityKey(itemID string) string {
+	return "auction:item:" + itemID + ":authority"
 }
 
 func itemDetailKey(itemID string) string {
@@ -253,16 +274,23 @@ func (c *RedisCache) InitAuctionState(ctx context.Context, itemID string, state 
 		dealPrice = state.CurrentPrice
 	}
 	endUnixMS := state.EndTimeUnixMS
-	if endUnixMS == 0 {
+	if endUnixMS == 0 && !state.EndTime.IsZero() {
 		endUnixMS = state.EndTime.UnixMilli()
 	}
+	endUnix := int64(0)
+	if endUnixMS > 0 {
+		endUnix = endUnixMS / 1000
+	}
 	return c.client.HSet(ctx, itemStateKey(itemID),
+		"authority_epoch", state.AuthorityEpoch,
+		"authority_state", authorityStateOrDefault(state.AuthorityState),
+		"auction_version", state.AuctionVersion,
 		"status", status,
 		"room_id", state.RoomID,
 		"current_price", state.CurrentPrice,
 		"deal_price", dealPrice,
 		"leader_user_id", state.LeaderUserID,
-		"end_time_unix", state.EndTime.Unix(),
+		"end_time_unix", endUnix,
 		"end_time_unix_ms", endUnixMS,
 		"ended_at_unix_ms", state.EndedAtUnixMS,
 		"bid_increment", state.BidIncrement,
@@ -298,6 +326,9 @@ func (c *RedisCache) GetAuctionState(ctx context.Context, itemID string) (*Aucti
 		endMS = parseInt64(vals["end_time_unix"]) * 1000
 	}
 	return &AuctionState{
+		AuthorityEpoch:    parseInt64(vals["authority_epoch"]),
+		AuthorityState:    vals["authority_state"],
+		AuctionVersion:    parseInt64(vals["auction_version"]),
 		Status:            vals["status"],
 		RoomID:            vals["room_id"],
 		CurrentPrice:      parseInt64(vals["current_price"]),
@@ -320,6 +351,31 @@ func (c *RedisCache) GetAuctionState(ctx context.Context, itemID string) (*Aucti
 		MaxTotalExtendSec: parseInt(vals["max_total_extend_sec"]),
 		EndReason:         vals["end_reason"],
 	}, true, nil
+}
+
+func authorityStateOrDefault(state string) string {
+	if state == "" {
+		return AuthorityReady
+	}
+	return state
+}
+
+func (c *RedisCache) SetItemAuthority(ctx context.Context, itemID string, epoch int64, state string) error {
+	return c.client.HSet(ctx, itemAuthorityKey(itemID),
+		"epoch", epoch,
+		"state", authorityStateOrDefault(state),
+	).Err()
+}
+
+func (c *RedisCache) GetItemAuthority(ctx context.Context, itemID string) (epoch int64, state string, ok bool, err error) {
+	vals, err := c.client.HGetAll(ctx, itemAuthorityKey(itemID)).Result()
+	if err != nil {
+		return 0, "", false, err
+	}
+	if len(vals) == 0 {
+		return 0, "", false, nil
+	}
+	return parseInt64(vals["epoch"]), vals["state"], true, nil
 }
 
 func (c *RedisCache) GetAuctionHotConfig(ctx context.Context, itemID string) (*AuctionHotConfig, bool, error) {
@@ -353,8 +409,15 @@ func (c *RedisCache) GetAuctionHotConfig(ctx context.Context, itemID string) (*A
 }
 
 func (c *RedisCache) UpdateAuctionHotFields(ctx context.Context, itemID string, hot AuctionHotConfig) error {
+	endUnixMS := hot.EndTimeUnixMS
+	endUnix := int64(0)
+	if endUnixMS > 0 {
+		endUnix = endUnixMS / 1000
+	}
 	return c.client.HSet(ctx, itemStateKey(itemID),
 		"room_id", hot.RoomID,
+		"end_time_unix", endUnix,
+		"end_time_unix_ms", endUnixMS,
 		"bid_increment", hot.BidIncrement,
 		"price_cap", hot.PriceCap,
 		"deposit_amount", hot.DepositAmount,

@@ -38,10 +38,17 @@ local idem_ttl    = tonumber(ARGV[12])
 local item_id     = ARGV[13]
 local room_id     = ARGV[14]
 local created_ms  = ARGV[15]
+local expected_epoch = tonumber(ARGV[16])
+local expected_authority_state = ARGV[17]
+local idem_key_raw = ARGV[18]
 local now_ms      = now_unix * 1000
 
 local existing = redis.call('GET', idem_key)
 if existing then
+  local existing_bid_id, existing_auction_version = string.match(existing, '^([^|]+)|(%d+)$')
+  if not existing_bid_id then
+    existing_bid_id = existing
+  end
   local raw = redis.call('HGETALL', state_key)
   local m = {}
   for i = 1, #raw, 2 do m[raw[i]] = raw[i+1] end
@@ -49,10 +56,10 @@ if existing then
   local end_unix = tonumber(m['end_time_unix'] or 0)
   local end_ms = tonumber(m['end_time_unix_ms'] or 0)
   local status = m['status'] or 'ongoing'
-  local bid_cnt = tonumber(m['bid_count'] or 0)
+  local auction_version = tonumber(existing_auction_version or m['auction_version'] or m['bid_count'] or 0)
   if end_ms == 0 then end_ms = end_unix * 1000 end
   if end_unix == 0 and end_ms > 0 then end_unix = math.floor(end_ms / 1000) end
-  return {1, existing, deal_price, m['leader_user_id'] or '', end_unix, end_ms, 0, 0, '', status, bid_cnt}
+  return {1, existing_bid_id, deal_price, m['leader_user_id'] or '', end_unix, end_ms, 0, 0, '', status, auction_version}
 end
 
 local raw = redis.call('HGETALL', state_key)
@@ -63,12 +70,18 @@ for i = 1, #raw, 2 do s[raw[i]] = raw[i+1] end
 local status = s['status'] or ''
 if status ~= '' and status ~= 'ongoing' then return {2,'',0,'',0,0,0,0,'',status,0} end
 
+local authority_epoch = tonumber(s['authority_epoch'] or 0)
+local authority_state = s['authority_state'] or ''
+if authority_epoch ~= expected_epoch then return {5,'',0,'',0,0,0,0,'','authority_epoch_mismatch',0} end
+if authority_state ~= expected_authority_state then return {6,'',0,'',0,0,0,0,'','authority_not_ready',0} end
+
 local cur_price = tonumber(s['deal_price'] or s['current_price'] or 0)
 local end_unix  = tonumber(s['end_time_unix']  or 0)
 local end_ms    = tonumber(s['end_time_unix_ms'] or 0)
 local ext_cnt   = tonumber(s['extend_count']   or 0)
 local ext_tot   = tonumber(s['total_extended_sec'] or 0)
 local bid_cnt   = tonumber(s['bid_count']       or 0)
+local auction_version = tonumber(s['auction_version'] or 0)
 local part_cnt  = tonumber(s['participant_count'] or 0)
 local prev_leader = s['leader_user_id'] or ''
 
@@ -78,6 +91,7 @@ if end_unix == 0 and end_ms > 0 then end_unix = math.floor(end_ms / 1000) end
 if now_ms >= end_ms then return {2,'',0,'',0,0,0,0,'','',0} end
 if price <= cur_price   then return {3,'',0,'',0,0,0,0,'','',0} end
 if (price - cur_price) % bid_incr ~= 0 then return {4,'',0,'',0,0,0,0,'','',0} end
+auction_version = auction_version + 1
 
 redis.call('XADD', '{{BID_LOG_STREAM_NAME}}', '*',
   '{{BID_LOG_FIELD_BID_ID}}', bid_id,
@@ -85,7 +99,10 @@ redis.call('XADD', '{{BID_LOG_STREAM_NAME}}', '*',
   '{{BID_LOG_FIELD_ROOM_ID}}', room_id,
   '{{BID_LOG_FIELD_USER_ID}}', user_id,
   '{{BID_LOG_FIELD_PRICE}}', price,
-  '{{BID_LOG_FIELD_CREATED_AT_UNIX_MS}}', created_ms)
+  '{{BID_LOG_FIELD_CREATED_AT_UNIX_MS}}', created_ms,
+  '{{BID_LOG_FIELD_AUTHORITY_EPOCH}}', expected_epoch,
+  '{{BID_LOG_FIELD_AUCTION_VERSION}}', auction_version,
+  '{{BID_LOG_FIELD_IDEMPOTENCY_KEY}}', idem_key_raw)
 
 local prev_score = redis.call('ZSCORE', ranking_key, user_id)
 if not prev_score then part_cnt = part_cnt + 1 end
@@ -109,6 +126,7 @@ redis.call('HSET', state_key,
   'status',             'ongoing',
   'current_price',      price,
   'deal_price',         price,
+  'auction_version',    auction_version,
   'leader_user_id',     user_id,
   'end_time_unix',      end_unix,
   'end_time_unix_ms',   end_ms,
@@ -118,7 +136,7 @@ redis.call('HSET', state_key,
   'extend_count',       ext_cnt,
   'total_extended_sec', ext_tot)
 
-redis.call('SET', idem_key, bid_id, 'EX', idem_ttl)
+redis.call('SET', idem_key, bid_id .. '|' .. auction_version, 'EX', idem_ttl)
 
 local is_capped = 0
 local result_status = 'ongoing'
@@ -132,7 +150,7 @@ if price_cap > 0 and price >= price_cap then
   redis.call('ZREM', ending_key, item_id)
 end
 
-return {0, bid_id, price, user_id, end_unix, end_ms, is_extended, is_capped, prev_leader, result_status, bid_cnt}
+return {0, bid_id, price, user_id, end_unix, end_ms, is_extended, is_capped, prev_leader, result_status, auction_version}
 `
 
 var bidLuaScript = strings.NewReplacer(
@@ -143,6 +161,9 @@ var bidLuaScript = strings.NewReplacer(
 	"{{BID_LOG_FIELD_USER_ID}}", bidLogFieldUserID,
 	"{{BID_LOG_FIELD_PRICE}}", bidLogFieldPrice,
 	"{{BID_LOG_FIELD_CREATED_AT_UNIX_MS}}", bidLogFieldCreatedAtUnixMS,
+	"{{BID_LOG_FIELD_AUTHORITY_EPOCH}}", bidLogFieldAuthorityEpoch,
+	"{{BID_LOG_FIELD_AUCTION_VERSION}}", bidLogFieldAuctionVersion,
+	"{{BID_LOG_FIELD_IDEMPOTENCY_KEY}}", bidLogFieldIdempotencyKey,
 ).Replace(bidLuaScriptTemplate)
 
 var bidScript = redis.NewScript(bidLuaScript)
@@ -195,6 +216,9 @@ func (c *RedisCache) PlaceBidLua(ctx context.Context, itemID string, args BidLua
 		itemID,
 		args.RoomID,
 		strconv.FormatInt(args.CreatedAtUnixMS, 10),
+		strconv.FormatInt(args.AuthorityEpoch, 10),
+		authorityStateOrDefault(args.AuthorityState),
+		args.IdempotencyKey,
 	}
 
 	res, err := bidScript.Run(ctx, c.client, keys, argv...).Slice()

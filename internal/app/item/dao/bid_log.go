@@ -2,18 +2,50 @@ package dao
 
 import (
 	"database/sql"
+	"errors"
 
+	"github.com/go-sql-driver/mysql"
 	"github.com/zet-plane/live-auction-backend/internal/app/item/dto"
 	"github.com/zet-plane/live-auction-backend/internal/app/item/model"
 	"gorm.io/gorm/clause"
 )
 
 func (s *GormStore) AutoMigrateBidLog() error {
-	return s.db.AutoMigrate(&model.BidLog{})
+	if err := s.db.AutoMigrate(&model.BidLog{}); err != nil {
+		return err
+	}
+	if err := s.backfillLegacyBidLogVersions(); err != nil {
+		return err
+	}
+	if err := s.db.Exec("CREATE UNIQUE INDEX idx_bid_logs_item_epoch_version_unique ON bid_logs (item_id, authority_epoch, auction_version)").Error; err != nil && !isDuplicateIndexError(err) {
+		return err
+	}
+	return nil
 }
 
 func (s *GormStore) CreateBidLog(log *model.BidLog) error {
 	return s.db.Create(log).Error
+}
+
+func isDuplicateIndexError(err error) bool {
+	var mysqlErr *mysql.MySQLError
+	return errors.As(err, &mysqlErr) && mysqlErr.Number == 1061
+}
+
+func (s *GormStore) backfillLegacyBidLogVersions() error {
+	return s.db.Exec(`
+WITH ranked AS (
+	SELECT
+		id,
+		ROW_NUMBER() OVER (PARTITION BY item_id ORDER BY created_at ASC, id ASC) AS seq
+	FROM bid_logs
+	WHERE authority_epoch = 0 AND auction_version = 0
+)
+UPDATE bid_logs b
+JOIN ranked r ON r.id = b.id
+SET b.auction_version = r.seq
+WHERE b.authority_epoch = 0 AND b.auction_version = 0
+`).Error
 }
 
 func (s *GormStore) CreateBidLogs(logs []*model.BidLog) error {
@@ -21,6 +53,14 @@ func (s *GormStore) CreateBidLogs(logs []*model.BidLog) error {
 		return nil
 	}
 	return s.db.Clauses(clause.OnConflict{DoNothing: true}).Create(&logs).Error
+}
+
+func (s *GormStore) ListBidLogsForItemEpoch(itemID string, authorityEpoch int64) ([]*model.BidLog, error) {
+	var logs []*model.BidLog
+	err := s.db.Where("item_id = ? AND authority_epoch = ?", itemID, authorityEpoch).
+		Order("auction_version ASC").
+		Find(&logs).Error
+	return logs, err
 }
 
 func (s *GormStore) ListBidRanking(itemID string, limit int) ([]dto.BidderPrice, error) {

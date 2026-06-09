@@ -14,6 +14,7 @@ import (
 	"github.com/zet-plane/live-auction-backend/internal/app/item/model"
 	ordermodel "github.com/zet-plane/live-auction-backend/internal/app/order/model"
 	usermodel "github.com/zet-plane/live-auction-backend/internal/app/user/model"
+	"github.com/zet-plane/live-auction-backend/internal/core/availability"
 	"github.com/zet-plane/live-auction-backend/internal/core/observability"
 	"github.com/zet-plane/live-auction-backend/pkg/errorx"
 	"github.com/zet-plane/live-auction-backend/pkg/logx"
@@ -23,13 +24,17 @@ import (
 )
 
 type Service struct {
-	store       dao.Store
-	cache       itemcache.Cache
-	policy      dto.AuctionPolicy
-	now         func() time.Time
-	orderSvc    OrderCreator
-	depositSvc  DepositService
-	broadcaster wsevent.Broadcaster
+	store                dao.Store
+	cache                itemcache.Cache
+	cloudCache           itemcache.Cache
+	localCache           itemcache.Cache
+	policy               dto.AuctionPolicy
+	availability         availabilityRuntime
+	mysqlBufferingWindow time.Duration
+	now                  func() time.Time
+	orderSvc             OrderCreator
+	depositSvc           DepositService
+	broadcaster          wsevent.Broadcaster
 
 	broadcastTimeSyncRunning  atomic.Bool
 	timeSyncRoomIDs           sync.Map // itemID -> roomID
@@ -43,6 +48,10 @@ type Service struct {
 	rankingRebuildLockTTL     time.Duration
 	rankingRebuildWait        time.Duration
 	rankingRebuildCooldownTTL time.Duration
+}
+
+type availabilityRuntime interface {
+	Snapshot() availability.Snapshot
 }
 
 type DepositService interface {
@@ -60,6 +69,7 @@ func NewService(store dao.Store, policy dto.AuctionPolicy, cache itemcache.Cache
 		cache:                     cache,
 		policy:                    policy,
 		now:                       time.Now,
+		mysqlBufferingWindow:      10 * time.Second,
 		orderSvc:                  orderSvc,
 		depositSvc:                depositSvc,
 		broadcaster:               broadcaster,
@@ -69,6 +79,51 @@ func NewService(store dao.Store, policy dto.AuctionPolicy, cache itemcache.Cache
 		rankingRebuildWait:        100 * time.Millisecond,
 		rankingRebuildCooldownTTL: 2 * time.Second,
 	}
+}
+
+func (s *Service) SetAvailability(rt availabilityRuntime, mysqlBufferingWindow time.Duration) {
+	s.availability = rt
+	if mysqlBufferingWindow <= 0 {
+		mysqlBufferingWindow = 10 * time.Second
+	}
+	s.mysqlBufferingWindow = mysqlBufferingWindow
+}
+
+func (s *Service) SetRedisAuthorities(cloudCache, localCache itemcache.Cache) {
+	s.cloudCache = cloudCache
+	s.localCache = localCache
+}
+
+func (s *Service) SetAvailabilitySnapshotForTest(snapshot availability.Snapshot) {
+	s.SetAvailability(staticAvailability{snapshot: snapshot}, s.mysqlBufferingWindow)
+}
+
+type staticAvailability struct{ snapshot availability.Snapshot }
+
+func (s staticAvailability) Snapshot() availability.Snapshot { return s.snapshot }
+
+func (s *Service) availabilitySnapshot() availability.Snapshot {
+	if s.availability == nil {
+		return availability.Snapshot{Valid: true, State: availability.State{
+			Mode:        availability.ModeNormalCloud,
+			Epoch:       0,
+			ActiveRedis: availability.RedisCloud,
+			MySQLState:  availability.MySQLHealthy,
+		}}
+	}
+	return s.availability.Snapshot()
+}
+
+func (s *Service) shouldPauseSettlement() bool {
+	snapshot := s.availabilitySnapshot()
+	if !snapshot.Valid {
+		return true
+	}
+	switch snapshot.State.Mode {
+	case availability.ModeMySQLBuffering, availability.ModeAuctionProtected:
+		return true
+	}
+	return snapshot.State.MySQLState == availability.MySQLDown || snapshot.State.MySQLState == availability.MySQLBuffering
 }
 
 func (s *Service) SetRankingRebuildOwner(owner string) {
@@ -422,7 +477,10 @@ func (s *Service) startItemWithRule(ctx context.Context, item *model.AuctionItem
 		return errorx.ErrInvalidRequest
 	}
 	if s.cache != nil {
+		snapshot := s.availabilitySnapshot()
 		state := itemcache.AuctionState{
+			AuthorityEpoch:    snapshot.State.Epoch,
+			AuthorityState:    itemcache.AuthorityReady,
 			RoomID:            item.RoomID,
 			CurrentPrice:      rule.StartPrice,
 			EndTime:           rule.EndTime,
@@ -589,6 +647,11 @@ func normalizeListInput(query dto.ListItemsInput) dto.ListItemsInput {
 }
 
 func (s *Service) EndExpiredAuctions(ctx context.Context) {
+	if s.shouldPauseSettlement() {
+		logx.Warnw("item.settlement paused by availability state", "mode", s.availabilitySnapshot().State.Mode)
+		return
+	}
+
 	var err error
 	endedCount := 0
 	finish := observability.Track(ctx, "auction.end_expired")
@@ -652,6 +715,11 @@ func (s *Service) EndExpiredAuctions(ctx context.Context) {
 }
 
 func (s *Service) SettleDueAuctions(ctx context.Context) {
+	if s.shouldPauseSettlement() {
+		logx.Warnw("item.settlement paused by availability state", "mode", s.availabilitySnapshot().State.Mode)
+		return
+	}
+
 	if s.cache == nil {
 		s.EndExpiredAuctions(ctx)
 		return

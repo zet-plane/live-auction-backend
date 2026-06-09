@@ -70,10 +70,24 @@ func (i *Item) Load(engine *kernel.Engine) error {
 	}
 
 	var c cache.Cache
-	if engine.Cache != nil {
+	if engine.Availability != nil {
+		c = cache.NewActiveRedisCache(engine.Availability)
+	} else if engine.Cache != nil {
 		c = cache.NewRedisCache(engine.Cache)
 	}
 	svc := service.NewService(store, policy, c, orderapp.Svc, depositapp.Svc, wsapp.Hub)
+	svc.SetAvailability(engine.Availability, engine.Config.MySQLBufferingWindow())
+	if engine.CloudRedis != nil || engine.LocalRedis != nil {
+		var cloudCache cache.Cache
+		var localCache cache.Cache
+		if engine.CloudRedis != nil {
+			cloudCache = cache.NewRedisCache(engine.CloudRedis)
+		}
+		if engine.LocalRedis != nil {
+			localCache = cache.NewRedisCache(engine.LocalRedis)
+		}
+		svc.SetRedisAuthorities(cloudCache, localCache)
+	}
 	leaseStore := cronlease.NewRedisStore(engine.Cache)
 	leaseOwner := bidLogConsumerName(os.Hostname)
 	svc.SetRankingRebuildOwner(leaseOwner)

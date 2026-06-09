@@ -44,6 +44,15 @@ func TestBidLuaScriptAppendsAcceptedBidLogWithoutTrimming(t *testing.T) {
 	}
 }
 
+func TestBidLuaScriptStoresAuctionVersionWithIdempotencyKey(t *testing.T) {
+	if !strings.Contains(bidLuaScript, "bid_id .. '|' .. auction_version") {
+		t.Fatal("expected bid lua script to store auction_version with idempotency value")
+	}
+	if !strings.Contains(bidLuaScript, "string.match(existing, '^([^|]+)|(%d+)$')") {
+		t.Fatal("expected bid lua script to parse original idempotent bid version")
+	}
+}
+
 func TestBidLogEventFromStreamValuesParsesEvent(t *testing.T) {
 	event, err := bidLogEventFromStreamValues(map[string]any{
 		"bid_id":             "bid_1",
@@ -52,6 +61,8 @@ func TestBidLogEventFromStreamValuesParsesEvent(t *testing.T) {
 		"user_id":            "user_1",
 		"price":              "1200",
 		"created_at_unix_ms": "1780560000123",
+		"authority_epoch":    "7",
+		"auction_version":    "3",
 	})
 	if err != nil {
 		t.Fatalf("bidLogEventFromStreamValues returned error: %v", err)
@@ -61,6 +72,24 @@ func TestBidLogEventFromStreamValuesParsesEvent(t *testing.T) {
 	}
 	if event.Price != 1200 || event.CreatedAtUnixMS != 1780560000123 {
 		t.Fatalf("numeric fields not parsed: %+v", event)
+	}
+}
+
+func TestParseBidLogStreamMessageIncludesAuthorityFields(t *testing.T) {
+	messages := []redis.XMessage{{
+		ID: "1-0",
+		Values: map[string]any{
+			"bid_id": "bid_1", "item_id": "item_1", "room_id": "room_1", "user_id": "user_1",
+			"price": "1200", "created_at_unix_ms": "1710000000000",
+			"authority_epoch": "7", "auction_version": "3", "idempotency_key": "idem_1",
+		},
+	}}
+	got, err := parseBidLogStreamMessages(messages, nil)
+	if err != nil {
+		t.Fatalf("parseBidLogStreamMessages() error = %v", err)
+	}
+	if got[0].Event.AuthorityEpoch != 7 || got[0].Event.AuctionVersion != 3 || got[0].Event.IdempotencyKey != "idem_1" {
+		t.Fatalf("event = %+v", got[0].Event)
 	}
 }
 
@@ -103,6 +132,8 @@ func TestParseBidLogStreamMessagesDeadLettersMalformedAndReturnsValid(t *testing
 				"user_id":            "user_1",
 				"price":              "1200",
 				"created_at_unix_ms": "1780560000123",
+				"authority_epoch":    "7",
+				"auction_version":    "1",
 			},
 		},
 		{
@@ -125,6 +156,8 @@ func TestParseBidLogStreamMessagesDeadLettersMalformedAndReturnsValid(t *testing
 				"user_id":            "user_2",
 				"price":              "1400",
 				"created_at_unix_ms": "1780560001123",
+				"authority_epoch":    "7",
+				"auction_version":    "2",
 			},
 		},
 	}, func(message redis.XMessage, _ error) error {

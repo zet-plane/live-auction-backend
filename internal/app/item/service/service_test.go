@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -15,6 +16,7 @@ import (
 	itemmodel "github.com/zet-plane/live-auction-backend/internal/app/item/model"
 	orderservice "github.com/zet-plane/live-auction-backend/internal/app/order/service"
 	usermodel "github.com/zet-plane/live-auction-backend/internal/app/user/model"
+	"github.com/zet-plane/live-auction-backend/internal/core/availability"
 	"github.com/zet-plane/live-auction-backend/pkg/errorx"
 	"github.com/zet-plane/live-auction-backend/pkg/wsevent"
 )
@@ -23,6 +25,7 @@ type fakeStore struct {
 	items                 map[string]*itemmodel.AuctionItem
 	rules                 map[string]*itemmodel.AuctionRule
 	roomCurrentItems      map[string]string
+	bidLogsByEpoch        map[string][]*itemmodel.BidLog
 	updateErr             error
 	setRoomCurrentErr     error
 	clearRoomCurrentErr   error
@@ -40,6 +43,7 @@ func newFakeStore() *fakeStore {
 		items:            map[string]*itemmodel.AuctionItem{},
 		rules:            map[string]*itemmodel.AuctionRule{},
 		roomCurrentItems: map[string]string{},
+		bidLogsByEpoch:   map[string][]*itemmodel.BidLog{},
 		findItemCalls:    map[string]int{},
 	}
 }
@@ -198,11 +202,31 @@ func (s *fakeStore) ListPublishedItemsPastStartTime(before time.Time, limit int)
 	return result, nil
 }
 
+func (s *fakeStore) ListActiveItemsForRebuild(limit int) ([]*itemmodel.AuctionItem, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	items := make([]*itemmodel.AuctionItem, 0, len(s.items))
+	for _, item := range s.items {
+		if item.Status != itemmodel.ItemOngoing {
+			continue
+		}
+		cp := *item
+		items = append(items, &cp)
+		if len(items) >= limit {
+			break
+		}
+	}
+	return items, nil
+}
+
 func (s *fakeStore) AutoMigrateBidLog() error { return nil }
 
 func (s *fakeStore) CreateBidLog(log *itemmodel.BidLog) error {
 	cp := *log
 	s.bidLogs = append(s.bidLogs, &cp)
+	key := cp.ItemID + ":" + strconv.FormatInt(cp.AuthorityEpoch, 10)
+	s.bidLogsByEpoch[key] = append(s.bidLogsByEpoch[key], &cp)
 	return nil
 }
 
@@ -217,9 +241,22 @@ func (s *fakeStore) CreateBidLogs(logs []*itemmodel.BidLog) error {
 		}
 		cp := *log
 		s.bidLogs = append(s.bidLogs, &cp)
+		key := cp.ItemID + ":" + strconv.FormatInt(cp.AuthorityEpoch, 10)
+		s.bidLogsByEpoch[key] = append(s.bidLogsByEpoch[key], &cp)
 		seen[log.ID] = true
 	}
 	return nil
+}
+
+func (s *fakeStore) ListBidLogsForItemEpoch(itemID string, authorityEpoch int64) ([]*itemmodel.BidLog, error) {
+	key := itemID + ":" + strconv.FormatInt(authorityEpoch, 10)
+	logs := s.bidLogsByEpoch[key]
+	result := make([]*itemmodel.BidLog, 0, len(logs))
+	for _, log := range logs {
+		cp := *log
+		result = append(result, &cp)
+	}
+	return result, nil
 }
 
 func TestFakeStoreCreateBidLogsSkipsDuplicateIDs(t *testing.T) {
@@ -486,12 +523,17 @@ type fakeCache struct {
 	lastBidLuaArgs     *itemcache.BidLuaArgs
 	bidLogEvents       []itemcache.BidLogEvent
 	appendBidLogErr    error
+	settleCalls        int
 	initCalls          int
 	hotFieldUpdates    int
 	endBeforeHotUpdate bool
 	initErr            error
 	getStateErr        error
 	deleteErr          error
+	authority          map[string]struct {
+		epoch int64
+		state string
+	}
 }
 
 func newFakeCache() *fakeCache {
@@ -506,7 +548,16 @@ func newFakeCache() *fakeCache {
 		bidderNames:      map[string]map[string]string{},
 		rankingLocks:     map[string]fakeRankingLease{},
 		rankingCooldowns: map[string]time.Time{},
+		authority: map[string]struct {
+			epoch int64
+			state string
+		}{},
 	}
+}
+
+func newTestService(t *testing.T) *Service {
+	t.Helper()
+	return NewService(newFakeStore(), testPolicy, newFakeCache(), nil, nil, nil)
 }
 
 type fakeRankingLease struct {
@@ -548,6 +599,9 @@ func (c *fakeCache) InitAuctionState(_ context.Context, itemID string, state ite
 	if cp.DealPrice == 0 {
 		cp.DealPrice = cp.CurrentPrice
 	}
+	if cp.AuthorityState == "" {
+		cp.AuthorityState = itemcache.AuthorityReady
+	}
 	if cp.EndTimeUnixMS == 0 {
 		cp.EndTimeUnixMS = cp.EndTime.UnixMilli()
 	}
@@ -565,6 +619,19 @@ func (c *fakeCache) GetAuctionState(_ context.Context, itemID string) (*itemcach
 	}
 	cp := *s
 	return &cp, true, nil
+}
+
+func (c *fakeCache) SetItemAuthority(_ context.Context, itemID string, epoch int64, state string) error {
+	c.authority[itemID] = struct {
+		epoch int64
+		state string
+	}{epoch: epoch, state: state}
+	return nil
+}
+
+func (c *fakeCache) GetItemAuthority(_ context.Context, itemID string) (int64, string, bool, error) {
+	got, ok := c.authority[itemID]
+	return got.epoch, got.state, ok, nil
 }
 
 func (c *fakeCache) GetAuctionHotConfig(ctx context.Context, itemID string) (*itemcache.AuctionHotConfig, bool, error) {
@@ -615,6 +682,7 @@ func (c *fakeCache) UpdateAuctionHotFields(_ context.Context, itemID string, hot
 	state.AutoExtendSec = hot.AutoExtendSec
 	state.MaxExtendCount = hot.MaxExtendCount
 	state.MaxTotalExtendSec = hot.MaxTotalExtendSec
+	state.EndTimeUnixMS = hot.EndTimeUnixMS
 	return nil
 }
 
@@ -692,6 +760,7 @@ func (c *fakeCache) ListActiveAuctionEnds(_ context.Context, limit int) ([]strin
 }
 
 func (c *fakeCache) SettleAuctionLua(_ context.Context, itemID string, nowUnixMS int64) (*itemcache.SettlementResult, bool, error) {
+	c.settleCalls++
 	state, ok := c.states[itemID]
 	if !ok {
 		return nil, false, nil
@@ -798,6 +867,16 @@ func (c *fakeCache) PlaceBidLua(_ context.Context, itemID string, args itemcache
 	if state.Status != "" && state.Status != "ongoing" {
 		return &itemcache.BidLuaResult{Code: 2}, nil
 	}
+	authorityState := state.AuthorityState
+	if authorityState == "" {
+		authorityState = itemcache.AuthorityReady
+	}
+	if state.AuthorityEpoch != args.AuthorityEpoch {
+		return &itemcache.BidLuaResult{Code: 5}, nil
+	}
+	if authorityState != args.AuthorityState {
+		return &itemcache.BidLuaResult{Code: 6}, nil
+	}
 	endUnixMS := state.EndTimeUnixMS
 	if endUnixMS == 0 {
 		endUnixMS = state.EndTime.UnixMilli()
@@ -829,6 +908,7 @@ func (c *fakeCache) PlaceBidLua(_ context.Context, itemID string, args itemcache
 	state.DealPrice = args.Price
 	state.LeaderUserID = args.UserID
 	state.BidCount++
+	state.AuctionVersion++
 	state.EndTimeUnixMS = endUnixMS
 
 	isExtended := false
@@ -876,6 +956,9 @@ func (c *fakeCache) appendBidLogEventFromLua(itemID string, args itemcache.BidLu
 		UserID:          args.UserID,
 		Price:           args.Price,
 		CreatedAtUnixMS: args.CreatedAtUnixMS,
+		AuthorityEpoch:  args.AuthorityEpoch,
+		AuctionVersion:  c.states[itemID].AuctionVersion,
+		IdempotencyKey:  args.IdempotencyKey,
 	})
 }
 
@@ -1968,6 +2051,19 @@ func TestSettleDueAuctionsMarksEndedAndKeepsSnapshot(t *testing.T) {
 	}
 	if got := fc.stateTTLs[itemID]; got != itemcache.FinalSnapshotTTL {
 		t.Fatalf("expected final snapshot TTL %s, got %s", itemcache.FinalSnapshotTTL, got)
+	}
+}
+
+func TestSettleDueAuctionsPausesWhileMySQLBuffering(t *testing.T) {
+	svc := newTestService(t)
+	svc.SetAvailabilitySnapshotForTest(availability.Snapshot{Valid: true, State: availability.State{
+		Version: 1, Mode: availability.ModeMySQLBuffering, Epoch: 5, ActiveRedis: availability.RedisCloud,
+		MySQLState: availability.MySQLBuffering, UpdatedAtUnixMS: time.Now().UnixMilli(),
+	}})
+
+	svc.SettleDueAuctions(context.Background())
+	if svc.cache.(*fakeCache).settleCalls != 0 {
+		t.Fatalf("settle calls = %d, want 0", svc.cache.(*fakeCache).settleCalls)
 	}
 }
 

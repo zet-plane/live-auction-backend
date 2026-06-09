@@ -26,9 +26,11 @@ type Store interface {
 	ListItems(query dto.ListItemsInput) ([]model.ItemWithRule, int64, error)
 	ListOngoingItemsPastEndTime(before time.Time, limit int) ([]model.ItemWithRule, error)
 	ListPublishedItemsPastStartTime(before time.Time, limit int) ([]model.ItemWithRule, error)
+	ListActiveItemsForRebuild(limit int) ([]*model.AuctionItem, error)
 	AutoMigrateBidLog() error
 	CreateBidLog(log *model.BidLog) error
 	CreateBidLogs(logs []*model.BidLog) error
+	ListBidLogsForItemEpoch(itemID string, authorityEpoch int64) ([]*model.BidLog, error)
 	ListBidRanking(itemID string, limit int) ([]dto.BidderPrice, error)
 	GetUserRanking(itemID, userID string) (*dto.CurrentUserRanking, error)
 }
@@ -283,4 +285,16 @@ func (s *GormStore) ListPublishedItemsPastStartTime(before time.Time, limit int)
 		result = append(result, model.ItemWithRule{Item: &itemCopy, Rule: rule})
 	}
 	return result, nil
+}
+
+func (s *GormStore) ListActiveItemsForRebuild(limit int) ([]*model.AuctionItem, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	var items []*model.AuctionItem
+	err := s.db.Where("status = ? AND deleted_at IS NULL", model.ItemOngoing).
+		Order("updated_at ASC").
+		Limit(limit).
+		Find(&items).Error
+	return items, err
 }

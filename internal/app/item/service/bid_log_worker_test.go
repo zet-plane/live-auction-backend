@@ -48,15 +48,19 @@ func (r *fakeBidLogStreamReader) Ack(_ context.Context, ids []string) error {
 }
 
 type fakeBidLogBatchStore struct {
-	logs  []*itemmodel.BidLog
-	err   error
-	calls int
+	logs        []*itemmodel.BidLog
+	err         error
+	duplicateOK bool
+	calls       int
 }
 
 func (s *fakeBidLogBatchStore) CreateBidLogs(logs []*itemmodel.BidLog) error {
 	s.calls++
 	if s.err != nil {
 		return s.err
+	}
+	if s.duplicateOK {
+		return nil
 	}
 	for _, log := range logs {
 		cp := *log
@@ -95,11 +99,33 @@ func TestBidLogWorkerPersistsAndAcksBatch(t *testing.T) {
 	if got.ID != "bid_1" || got.ItemID != "item_1" || got.RoomID != "room_1" || got.UserID != "user_1" || got.Price != 1200 {
 		t.Fatalf("bid log fields not copied: %+v", got)
 	}
+	if got.AuthorityEpoch != 0 || got.AuctionVersion != 0 {
+		t.Fatalf("expected default authority fields, got %+v", got)
+	}
 	if !got.CreatedAt.Equal(createdAt) {
 		t.Fatalf("expected CreatedAt %s, got %s", createdAt, got.CreatedAt)
 	}
 	if !reflect.DeepEqual(reader.acks, []string{"stream-1"}) {
 		t.Fatalf("expected ack of stream message ID, got %#v", reader.acks)
+	}
+}
+
+func TestBidLogWorkerAcksDuplicateAlreadyPersistedLogs(t *testing.T) {
+	reader := &fakeBidLogStreamReader{messages: []itemcache.BidLogStreamMessage{{
+		ID: "1-0",
+		Event: itemcache.BidLogEvent{
+			BidID: "bid_1", ItemID: "item_1", RoomID: "room_1", UserID: "user_1",
+			Price: 1000, CreatedAtUnixMS: time.Now().UnixMilli(), AuthorityEpoch: 2, AuctionVersion: 1,
+		},
+	}}}
+	store := &fakeBidLogBatchStore{duplicateOK: true}
+	worker := newBidLogWorker(store, reader, bidLogWorkerConfig{BatchSize: 1})
+
+	if err := worker.drainOnce(context.Background()); err != nil {
+		t.Fatalf("drainOnce() error = %v", err)
+	}
+	if len(reader.acks) != 1 || reader.acks[0] != "1-0" {
+		t.Fatalf("acked = %+v", reader.acks)
 	}
 }
 
