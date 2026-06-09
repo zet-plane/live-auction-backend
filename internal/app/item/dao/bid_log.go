@@ -2,50 +2,18 @@ package dao
 
 import (
 	"database/sql"
-	"errors"
 
-	"github.com/go-sql-driver/mysql"
 	"github.com/zet-plane/live-auction-backend/internal/app/item/dto"
 	"github.com/zet-plane/live-auction-backend/internal/app/item/model"
 	"gorm.io/gorm/clause"
 )
 
 func (s *GormStore) AutoMigrateBidLog() error {
-	if err := s.db.AutoMigrate(&model.BidLog{}); err != nil {
-		return err
-	}
-	if err := s.backfillLegacyBidLogVersions(); err != nil {
-		return err
-	}
-	if err := s.db.Exec("CREATE UNIQUE INDEX idx_bid_logs_item_epoch_version_unique ON bid_logs (item_id, authority_epoch, auction_version)").Error; err != nil && !isDuplicateIndexError(err) {
-		return err
-	}
-	return nil
+	return s.db.AutoMigrate(&model.BidLog{})
 }
 
 func (s *GormStore) CreateBidLog(log *model.BidLog) error {
 	return s.db.Create(log).Error
-}
-
-func isDuplicateIndexError(err error) bool {
-	var mysqlErr *mysql.MySQLError
-	return errors.As(err, &mysqlErr) && mysqlErr.Number == 1061
-}
-
-func (s *GormStore) backfillLegacyBidLogVersions() error {
-	return s.db.Exec(`
-WITH ranked AS (
-	SELECT
-		id,
-		ROW_NUMBER() OVER (PARTITION BY item_id ORDER BY created_at ASC, id ASC) AS seq
-	FROM bid_logs
-	WHERE authority_epoch = 0 AND auction_version = 0
-)
-UPDATE bid_logs b
-JOIN ranked r ON r.id = b.id
-SET b.auction_version = r.seq
-WHERE b.authority_epoch = 0 AND b.auction_version = 0
-`).Error
 }
 
 func (s *GormStore) CreateBidLogs(logs []*model.BidLog) error {
