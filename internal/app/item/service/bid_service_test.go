@@ -106,6 +106,30 @@ func TestPlaceBidSucceeds(t *testing.T) {
 	}
 }
 
+func TestPlaceBidRepairsLegacyMissingAuthorityState(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	svc := NewService(store, testPolicy, fc, nil, nil, nil)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 0, time.Now().Add(5*time.Minute))
+	fc.states[itemID].AuthorityState = ""
+
+	if _, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
+		Price:          100,
+		IdempotencyKey: "legacy_authority",
+		UserName:       "Alice",
+	}); err != nil {
+		t.Fatalf("PlaceBid failed: %v", err)
+	}
+
+	if got := fc.states[itemID].AuthorityState; got != itemcache.AuthorityReady {
+		t.Fatalf("authority state = %q, want ready", got)
+	}
+	authority := fc.authority[itemID]
+	if authority.epoch != 0 || authority.state != itemcache.AuthorityReady {
+		t.Fatalf("authority = %+v, want epoch 0 ready", authority)
+	}
+}
+
 func newBidServiceFixture(t *testing.T) (*Service, *usermodel.User, string) {
 	t.Helper()
 	store := newFakeStore()

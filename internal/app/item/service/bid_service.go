@@ -344,6 +344,13 @@ func (s *Service) bidHotConfig(ctx context.Context, itemID string) (*itemcache.A
 		}
 		existing = state
 	}
+	if existing != nil && existing.AuthorityState == "" {
+		if err := s.cache.SetItemAuthority(ctx, itemID, existing.AuthorityEpoch, itemcache.AuthorityReady); err != nil {
+			result = "error"
+			return nil, err
+		}
+		existing.AuthorityState = itemcache.AuthorityReady
+	}
 
 	if snapshot.Valid && snapshot.ActiveRedis == availability.RedisLocal && existing == nil {
 		if rebuildErr := s.rebuildLocalAuctionState(ctx, itemID, 0); rebuildErr != nil {

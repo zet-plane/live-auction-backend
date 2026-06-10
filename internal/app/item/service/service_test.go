@@ -622,10 +622,17 @@ func (c *fakeCache) GetAuctionState(_ context.Context, itemID string) (*itemcach
 }
 
 func (c *fakeCache) SetItemAuthority(_ context.Context, itemID string, epoch int64, state string) error {
+	if state == "" {
+		state = itemcache.AuthorityReady
+	}
 	c.authority[itemID] = struct {
 		epoch int64
 		state string
 	}{epoch: epoch, state: state}
+	if auctionState, ok := c.states[itemID]; ok {
+		auctionState.AuthorityEpoch = epoch
+		auctionState.AuthorityState = state
+	}
 	return nil
 }
 

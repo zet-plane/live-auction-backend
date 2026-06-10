@@ -361,10 +361,18 @@ func authorityStateOrDefault(state string) string {
 }
 
 func (c *RedisCache) SetItemAuthority(ctx context.Context, itemID string, epoch int64, state string) error {
-	return c.client.HSet(ctx, itemAuthorityKey(itemID),
+	state = authorityStateOrDefault(state)
+	pipe := c.client.TxPipeline()
+	pipe.HSet(ctx, itemAuthorityKey(itemID),
 		"epoch", epoch,
-		"state", authorityStateOrDefault(state),
-	).Err()
+		"state", state,
+	)
+	pipe.HSet(ctx, itemStateKey(itemID),
+		"authority_epoch", epoch,
+		"authority_state", state,
+	)
+	_, err := pipe.Exec(ctx)
+	return err
 }
 
 func (c *RedisCache) GetItemAuthority(ctx context.Context, itemID string) (epoch int64, state string, ok bool, err error) {
