@@ -142,11 +142,8 @@ func (s *Service) ListOrders(ctx context.Context, current *usermodel.User, input
 	if input.PageSize <= 0 || input.PageSize > 100 {
 		input.PageSize = 20
 	}
-	if current.Identity == usermodel.IdentityMerchant {
-		input.MerchantID = current.ID
-	} else {
-		input.UserID = current.ID
-	}
+	input.UserID = current.ID
+	input.MerchantID = ""
 	defer observability.Track(ctx, "order.list",
 		"user_id", currentID(current),
 		"identity", current.Identity,
@@ -174,16 +171,13 @@ func (s *Service) GetOrder(ctx context.Context, current *usermodel.User, orderID
 	if err != nil {
 		return nil, err
 	}
-	if current.Identity == usermodel.IdentityMerchant {
-		if detail.ItemMerchantID != current.ID {
-			return nil, errorx.ErrUnauthorized
-		}
-	} else {
-		if detail.UserID != current.ID {
-			return nil, errorx.ErrUnauthorized
-		}
+	if detail.UserID == current.ID {
+		return detail, nil
 	}
-	return detail, nil
+	if current.Identity == usermodel.IdentityMerchant && detail.ItemMerchantID == current.ID {
+		return detail, nil
+	}
+	return nil, errorx.ErrUnauthorized
 }
 
 func currentID(current *usermodel.User) string {

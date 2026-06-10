@@ -15,9 +15,10 @@ import (
 
 // fakeStore implements dao.Store with in-memory maps for unit tests.
 type fakeStore struct {
-	orders      map[string]*model.Order
-	orderByItem map[string]*model.Order
-	details     map[string]*dto.OrderDetail
+	orders        map[string]*model.Order
+	orderByItem   map[string]*model.Order
+	details       map[string]*dto.OrderDetail
+	lastListInput dto.ListOrdersInput
 }
 
 func newFakeStore() *fakeStore {
@@ -91,6 +92,7 @@ func (s *fakeStore) UpdateOrderStatus(orderID string, from, to model.OrderStatus
 }
 
 func (s *fakeStore) ListOrders(input dto.ListOrdersInput) ([]dto.OrderWithTitle, int64, error) {
+	s.lastListInput = input
 	return nil, 0, nil
 }
 
@@ -335,7 +337,7 @@ func TestListOrders_UserSeesOwnOrders(t *testing.T) {
 	}
 }
 
-func TestListOrders_MerchantSeesMerchantOrders(t *testing.T) {
+func TestListOrders_MerchantIdentityDefaultsToBuyerOrders(t *testing.T) {
 	store := newFakeStore()
 	svc := newTestService(store)
 
@@ -346,6 +348,12 @@ func TestListOrders_MerchantSeesMerchantOrders(t *testing.T) {
 	}
 	if result == nil {
 		t.Fatal("expected non-nil result")
+	}
+	if store.lastListInput.UserID != "merchant_1" {
+		t.Fatalf("expected merchant identity to query buyer orders by user_id, got user_id=%q merchant_id=%q", store.lastListInput.UserID, store.lastListInput.MerchantID)
+	}
+	if store.lastListInput.MerchantID != "" {
+		t.Fatalf("expected merchant identity not to default to seller orders, got merchant_id=%q", store.lastListInput.MerchantID)
 	}
 }
 
@@ -388,6 +396,29 @@ func TestGetOrder_MerchantOwner_ReturnsDetail(t *testing.T) {
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if detail.ID != order.ID {
+		t.Errorf("want order id=%s, got %s", order.ID, detail.ID)
+	}
+}
+
+func TestGetOrder_MerchantIdentityBuyerCanReadOwnOrder(t *testing.T) {
+	store := newFakeStore()
+	svc := newTestService(store)
+	order, _ := svc.CreateOrder(context.Background(), "item_1", "merchant_buyer", 5000)
+	store.details[order.ID] = &dto.OrderDetail{
+		ID:             order.ID,
+		ItemID:         order.ItemID,
+		ItemMerchantID: "merchant_seller",
+		UserID:         "merchant_buyer",
+		Price:          order.Price,
+		Status:         order.Status,
+	}
+
+	current := &usermodel.User{ID: "merchant_buyer", Identity: usermodel.IdentityMerchant}
+	detail, err := svc.GetOrder(context.Background(), current, order.ID)
+	if err != nil {
+		t.Fatalf("expected merchant buyer to read own order, got %v", err)
 	}
 	if detail.ID != order.ID {
 		t.Errorf("want order id=%s, got %s", order.ID, detail.ID)
