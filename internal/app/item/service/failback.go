@@ -2,10 +2,13 @@ package service
 
 import (
 	"context"
+	"time"
 
 	itemcache "github.com/zet-plane/live-auction-backend/internal/app/item/cache"
 	"github.com/zet-plane/live-auction-backend/internal/core/availability"
 )
+
+const cloudFailbackBidFenceTTL = 5 * time.Second
 
 type cloudFailbackRuntime interface {
 	Snapshot() availability.Snapshot
@@ -36,6 +39,26 @@ func (s *Service) PrewarmCloudRedisForFailback(ctx context.Context, cloudCache i
 	if !drained {
 		return nil
 	}
+	fence, ok := s.cache.(itemcache.BidWriteFence)
+	if !ok {
+		return nil
+	}
+	if err := fence.SetBidWriteFence(ctx, cloudFailbackBidFenceTTL); err != nil {
+		return err
+	}
+	keepFenceUntilTTL := false
+	defer func() {
+		if !keepFenceUntilTTL {
+			_ = fence.ClearBidWriteFence(context.Background())
+		}
+	}()
+	drained, err = bidLogDrain.Drained(ctx)
+	if err != nil {
+		return err
+	}
+	if !drained {
+		return nil
+	}
 
 	worker := newAvailabilityRebuildWorker(s.store, cloudCache, availabilityRebuildConfig{BatchSize: 100, Policy: s.policy})
 	results := worker.rebuildActiveItems(ctx, 0)
@@ -53,5 +76,6 @@ func (s *Service) PrewarmCloudRedisForFailback(ctx context.Context, cloudCache i
 	}
 	rt.MarkCloudFailbackReady()
 	rt.Refresh(ctx)
+	keepFenceUntilTTL = true
 	return nil
 }

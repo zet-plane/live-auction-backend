@@ -534,6 +534,7 @@ type fakeCache struct {
 	lastBidLuaArgs     *itemcache.BidLuaArgs
 	bidLogEvents       []itemcache.BidLogEvent
 	appendBidLogErr    error
+	failbackFence      bool
 	settleCalls        int
 	initCalls          int
 	hotFieldUpdates    int
@@ -650,6 +651,20 @@ func (c *fakeCache) SetItemAuthority(_ context.Context, itemID string, epoch int
 func (c *fakeCache) GetItemAuthority(_ context.Context, itemID string) (int64, string, bool, error) {
 	got, ok := c.authority[itemID]
 	return got.epoch, got.state, ok, nil
+}
+
+func (c *fakeCache) BidWriteFenced(context.Context) (bool, error) {
+	return c.failbackFence, nil
+}
+
+func (c *fakeCache) SetBidWriteFence(context.Context, time.Duration) error {
+	c.failbackFence = true
+	return nil
+}
+
+func (c *fakeCache) ClearBidWriteFence(context.Context) error {
+	c.failbackFence = false
+	return nil
 }
 
 func (c *fakeCache) GetAuctionHotConfig(ctx context.Context, itemID string) (*itemcache.AuctionHotConfig, bool, error) {
@@ -1533,7 +1548,7 @@ func TestPrewarmFailbackRedisRebuildsCloudCacheAndMarksReady(t *testing.T) {
 		},
 	}
 
-	err := svc.PrewarmCloudRedisForFailback(context.Background(), cloudCache, &fakeBidLogDrainChecker{drained: []bool{true, true}}, rt)
+	err := svc.PrewarmCloudRedisForFailback(context.Background(), cloudCache, &fakeBidLogDrainChecker{drained: []bool{true, true, true}}, rt)
 	if err != nil {
 		t.Fatalf("PrewarmCloudRedisForFailback failed: %v", err)
 	}
@@ -1543,6 +1558,9 @@ func TestPrewarmFailbackRedisRebuildsCloudCacheAndMarksReady(t *testing.T) {
 	}
 	if rt.refreshes != 1 {
 		t.Fatalf("refreshes = %d, want 1", rt.refreshes)
+	}
+	if !activeCache.failbackFence {
+		t.Fatal("expected successful failback to keep local bid fence until TTL")
 	}
 	state := cloudCache.states[itemID]
 	if state == nil || state.CurrentPrice != 1200 || state.LeaderUserID != "user_2" || state.AuthorityState != itemcache.AuthorityReady {
@@ -1604,13 +1622,16 @@ func TestPrewarmFailbackRedisWaitsForBidLogDrainAfterRebuild(t *testing.T) {
 	store.bidLogs = append(store.bidLogs, store.bidLogsByEpoch[itemID+":0"]...)
 	rt := newReadyFailbackRuntime()
 
-	err := svc.PrewarmCloudRedisForFailback(context.Background(), cloudCache, &fakeBidLogDrainChecker{drained: []bool{true, false}}, rt)
+	err := svc.PrewarmCloudRedisForFailback(context.Background(), cloudCache, &fakeBidLogDrainChecker{drained: []bool{true, true, false}}, rt)
 	if err != nil {
 		t.Fatalf("PrewarmCloudRedisForFailback failed: %v", err)
 	}
 
 	if rt.marked {
 		t.Fatal("expected failback runtime to stay unmarked when bid log gets new lag during rebuild")
+	}
+	if activeCache.failbackFence {
+		t.Fatal("expected failed failback promotion to clear local bid fence")
 	}
 	if state := cloudCache.states[itemID]; state == nil || state.CurrentPrice != 1100 {
 		t.Fatalf("cloud state = %+v, want rebuilt but not promoted", state)
