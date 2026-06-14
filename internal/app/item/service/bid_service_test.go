@@ -265,6 +265,37 @@ func TestPlaceBidAllowsMySQLBufferingWithinWindow(t *testing.T) {
 	}
 }
 
+func TestPlaceBidAllowsProtectedMySQLBufferingWithinWindowWhenRedisWritable(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	svc := NewService(store, testPolicy, fc, nil, nil, nil)
+	now := time.UnixMilli(1710000000000)
+	svc.now = func() time.Time { return now }
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 100, 0, now.Add(5*time.Minute))
+	svc.SetAvailabilitySnapshotForTest(availability.Snapshot{
+		Valid:                       true,
+		Mode:                        availability.ModeAuctionProtected,
+		ActiveRedis:                 availability.RedisCloud,
+		CloudRedis:                  availability.DependencyStatus{Healthy: true},
+		MySQL:                       availability.DependencyStatus{Healthy: false, Error: "dial tcp mysql:3306: i/o timeout"},
+		MySQLState:                  availability.MySQLBuffering,
+		MySQLBufferingStartedAt:     now.Add(-5 * time.Second),
+		MySQLBufferingStartedUnixMS: now.Add(-5 * time.Second).UnixMilli(),
+	})
+
+	result, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
+		Price:          100,
+		UserName:       "Alice",
+		IdempotencyKey: "protected-buffering-within-window",
+	})
+	if err != nil {
+		t.Fatalf("PlaceBid() error = %v", err)
+	}
+	if result.CurrentPrice != 100 {
+		t.Fatalf("current price = %d, want 100", result.CurrentPrice)
+	}
+}
+
 func TestPlaceBidAcceptsPriceCapDuringMySQLBufferingWithoutMySQLSettlement(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()

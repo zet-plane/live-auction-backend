@@ -62,13 +62,9 @@ func (s *Service) PlaceBid(ctx context.Context, current *usermodel.User, itemID 
 		bidReason = "mysql_buffering_timeout"
 		return nil, ErrAvailabilityUnavailable
 	}
-	if snapshot.Mode == availability.ModeAuctionProtected {
+	if snapshot.Mode == availability.ModeAuctionProtected && !mysqlUnavailableForBids(snapshot) {
 		bidResult = "rejected"
-		if mysqlUnavailableForBids(snapshot) {
-			bidReason = "mysql_buffering_timeout"
-		} else {
-			bidReason = "auction_protected"
-		}
+		bidReason = "auction_protected"
 		return nil, ErrAvailabilityUnavailable
 	}
 	if !redisWritableForBids(snapshot) {
@@ -349,7 +345,7 @@ func redisWritableForBids(snapshot availability.Snapshot) bool {
 	if !snapshot.Valid || (snapshot.ActiveRedis != availability.RedisCloud && snapshot.ActiveRedis != availability.RedisLocal) {
 		return false
 	}
-	return snapshot.Mode != availability.ModeAuctionProtected
+	return snapshot.Mode != availability.ModeAuctionProtected || mysqlUnavailableForBids(snapshot)
 }
 
 func mysqlUnavailableForBids(snapshot availability.Snapshot) bool {
