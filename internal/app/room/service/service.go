@@ -156,7 +156,7 @@ func (s *Service) GetRoom(ctx context.Context, roomID string) (result *dto.RoomD
 		onlineCount = state.OnlineCount
 	}
 	itemQueue, _ := s.cache.GetItemQueue(ctx, room.ID)
-	items := s.roomItems(ctx, itemQueue)
+	itemQueue, items := s.roomItems(ctx, room.CurrentItemID, itemQueue)
 	detail := dto.NewRoomDetailDTO(room, onlineCount, itemQueue, items)
 	return &detail, nil
 }
@@ -170,7 +170,7 @@ func (s *Service) getRoomFromCache(ctx context.Context, roomID string, sourceErr
 		return nil, sourceErr
 	}
 	itemQueue, _ := s.cache.GetItemQueue(ctx, roomID)
-	items := s.roomItems(ctx, itemQueue)
+	itemQueue, items := s.roomItems(ctx, state.CurrentItemID, itemQueue)
 	room := &model.LiveRoom{
 		ID:            roomID,
 		MerchantID:    state.MerchantID,
@@ -198,6 +198,7 @@ func (s *Service) ListRooms(ctx context.Context, statusFilter model.RoomStatus) 
 			onlineCount = state.OnlineCount
 		}
 		itemQueue, _ := s.cache.GetItemQueue(ctx, room.ID)
+		itemQueue = effectiveItemQueue(room.CurrentItemID, itemQueue)
 		d := dto.NewRoomDetailDTO(room, onlineCount, itemQueue, nil)
 		result = append(result, &d)
 	}
@@ -233,7 +234,7 @@ func (s *Service) ListRoomFeed(ctx context.Context, input dto.RoomFeedInput) (re
 			onlineCount = state.OnlineCount
 		}
 		itemQueue, _ := s.cache.GetItemQueue(ctx, room.ID)
-		items := s.roomItems(ctx, itemQueue)
+		itemQueue, items := s.roomItems(ctx, room.CurrentItemID, itemQueue)
 		d := dto.NewRoomDetailDTO(room, onlineCount, itemQueue, items)
 		list = append(list, d)
 	}
@@ -254,15 +255,38 @@ func (s *Service) ListRoomFeed(ctx context.Context, input dto.RoomFeedInput) (re
 	}, nil
 }
 
-func (s *Service) roomItems(ctx context.Context, itemQueue []string) []itemdto.ItemListDTO {
+func (s *Service) roomItems(ctx context.Context, currentItemID string, itemQueue []string) ([]string, []itemdto.ItemListDTO) {
+	itemQueue = effectiveItemQueue(currentItemID, itemQueue)
 	if s.itemReader == nil || len(itemQueue) == 0 {
-		return []itemdto.ItemListDTO{}
+		return itemQueue, []itemdto.ItemListDTO{}
 	}
 	items, err := s.itemReader.ListItemsByIDs(ctx, itemQueue)
 	if err != nil {
-		return []itemdto.ItemListDTO{}
+		return itemQueue, []itemdto.ItemListDTO{}
 	}
-	return items
+	return itemQueue, items
+}
+
+func effectiveItemQueue(currentItemID string, itemQueue []string) []string {
+	currentItemID = strings.TrimSpace(currentItemID)
+	if len(itemQueue) == 0 {
+		if currentItemID == "" {
+			return []string{}
+		}
+		return []string{currentItemID}
+	}
+	result := make([]string, 0, len(itemQueue)+1)
+	if currentItemID != "" {
+		result = append(result, currentItemID)
+	}
+	for _, itemID := range itemQueue {
+		itemID = strings.TrimSpace(itemID)
+		if itemID == "" || itemID == currentItemID {
+			continue
+		}
+		result = append(result, itemID)
+	}
+	return result
 }
 
 func (s *Service) findMerchantRoom(current *usermodel.User, roomID string) (*model.LiveRoom, error) {

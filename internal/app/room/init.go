@@ -34,10 +34,20 @@ func (r *Room) PreInit(engine *kernel.Engine) error {
 
 func (r *Room) Load(engine *kernel.Engine) error {
 	store := dao.NewGormStore(engine.DB)
-	c := cache.NewRedisCache(engine.Cache)
+	c := cacheForEngine(engine)
 	svc := service.NewService(store, c, itemapp.ItemReader)
 	handler.Init(svc)
 	router.RegisterRoutes(engine.Flame)
+	return nil
+}
+
+func cacheForEngine(engine *kernel.Engine) cache.Cache {
+	if engine.Availability != nil {
+		return cache.NewActiveRedisCache(engine.Availability)
+	}
+	if engine.Cache != nil {
+		return cache.NewRedisCache(engine.Cache)
+	}
 	return nil
 }
 

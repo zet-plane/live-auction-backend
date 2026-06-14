@@ -397,6 +397,30 @@ func TestGetRoomReturnsItemQueue(t *testing.T) {
 	}
 }
 
+func TestGetRoomFallsBackToCurrentItemWhenQueueMissing(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	reader := &fakeItemReader{items: map[string]itemdto.ItemListDTO{
+		"item_1": {ID: "item_1", Title: "Cinder"},
+	}}
+	svc := NewService(store, fc, reader)
+	m := merchant()
+
+	r, _ := svc.ActivateRoom(context.Background(), m, dto.CreateRoomInput{Title: "My Room"})
+	store.rooms[r.ID].CurrentItemID = "item_1"
+
+	result, err := svc.GetRoom(context.Background(), r.ID)
+	if err != nil {
+		t.Fatalf("GetRoom: %v", err)
+	}
+	if !reflect.DeepEqual(result.ItemQueue, []string{"item_1"}) {
+		t.Fatalf("expected current item fallback queue [item_1], got %v", result.ItemQueue)
+	}
+	if len(result.Item) != 1 || result.Item[0].ID != "item_1" {
+		t.Fatalf("expected current item detail fallback, got %#v", result.Item)
+	}
+}
+
 func TestGetRoomFallsBackToRedisStateWhenStoreUnavailable(t *testing.T) {
 	store := newFakeStore()
 	store.findErr = errors.New("dial tcp mysql:3306: i/o timeout")
