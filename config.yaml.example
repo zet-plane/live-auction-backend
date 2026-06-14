@@ -34,6 +34,10 @@ auction:
   auto_extend_sec: 10
   max_extend_count: 6
   max_total_extend_sec: 300
+  bid_rate_limit:
+    enabled: true
+    refill_rate_per_second: 2
+    burst: 4
 storage:
   tos:
     enabled: false

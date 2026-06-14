@@ -203,6 +203,14 @@ func (c *ActiveRedisCache) ClearRoomCurrentItem(ctx context.Context, roomID, ite
 	return rc.ClearRoomCurrentItem(ctx, roomID, itemID)
 }
 
+func (c *ActiveRedisCache) AllowBidRate(ctx context.Context, itemID, userID string, refillRatePerSecond float64, burst int, nowUnixMS int64) (bool, error) {
+	rc, err := c.current()
+	if err != nil {
+		return false, err
+	}
+	return rc.AllowBidRate(ctx, itemID, userID, refillRatePerSecond, burst, nowUnixMS)
+}
+
 func (c *ActiveRedisCache) PlaceBidLua(ctx context.Context, itemID string, args BidLuaArgs) (*BidLuaResult, error) {
 	rc, err := c.current()
 	if err != nil {

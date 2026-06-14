@@ -55,10 +55,17 @@ type Security struct {
 }
 
 type Auction struct {
-	ExtendTriggerSec  int `yaml:"extend_trigger_sec"    mapstructure:"extend_trigger_sec"`
-	AutoExtendSec     int `yaml:"auto_extend_sec"       mapstructure:"auto_extend_sec"`
-	MaxExtendCount    int `yaml:"max_extend_count"      mapstructure:"max_extend_count"`
-	MaxTotalExtendSec int `yaml:"max_total_extend_sec"  mapstructure:"max_total_extend_sec"`
+	ExtendTriggerSec  int          `yaml:"extend_trigger_sec"    mapstructure:"extend_trigger_sec"`
+	AutoExtendSec     int          `yaml:"auto_extend_sec"       mapstructure:"auto_extend_sec"`
+	MaxExtendCount    int          `yaml:"max_extend_count"      mapstructure:"max_extend_count"`
+	MaxTotalExtendSec int          `yaml:"max_total_extend_sec"  mapstructure:"max_total_extend_sec"`
+	BidRateLimit      BidRateLimit `yaml:"bid_rate_limit"       mapstructure:"bid_rate_limit"`
+}
+
+type BidRateLimit struct {
+	Enabled             bool    `yaml:"enabled"                mapstructure:"enabled"`
+	RefillRatePerSecond float64 `yaml:"refill_rate_per_second" mapstructure:"refill_rate_per_second"`
+	Burst               int     `yaml:"burst"                  mapstructure:"burst"`
 }
 
 type Storage struct {

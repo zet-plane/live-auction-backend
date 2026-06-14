@@ -21,6 +21,7 @@ import (
 	"github.com/zet-plane/live-auction-backend/internal/core/availability"
 	"github.com/zet-plane/live-auction-backend/internal/core/cronlease"
 	"github.com/zet-plane/live-auction-backend/internal/core/kernel"
+	"github.com/zet-plane/live-auction-backend/internal/middleware/web"
 )
 
 var ErrEmptyDatabase = errors.New("database pointer is nil")
@@ -90,7 +91,11 @@ func (i *Item) Load(engine *kernel.Engine) error {
 	i.svc = svc
 	ItemReader = svc
 	handler.Init(svc)
-	router.RegisterRoutes(engine.Flame)
+	router.RegisterRoutes(engine.Flame, web.BidRateLimit(c, web.BidRateLimitOptions{
+		Enabled:             engine.Config.Auction.BidRateLimit.Enabled,
+		RefillRatePerSecond: engine.Config.Auction.BidRateLimit.RefillRatePerSecond,
+		Burst:               engine.Config.Auction.BidRateLimit.Burst,
+	}))
 	wsapp.SetSnapshotProvider(svc)
 	engine.Cron.AddFunc("@every 1s",
 		cronlease.WrapCron("item.start_due_auctions", leaseOwner, 2*time.Second, leaseStore, svc.StartDueAuctions))

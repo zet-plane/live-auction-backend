@@ -188,6 +188,62 @@ func idempotencyKey(itemID, key string) string {
 	return "auction:item:" + itemID + ":idempotency:" + key
 }
 
+func bidRateLimitKey(itemID, userID string) string {
+	return "auction:item:" + itemID + ":bid_rate:" + userID
+}
+
+const bidRateLimitLuaScript = `
+local key = KEYS[1]
+local now_ms = tonumber(ARGV[1])
+local rate = tonumber(ARGV[2])
+local burst = tonumber(ARGV[3])
+
+if rate <= 0 or burst <= 0 then
+  return {1}
+end
+
+local tokens = tonumber(redis.call('HGET', key, 'tokens'))
+local updated_at = tonumber(redis.call('HGET', key, 'updated_at'))
+
+if not tokens or not updated_at then
+  tokens = burst
+  updated_at = now_ms
+else
+  local elapsed = now_ms - updated_at
+  if elapsed < 0 then elapsed = 0 end
+  tokens = math.min(burst, tokens + (elapsed * rate / 1000))
+  updated_at = now_ms
+end
+
+if tokens < 1 then
+  redis.call('HSET', key, 'tokens', tokens, 'updated_at', updated_at)
+  redis.call('PEXPIRE', key, math.ceil((burst / rate) * 1000))
+  return {0}
+end
+
+tokens = tokens - 1
+redis.call('HSET', key, 'tokens', tokens, 'updated_at', updated_at)
+redis.call('PEXPIRE', key, math.ceil((burst / rate) * 1000))
+return {1}
+`
+
+var bidRateLimitScript = redis.NewScript(bidRateLimitLuaScript)
+
+func (c *RedisCache) AllowBidRate(ctx context.Context, itemID, userID string, refillRatePerSecond float64, burst int, nowUnixMS int64) (bool, error) {
+	if refillRatePerSecond <= 0 || burst <= 0 {
+		return true, nil
+	}
+	res, err := bidRateLimitScript.Run(ctx, c.client, []string{bidRateLimitKey(itemID, userID)},
+		strconv.FormatInt(nowUnixMS, 10),
+		strconv.FormatFloat(refillRatePerSecond, 'f', -1, 64),
+		strconv.Itoa(burst),
+	).Int()
+	if err != nil {
+		return false, err
+	}
+	return res == 1, nil
+}
+
 func (c *RedisCache) PlaceBidLua(ctx context.Context, itemID string, args BidLuaArgs) (*BidLuaResult, error) {
 	ctx, span := otel.Tracer("github.com/zet-plane/live-auction-backend/redis").Start(ctx, "redis.place_bid_lua")
 	defer span.End()
