@@ -161,7 +161,7 @@ func (r *Runtime) Refresh(ctx context.Context) {
 	var mysqlStarted time.Time
 	if !mysql.Healthy {
 		mysqlStarted = r.mysqlDownSince
-		if !mysqlStarted.IsZero() && now.Sub(mysqlStarted) <= r.opts.MySQLBufferingWindow && active != RedisNone {
+		if active != RedisNone {
 			mode = ModeMySQLBuffering
 			mysqlState = MySQLBuffering
 			reason = "mysql_buffering"

@@ -48,24 +48,21 @@ func (s *Service) PlaceBid(ctx context.Context, current *usermodel.User, itemID 
 		bidReason = "availability_invalid"
 		return nil, ErrAvailabilityUnavailable
 	}
-	mysqlBufferingTimeout := snapshot.MySQLBufferingExpired(s.now(), s.mysqlBufferingWindow) ||
-		(snapshot.Mode == availability.ModeAuctionProtected && snapshot.Reason == "mysql_buffering_expired")
-	if snapshot.ActiveRedis == availability.RedisNone && !mysqlBufferingTimeout {
+	if snapshot.ActiveRedis == availability.RedisNone {
 		bidResult = "rejected"
-		bidReason = "redis_unavailable"
+		if mysqlUnavailableForBids(snapshot) && snapshot.Reason == "mysql_buffering_expired" {
+			bidReason = "mysql_buffering_timeout"
+		} else {
+			bidReason = "redis_unavailable"
+		}
 		return nil, ErrAvailabilityUnavailable
 	}
-	if mysqlBufferingTimeout {
-		bidResult = "rejected"
-		bidReason = "mysql_buffering_timeout"
-		return nil, ErrAvailabilityUnavailable
-	}
-	if snapshot.Mode == availability.ModeAuctionProtected {
+	if snapshot.Mode == availability.ModeAuctionProtected && !mysqlUnavailableForBids(snapshot) {
 		bidResult = "rejected"
 		bidReason = "auction_protected"
 		return nil, ErrAvailabilityUnavailable
 	}
-	if !snapshot.RedisWritable() {
+	if !redisWritableForBids(snapshot) {
 		bidResult = "rejected"
 		bidReason = "redis_unavailable"
 		return nil, ErrAvailabilityUnavailable
@@ -308,6 +305,19 @@ func (s *Service) PlaceBid(ctx context.Context, current *usermodel.User, itemID 
 		EndTimeUnixMS: bidEndTimeUnixMS(luaResult),
 		Status:        status,
 	}, nil
+}
+
+func redisWritableForBids(snapshot availability.Snapshot) bool {
+	if !snapshot.Valid || (snapshot.ActiveRedis != availability.RedisCloud && snapshot.ActiveRedis != availability.RedisLocal) {
+		return false
+	}
+	return snapshot.Mode != availability.ModeAuctionProtected || mysqlUnavailableForBids(snapshot)
+}
+
+func mysqlUnavailableForBids(snapshot availability.Snapshot) bool {
+	return snapshot.MySQLState == availability.MySQLBuffering ||
+		snapshot.MySQLState == availability.MySQLDown ||
+		(!snapshot.MySQL.Healthy && snapshot.MySQL.Error != "")
 }
 
 func (s *Service) bidHotConfig(ctx context.Context, itemID string) (*itemcache.AuctionHotConfig, error) {

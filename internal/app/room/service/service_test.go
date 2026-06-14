@@ -25,6 +25,7 @@ type fakeStore struct {
 	byMerchant map[string]*model.LiveRoom
 	createErr  error
 	updateErr  error
+	findErr    error
 }
 
 func newFakeStore() *fakeStore {
@@ -47,6 +48,9 @@ func (s *fakeStore) CreateRoom(room *model.LiveRoom) error {
 }
 
 func (s *fakeStore) FindRoomByID(roomID string) (*model.LiveRoom, error) {
+	if s.findErr != nil {
+		return nil, s.findErr
+	}
 	r, ok := s.rooms[roomID]
 	if !ok {
 		return nil, errorx.ErrNotFound
@@ -390,6 +394,34 @@ func TestGetRoomReturnsItemQueue(t *testing.T) {
 	}
 	if len(result.ItemQueue) != 2 || result.ItemQueue[0] != "item_1" {
 		t.Fatalf("expected item_queue [item_1 item_2], got %v", result.ItemQueue)
+	}
+}
+
+func TestGetRoomFallsBackToRedisStateWhenStoreUnavailable(t *testing.T) {
+	store := newFakeStore()
+	store.findErr = errors.New("dial tcp mysql:3306: i/o timeout")
+	fc := newFakeCache()
+	fc.states["room_1"] = &roomcache.RoomState{
+		MerchantID:    "merchant_1",
+		Status:        "live",
+		CurrentItemID: "item_1",
+		OnlineCount:   7,
+	}
+	fc.queues["room_1"] = []string{"item_1"}
+	svc := NewService(store, fc)
+
+	result, err := svc.GetRoom(context.Background(), "room_1")
+	if err != nil {
+		t.Fatalf("GetRoom: %v", err)
+	}
+	if result.ID != "room_1" || result.MerchantID != "merchant_1" || result.Status != model.RoomLive {
+		t.Fatalf("unexpected room fallback: %+v", result)
+	}
+	if result.CurrentItemID != "item_1" || result.OnlineCount != 7 {
+		t.Fatalf("unexpected fallback state: %+v", result)
+	}
+	if !reflect.DeepEqual(result.ItemQueue, []string{"item_1"}) {
+		t.Fatalf("item queue = %#v", result.ItemQueue)
 	}
 }
 

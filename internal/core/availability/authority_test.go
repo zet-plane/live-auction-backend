@@ -79,7 +79,7 @@ func TestRuntimeKeepsLocalStickyWhenCloudRecovers(t *testing.T) {
 	}
 }
 
-func TestRuntimeBuffersMySQLWithinWindowAndProtectsAfterExpiry(t *testing.T) {
+func TestRuntimeKeepsRedisActiveWhenMySQLRemainsDown(t *testing.T) {
 	now := time.UnixMilli(1710000000000)
 	rt := NewRuntime(nil, nil, nil, Options{
 		Now:                  func() time.Time { return now },
@@ -99,11 +99,11 @@ func TestRuntimeBuffersMySQLWithinWindowAndProtectsAfterExpiry(t *testing.T) {
 	now = now.Add(11 * time.Second)
 	rt.Refresh(context.Background())
 	s := rt.Snapshot()
-	if s.Mode != ModeAuctionProtected {
-		t.Fatalf("mode = %s, want auction_protected", s.Mode)
+	if s.Mode != ModeMySQLBuffering {
+		t.Fatalf("mode = %s, want mysql_buffering", s.Mode)
 	}
-	if s.ActiveRedis != RedisNone {
-		t.Fatalf("active redis = %s, want none", s.ActiveRedis)
+	if s.ActiveRedis != RedisCloud {
+		t.Fatalf("active redis = %s, want cloud", s.ActiveRedis)
 	}
 }
 

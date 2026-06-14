@@ -149,7 +149,7 @@ func (s *Service) GetRoom(ctx context.Context, roomID string) (result *dto.RoomD
 
 	room, err := s.store.FindRoomByID(roomID)
 	if err != nil {
-		return nil, err
+		return s.getRoomFromCache(ctx, roomID, err)
 	}
 	onlineCount := 0
 	if state, ok, _ := s.cache.GetRoomState(ctx, room.ID); ok {
@@ -158,6 +158,26 @@ func (s *Service) GetRoom(ctx context.Context, roomID string) (result *dto.RoomD
 	itemQueue, _ := s.cache.GetItemQueue(ctx, room.ID)
 	items := s.roomItems(ctx, itemQueue)
 	detail := dto.NewRoomDetailDTO(room, onlineCount, itemQueue, items)
+	return &detail, nil
+}
+
+func (s *Service) getRoomFromCache(ctx context.Context, roomID string, sourceErr error) (*dto.RoomDetailDTO, error) {
+	if s.cache == nil {
+		return nil, sourceErr
+	}
+	state, ok, err := s.cache.GetRoomState(ctx, roomID)
+	if err != nil || !ok {
+		return nil, sourceErr
+	}
+	itemQueue, _ := s.cache.GetItemQueue(ctx, roomID)
+	items := s.roomItems(ctx, itemQueue)
+	room := &model.LiveRoom{
+		ID:            roomID,
+		MerchantID:    state.MerchantID,
+		Status:        model.RoomStatus(state.Status),
+		CurrentItemID: state.CurrentItemID,
+	}
+	detail := dto.NewRoomDetailDTO(room, state.OnlineCount, itemQueue, items)
 	return &detail, nil
 }
 

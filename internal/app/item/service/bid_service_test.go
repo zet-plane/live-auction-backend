@@ -203,6 +203,36 @@ func TestPlaceBidMapsProtectedMySQLBufferingExpiredToTimeout(t *testing.T) {
 	}
 }
 
+func TestPlaceBidAllowsMySQLExpiredWhenRedisWritable(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	now := time.UnixMilli(1710000000000)
+	svc := NewService(store, testPolicy, fc, nil, nil, nil)
+	svc.now = func() time.Time { return now }
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 1000, 100, 0, now.Add(5*time.Minute))
+	svc.SetAvailabilitySnapshotForTest(availability.Snapshot{
+		Valid:       true,
+		Mode:        availability.ModeAuctionProtected,
+		ActiveRedis: availability.RedisCloud,
+		CloudRedis:  availability.DependencyStatus{Healthy: true},
+		MySQL:       availability.DependencyStatus{Healthy: false, Error: "dial tcp mysql:3306: i/o timeout"},
+		MySQLState:  availability.MySQLBuffering,
+		Reason:      "mysql_buffering_expired",
+	})
+
+	result, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
+		Price:          1200,
+		UserName:       "Alice",
+		IdempotencyKey: "mysql-expired-redis-ok",
+	})
+	if err != nil {
+		t.Fatalf("PlaceBid() error = %v", err)
+	}
+	if result.CurrentPrice != 1200 || len(fc.bidLogEvents) != 1 {
+		t.Fatalf("result = %+v bidLogEvents=%d, want accepted bid", result, len(fc.bidLogEvents))
+	}
+}
+
 func TestPlaceBidAllowsMySQLBufferingWithinWindow(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()
@@ -258,7 +288,7 @@ func TestPlaceBidRejectsPriceCapDuringMySQLBuffering(t *testing.T) {
 	}
 }
 
-func TestPlaceBidRejectsMySQLBufferingAfterWindow(t *testing.T) {
+func TestPlaceBidAllowsMySQLBufferingAfterWindowWhenRedisWritable(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()
 	svc := NewService(store, testPolicy, fc, nil, nil, nil)
@@ -274,13 +304,16 @@ func TestPlaceBidRejectsMySQLBufferingAfterWindow(t *testing.T) {
 		MySQLBufferingStartedUnixMS: now.Add(-11 * time.Second).UnixMilli(),
 	})
 
-	_, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
+	result, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
 		Price:          100,
 		UserName:       "Alice",
 		IdempotencyKey: "buffering-expired",
 	})
-	if !errors.Is(err, ErrAvailabilityUnavailable) {
-		t.Fatalf("err = %v, want availability unavailable", err)
+	if err != nil {
+		t.Fatalf("PlaceBid() error = %v", err)
+	}
+	if result.CurrentPrice != 100 {
+		t.Fatalf("current price = %d, want 100", result.CurrentPrice)
 	}
 }
 
