@@ -203,9 +203,12 @@ func TestPlaceBidMapsProtectedMySQLBufferingExpiredToTimeout(t *testing.T) {
 	}
 }
 
-func TestPlaceBidAllowsMySQLExpiredWhenRedisWritable(t *testing.T) {
+func TestPlaceBidRejectsMySQLExpiredWhenRedisWritable(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()
+	rec := &captureBidRecorder{}
+	observability.SetDefaultRecorder(rec)
+	t.Cleanup(func() { observability.SetDefaultRecorder(nil) })
 	now := time.UnixMilli(1710000000000)
 	svc := NewService(store, testPolicy, fc, nil, nil, nil)
 	svc.now = func() time.Time { return now }
@@ -220,16 +223,19 @@ func TestPlaceBidAllowsMySQLExpiredWhenRedisWritable(t *testing.T) {
 		Reason:      "mysql_buffering_expired",
 	})
 
-	result, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
+	_, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
 		Price:          1200,
 		UserName:       "Alice",
 		IdempotencyKey: "mysql-expired-redis-ok",
 	})
-	if err != nil {
-		t.Fatalf("PlaceBid() error = %v", err)
+	if !errors.Is(err, ErrAvailabilityUnavailable) {
+		t.Fatalf("err = %v, want availability unavailable", err)
 	}
-	if result.CurrentPrice != 1200 || len(fc.bidLogEvents) != 1 {
-		t.Fatalf("result = %+v bidLogEvents=%d, want accepted bid", result, len(fc.bidLogEvents))
+	if got := rec.lastReason(); got != "mysql_buffering_timeout" {
+		t.Fatalf("bid reason = %q, want mysql_buffering_timeout", got)
+	}
+	if len(fc.bidLogEvents) != 0 {
+		t.Fatalf("bid log events = %d, want 0", len(fc.bidLogEvents))
 	}
 }
 
@@ -297,9 +303,12 @@ func TestPlaceBidAcceptsPriceCapDuringMySQLBufferingWithoutMySQLSettlement(t *te
 	}
 }
 
-func TestPlaceBidAllowsMySQLBufferingAfterWindowWhenRedisWritable(t *testing.T) {
+func TestPlaceBidRejectsMySQLBufferingAfterWindowWhenRedisWritable(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()
+	rec := &captureBidRecorder{}
+	observability.SetDefaultRecorder(rec)
+	t.Cleanup(func() { observability.SetDefaultRecorder(nil) })
 	svc := NewService(store, testPolicy, fc, nil, nil, nil)
 	now := time.UnixMilli(1710000000000)
 	svc.now = func() time.Time { return now }
@@ -313,16 +322,19 @@ func TestPlaceBidAllowsMySQLBufferingAfterWindowWhenRedisWritable(t *testing.T) 
 		MySQLBufferingStartedUnixMS: now.Add(-11 * time.Second).UnixMilli(),
 	})
 
-	result, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
+	_, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
 		Price:          100,
 		UserName:       "Alice",
 		IdempotencyKey: "buffering-expired",
 	})
-	if err != nil {
-		t.Fatalf("PlaceBid() error = %v", err)
+	if !errors.Is(err, ErrAvailabilityUnavailable) {
+		t.Fatalf("err = %v, want availability unavailable", err)
 	}
-	if result.CurrentPrice != 100 {
-		t.Fatalf("current price = %d, want 100", result.CurrentPrice)
+	if got := rec.lastReason(); got != "mysql_buffering_timeout" {
+		t.Fatalf("bid reason = %q, want mysql_buffering_timeout", got)
+	}
+	if len(fc.bidLogEvents) != 0 {
+		t.Fatalf("bid log events = %d, want 0", len(fc.bidLogEvents))
 	}
 }
 

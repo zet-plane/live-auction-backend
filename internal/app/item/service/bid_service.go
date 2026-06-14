@@ -57,9 +57,18 @@ func (s *Service) PlaceBid(ctx context.Context, current *usermodel.User, itemID 
 		}
 		return nil, ErrAvailabilityUnavailable
 	}
-	if snapshot.Mode == availability.ModeAuctionProtected && !mysqlUnavailableForBids(snapshot) {
+	if mysqlBufferingExpiredForBids(snapshot, s.now(), s.mysqlBufferingWindow) {
 		bidResult = "rejected"
-		bidReason = "auction_protected"
+		bidReason = "mysql_buffering_timeout"
+		return nil, ErrAvailabilityUnavailable
+	}
+	if snapshot.Mode == availability.ModeAuctionProtected {
+		bidResult = "rejected"
+		if mysqlUnavailableForBids(snapshot) {
+			bidReason = "mysql_buffering_timeout"
+		} else {
+			bidReason = "auction_protected"
+		}
 		return nil, ErrAvailabilityUnavailable
 	}
 	if !redisWritableForBids(snapshot) {
@@ -340,13 +349,20 @@ func redisWritableForBids(snapshot availability.Snapshot) bool {
 	if !snapshot.Valid || (snapshot.ActiveRedis != availability.RedisCloud && snapshot.ActiveRedis != availability.RedisLocal) {
 		return false
 	}
-	return snapshot.Mode != availability.ModeAuctionProtected || mysqlUnavailableForBids(snapshot)
+	return snapshot.Mode != availability.ModeAuctionProtected
 }
 
 func mysqlUnavailableForBids(snapshot availability.Snapshot) bool {
 	return snapshot.MySQLState == availability.MySQLBuffering ||
 		snapshot.MySQLState == availability.MySQLDown ||
 		(!snapshot.MySQL.Healthy && snapshot.MySQL.Error != "")
+}
+
+func mysqlBufferingExpiredForBids(snapshot availability.Snapshot, now time.Time, window time.Duration) bool {
+	if snapshot.Reason == "mysql_buffering_expired" {
+		return true
+	}
+	return snapshot.MySQLBufferingExpired(now, window)
 }
 
 func (s *Service) bidHotConfig(ctx context.Context, itemID string) (*itemcache.AuctionHotConfig, error) {
