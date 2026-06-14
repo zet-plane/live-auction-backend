@@ -49,6 +49,7 @@ func (d *Deposit) Load(engine *kernel.Engine) error {
 		c = depositcache.NewRedisCache(engine.Cache)
 	}
 	svc := service.NewService(store, c)
+	svc.SetAvailability(engine.Availability)
 	Svc = svc
 	if orderapp.Svc != nil {
 		orderapp.Svc.SetDepositSettler(svc)

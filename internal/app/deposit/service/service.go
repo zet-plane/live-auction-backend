@@ -10,6 +10,7 @@ import (
 	"github.com/zet-plane/live-auction-backend/internal/app/deposit/dto"
 	"github.com/zet-plane/live-auction-backend/internal/app/deposit/model"
 	usermodel "github.com/zet-plane/live-auction-backend/internal/app/user/model"
+	"github.com/zet-plane/live-auction-backend/internal/core/availability"
 	"github.com/zet-plane/live-auction-backend/internal/core/observability"
 	"github.com/zet-plane/live-auction-backend/pkg/errorx"
 	"github.com/zet-plane/live-auction-backend/pkg/logx"
@@ -17,14 +18,19 @@ import (
 )
 
 type Service struct {
-	store dao.Store
-	cache PaidDepositCache
-	now   func() time.Time
+	store        dao.Store
+	cache        PaidDepositCache
+	availability AvailabilitySnapshotProvider
+	now          func() time.Time
 }
 
 type PaidDepositCache interface {
 	MarkPaidDeposit(ctx context.Context, itemID, userID string, amount int64) error
 	HasPaidDeposit(ctx context.Context, itemID, userID string, requiredAmount int64) (bool, error)
+}
+
+type AvailabilitySnapshotProvider interface {
+	Snapshot() availability.Snapshot
 }
 
 type SettlementSummary struct {
@@ -39,6 +45,10 @@ func NewService(store dao.Store, caches ...PaidDepositCache) *Service {
 		cache = caches[0]
 	}
 	return &Service{store: store, cache: cache, now: time.Now}
+}
+
+func (s *Service) SetAvailability(provider AvailabilitySnapshotProvider) {
+	s.availability = provider
 }
 
 func (s *Service) PayDeposit(ctx context.Context, current *usermodel.User, itemID string) (result *dto.DepositDetail, err error) {
@@ -133,6 +143,14 @@ func (s *Service) HasPaidDeposit(ctx context.Context, itemID, userID string, req
 	if itemID == "" || userID == "" {
 		return false, nil
 	}
+	if s.mysqlUnavailableForDepositChecks() {
+		if ok, cacheErr := s.hasCachedPaidDeposit(ctx, itemID, userID, requiredAmount); cacheErr == nil {
+			return ok, nil
+		} else {
+			logx.Warnw("deposit cache check failed", "item_id", itemID, "user_id", userID, "err", cacheErr)
+			return false, nil
+		}
+	}
 	deposit, err := s.store.FindDeposit(itemID, userID)
 	if errors.Is(err, errorx.ErrNotFound) {
 		return false, nil
@@ -166,6 +184,16 @@ func (s *Service) hasCachedPaidDeposit(ctx context.Context, itemID, userID strin
 		return false, nil
 	}
 	return s.cache.HasPaidDeposit(ctx, itemID, userID, requiredAmount)
+}
+
+func (s *Service) mysqlUnavailableForDepositChecks() bool {
+	if s.availability == nil {
+		return false
+	}
+	snapshot := s.availability.Snapshot()
+	return snapshot.MySQLState == availability.MySQLBuffering ||
+		snapshot.MySQLState == availability.MySQLDown ||
+		(!snapshot.MySQL.Healthy && snapshot.MySQL.Error != "")
 }
 
 func (s *Service) RefundNonWinners(ctx context.Context, itemID, winnerUserID string) (summary SettlementSummary, err error) {

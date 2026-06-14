@@ -8,6 +8,7 @@ import (
 
 	"github.com/zet-plane/live-auction-backend/internal/app/deposit/model"
 	usermodel "github.com/zet-plane/live-auction-backend/internal/app/user/model"
+	"github.com/zet-plane/live-auction-backend/internal/core/availability"
 	"github.com/zet-plane/live-auction-backend/pkg/errorx"
 )
 
@@ -16,6 +17,7 @@ type fakeStore struct {
 	amounts        map[string]int64
 	now            time.Time
 	findDepositErr error
+	findCalls      int
 }
 
 func newFakeStore() *fakeStore {
@@ -39,6 +41,7 @@ func (s *fakeStore) FindRequiredAmount(itemID string) (int64, error) {
 }
 
 func (s *fakeStore) FindDeposit(itemID, userID string) (*model.Deposit, error) {
+	s.findCalls++
 	if s.findDepositErr != nil {
 		return nil, s.findDepositErr
 	}
@@ -111,6 +114,14 @@ func (c *fakePaidDepositCache) HasPaidDeposit(_ context.Context, itemID, userID 
 	}
 	amount, ok := c.paid[depositKey(itemID, userID)]
 	return ok && amount >= requiredAmount, nil
+}
+
+type fakeAvailability struct {
+	snapshot availability.Snapshot
+}
+
+func (f fakeAvailability) Snapshot() availability.Snapshot {
+	return f.snapshot
 }
 
 func TestPayDepositCreatesPaidDepositUsingRuleAmount(t *testing.T) {
@@ -333,5 +344,56 @@ func TestHasPaidDepositFallsBackToCacheWhenStoreUnavailable(t *testing.T) {
 	}
 	if !got {
 		t.Fatal("expected cached paid deposit to pass when store is unavailable")
+	}
+}
+
+func TestHasPaidDepositUsesCacheBeforeStore(t *testing.T) {
+	store := newFakeStore()
+	store.findDepositErr = errors.New("store should not be called")
+	cache := newFakePaidDepositCache()
+	cache.paid[depositKey("item_1", "user_1")] = 5000
+	svc := NewService(store, cache)
+	svc.SetAvailability(fakeAvailability{snapshot: availability.Snapshot{
+		Valid:       true,
+		MySQLState:  availability.MySQLBuffering,
+		MySQL:       availability.DependencyStatus{Healthy: false, Error: "dial tcp mysql:3306: i/o timeout"},
+		ActiveRedis: availability.RedisCloud,
+		Mode:        availability.ModeMySQLBuffering,
+	}})
+
+	got, err := svc.HasPaidDeposit(context.Background(), "item_1", "user_1", 5000)
+	if err != nil {
+		t.Fatalf("HasPaidDeposit returned error: %v", err)
+	}
+	if !got {
+		t.Fatal("expected cached paid deposit to pass")
+	}
+	if store.findCalls != 0 {
+		t.Fatalf("expected store not called, got %d calls", store.findCalls)
+	}
+}
+
+func TestHasPaidDepositSkipsStoreWhenMySQLUnavailableAndCacheMisses(t *testing.T) {
+	store := newFakeStore()
+	store.findDepositErr = errors.New("store should not be called")
+	cache := newFakePaidDepositCache()
+	svc := NewService(store, cache)
+	svc.SetAvailability(fakeAvailability{snapshot: availability.Snapshot{
+		Valid:       true,
+		MySQLState:  availability.MySQLBuffering,
+		MySQL:       availability.DependencyStatus{Healthy: false, Error: "dial tcp mysql:3306: i/o timeout"},
+		ActiveRedis: availability.RedisCloud,
+		Mode:        availability.ModeMySQLBuffering,
+	}})
+
+	got, err := svc.HasPaidDeposit(context.Background(), "item_1", "user_1", 5000)
+	if err != nil {
+		t.Fatalf("HasPaidDeposit returned error: %v", err)
+	}
+	if got {
+		t.Fatal("expected cache miss to fail closed while MySQL is unavailable")
+	}
+	if store.findCalls != 0 {
+		t.Fatalf("expected store not called, got %d calls", store.findCalls)
 	}
 }
