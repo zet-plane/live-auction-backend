@@ -402,36 +402,6 @@ func TestPlaceBidRebuildsLocalStateWithAuthorityEpochZero(t *testing.T) {
 	}
 }
 
-func TestPlaceBidRejectsWhenLocalFailbackFenceActive(t *testing.T) {
-	store := newFakeStore()
-	fc := newFakeCache()
-	svc := NewService(store, testPolicy, fc, nil, nil, nil)
-	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 1000, 100, 0, time.Now().Add(5*time.Minute))
-	svc.SetAvailabilitySnapshotForTest(availability.Snapshot{
-		Valid:       true,
-		Mode:        availability.ModeLocalRedisActive,
-		ActiveRedis: availability.RedisLocal,
-		MySQLState:  availability.MySQLHealthy,
-		UpdatedAt:   time.Now(),
-	})
-	fc.failbackFence = true
-
-	_, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
-		Price:          1200,
-		UserName:       bidder.Name,
-		IdempotencyKey: "idem_fenced",
-	})
-	if !errors.Is(err, ErrAvailabilityUnavailable) {
-		t.Fatalf("err = %v, want availability unavailable", err)
-	}
-	if fc.lastBidLuaArgs != nil {
-		t.Fatalf("expected PlaceBidLua not called while failback fence is active")
-	}
-	if len(fc.bidLogEvents) != 0 {
-		t.Fatalf("bid log events = %d, want 0", len(fc.bidLogEvents))
-	}
-}
-
 func TestPlaceBidRebuildsNoBidLocalStateAndAcceptsFirstBid(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()

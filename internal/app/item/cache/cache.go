@@ -163,12 +163,6 @@ type Cache interface {
 	RankingRebuildCoolingDown(ctx context.Context, itemID string) (bool, error)
 }
 
-type BidWriteFence interface {
-	BidWriteFenced(ctx context.Context) (bool, error)
-	SetBidWriteFence(ctx context.Context, ttl time.Duration) error
-	ClearBidWriteFence(ctx context.Context) error
-}
-
 type RedisCache struct {
 	client *redis.Client
 }
@@ -210,25 +204,6 @@ func (c *RedisCache) DeleteItemDetail(ctx context.Context, itemID string) error 
 	return c.client.Del(ctx, itemDetailKey(itemID)).Err()
 }
 
-func (c *RedisCache) BidWriteFenced(ctx context.Context) (bool, error) {
-	exists, err := c.client.Exists(ctx, bidWriteFenceKey()).Result()
-	if err != nil {
-		return false, err
-	}
-	return exists > 0, nil
-}
-
-func (c *RedisCache) SetBidWriteFence(ctx context.Context, ttl time.Duration) error {
-	if ttl <= 0 {
-		ttl = 5 * time.Second
-	}
-	return c.client.Set(ctx, bidWriteFenceKey(), "1", ttl).Err()
-}
-
-func (c *RedisCache) ClearBidWriteFence(ctx context.Context) error {
-	return c.client.Del(ctx, bidWriteFenceKey()).Err()
-}
-
 func itemStateKey(itemID string) string {
 	return "auction:item:" + itemID + ":state"
 }
@@ -251,10 +226,6 @@ func roomStateKey(roomID string) string {
 
 func endingKey() string {
 	return "auction:ending"
-}
-
-func bidWriteFenceKey() string {
-	return "auction:bid_write:fence"
 }
 
 const settleAuctionLuaScript = `

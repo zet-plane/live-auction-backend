@@ -163,30 +163,6 @@ func (c *ActiveRedisCache) GetItemAuthority(ctx context.Context, itemID string) 
 	return rc.GetItemAuthority(ctx, itemID)
 }
 
-func (c *ActiveRedisCache) BidWriteFenced(ctx context.Context) (bool, error) {
-	rc, err := c.current()
-	if err != nil {
-		return false, err
-	}
-	return rc.BidWriteFenced(ctx)
-}
-
-func (c *ActiveRedisCache) SetBidWriteFence(ctx context.Context, ttl time.Duration) error {
-	rc, err := c.current()
-	if err != nil {
-		return err
-	}
-	return rc.SetBidWriteFence(ctx, ttl)
-}
-
-func (c *ActiveRedisCache) ClearBidWriteFence(ctx context.Context) error {
-	rc, err := c.current()
-	if err != nil {
-		return err
-	}
-	return rc.ClearBidWriteFence(ctx)
-}
-
 func (c *ActiveRedisCache) PushToRoomQueue(ctx context.Context, roomID, itemID string, score float64) error {
 	rc, err := c.current()
 	if err != nil {

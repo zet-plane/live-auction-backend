@@ -72,19 +72,6 @@ func (s *Service) PlaceBid(ctx context.Context, current *usermodel.User, itemID 
 		bidReason = "redis_unavailable"
 		return nil, ErrAvailabilityUnavailable
 	}
-	if snapshot.ActiveRedis == availability.RedisLocal {
-		fenced, fenceErr := s.bidWriteFenced(ctx)
-		if fenceErr != nil {
-			bidResult = "error"
-			bidReason = "redis_error"
-			return nil, fenceErr
-		}
-		if fenced {
-			bidResult = "rejected"
-			bidReason = "redis_failback_cutover"
-			return nil, ErrAvailabilityUnavailable
-		}
-	}
 	hot, err := s.bidHotConfig(ctx, itemID)
 	if err != nil {
 		if errors.Is(err, errorx.ErrInvalidRequest) {
@@ -359,14 +346,6 @@ func redisWritableForBids(snapshot availability.Snapshot) bool {
 		return false
 	}
 	return snapshot.Mode != availability.ModeAuctionProtected || mysqlUnavailableForBids(snapshot)
-}
-
-func (s *Service) bidWriteFenced(ctx context.Context) (bool, error) {
-	fence, ok := s.cache.(itemcache.BidWriteFence)
-	if !ok {
-		return false, nil
-	}
-	return fence.BidWriteFenced(ctx)
 }
 
 func mysqlUnavailableForBids(snapshot availability.Snapshot) bool {
