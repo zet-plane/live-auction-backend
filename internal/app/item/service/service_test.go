@@ -1473,6 +1473,45 @@ func TestGetItemRebuildsLocalRedisStateFromMySQLBidLogs(t *testing.T) {
 	}
 }
 
+func TestGetItemRebuildsCloudRedisStateFromMySQLBidLogs(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	svc := NewService(store, testPolicy, fc, nil, nil, nil)
+	endTime := time.Now().Add(5 * time.Minute)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 1, 1, 0, endTime)
+	delete(fc.states, itemID)
+	delete(fc.itemDetails, itemID)
+	store.bidLogsByEpoch[itemID+":0"] = []*itemmodel.BidLog{
+		{ID: "bid_1", ItemID: itemID, RoomID: "room_1", UserID: "user_1", Price: 1, AuthorityEpoch: 0, AuctionVersion: 1},
+		{ID: "bid_2", ItemID: itemID, RoomID: "room_1", UserID: "user_2", Price: 2, AuthorityEpoch: 0, AuctionVersion: 2},
+		{ID: "bid_3", ItemID: itemID, RoomID: "room_1", UserID: "user_3", Price: 3, AuthorityEpoch: 0, AuctionVersion: 3},
+	}
+	store.bidLogs = append(store.bidLogs, store.bidLogsByEpoch[itemID+":0"]...)
+	svc.SetAvailabilitySnapshotForTest(availability.Snapshot{
+		Valid:       true,
+		Mode:        availability.ModeNormalCloud,
+		ActiveRedis: availability.RedisCloud,
+		MySQLState:  availability.MySQLHealthy,
+		UpdatedAt:   time.Now(),
+	})
+
+	detail, err := svc.GetItem(context.Background(), itemID)
+	if err != nil {
+		t.Fatalf("GetItem failed: %v", err)
+	}
+
+	if detail.CurrentPrice != 3 || detail.DealPrice != 3 || detail.LeaderUserID != "user_3" {
+		t.Fatalf("detail = %+v, want rebuilt cloud live price from bid logs", detail)
+	}
+	state := fc.states[itemID]
+	if state == nil {
+		t.Fatal("expected cloud Redis state to be rebuilt")
+	}
+	if state.CurrentPrice != 3 || state.BidCount != 3 || state.AuctionVersion != 3 {
+		t.Fatalf("state = %+v, want rebuilt price/count/version 3/3/3", state)
+	}
+}
+
 func TestGetItemRebuildsProtectedLocalRedisStateFromMySQLBidLogs(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()
