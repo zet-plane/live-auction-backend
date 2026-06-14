@@ -611,7 +611,8 @@ func (s *Service) ensureLocalAuctionState(ctx context.Context, itemID string) er
 	if s.cache == nil || s.availabilitySnapshot().ActiveRedis != availability.RedisLocal {
 		return nil
 	}
-	if _, ok, err := s.cache.GetAuctionState(ctx, itemID); err != nil || ok {
+	state, ok, err := s.cache.GetAuctionState(ctx, itemID)
+	if err != nil || (ok && usableAuctionState(state)) {
 		return err
 	}
 	return s.rebuildLocalAuctionState(ctx, itemID, 0)

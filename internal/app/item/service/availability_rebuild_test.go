@@ -23,14 +23,17 @@ func TestVerifyBidLogContinuityAcceptsContinuousVersions(t *testing.T) {
 	}
 }
 
-func TestVerifyBidLogContinuityRejectsGap(t *testing.T) {
+func TestVerifyBidLogContinuityAcceptsMonotonicVersionsWithGap(t *testing.T) {
 	logs := []*itemmodel.BidLog{
 		{ID: "bid_1", ItemID: "item_1", UserID: "u1", Price: 1000, AuthorityEpoch: 4, AuctionVersion: 1},
 		{ID: "bid_3", ItemID: "item_1", UserID: "u2", Price: 1200, AuthorityEpoch: 4, AuctionVersion: 3},
 	}
-	_, ok := verifyBidLogContinuity(logs, 4)
-	if ok {
-		t.Fatal("expected continuity failure")
+	result, ok := verifyBidLogContinuity(logs, 4)
+	if !ok {
+		t.Fatal("expected monotonic durable logs to be rebuildable")
+	}
+	if result.BidCount != 2 || result.CurrentPrice != 1200 || result.LeaderUserID != "u2" || result.AuctionVersion != 3 {
+		t.Fatalf("result = %+v", result)
 	}
 }
 

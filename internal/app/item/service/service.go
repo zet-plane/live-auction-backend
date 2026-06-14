@@ -224,7 +224,9 @@ func (s *Service) ListItems(ctx context.Context, query dto.ListItemsInput) (resu
 		d := dto.NewItemListDTO(iwr.Item, iwr.Rule, s.policy, now)
 		if iwr.Item.Status == model.ItemOngoing && s.cache != nil {
 			if state, ok, _ := s.cache.GetAuctionState(ctx, iwr.Item.ID); ok {
-				applyStateToList(&d, state, now)
+				if usableAuctionState(state) {
+					applyStateToList(&d, state, now)
+				}
 			}
 		}
 		list = append(list, d)
@@ -266,7 +268,9 @@ func (s *Service) ListItemsByIDs(ctx context.Context, itemIDs []string) (result 
 		d := dto.NewItemListDTO(iwr.Item, iwr.Rule, s.policy, now)
 		if iwr.Item.Status == model.ItemOngoing && s.cache != nil {
 			if state, ok, _ := s.cache.GetAuctionState(ctx, iwr.Item.ID); ok {
-				applyStateToList(&d, state, now)
+				if usableAuctionState(state) {
+					applyStateToList(&d, state, now)
+				}
 			}
 		}
 		list = append(list, d)
@@ -298,7 +302,9 @@ func (s *Service) ListMerchantItems(ctx context.Context, current *usermodel.User
 		d := dto.NewMerchantItemDTO(iwr.Item, iwr.Rule, s.policy, now)
 		if iwr.Item.Status == model.ItemOngoing && s.cache != nil {
 			if state, ok, _ := s.cache.GetAuctionState(ctx, iwr.Item.ID); ok {
-				applyStateToMerchant(&d, state, now)
+				if usableAuctionState(state) {
+					applyStateToMerchant(&d, state, now)
+				}
 			}
 		}
 		list = append(list, d)
@@ -323,12 +329,12 @@ func (s *Service) GetItem(ctx context.Context, itemID string) (result *dto.ItemD
 	detail := dto.NewItemDetailDTO(item, rule, s.policy, now)
 	if item.Status == model.ItemOngoing && s.cache != nil {
 		state, ok, _ := s.cache.GetAuctionState(ctx, item.ID)
-		if !ok && s.availabilitySnapshot().ActiveRedis == availability.RedisLocal {
+		if (!ok || !usableAuctionState(state)) && s.availabilitySnapshot().ActiveRedis == availability.RedisLocal {
 			if rebuildErr := s.rebuildLocalAuctionState(ctx, item.ID, 0); rebuildErr == nil {
 				state, ok, _ = s.cache.GetAuctionState(ctx, item.ID)
 			}
 		}
-		if ok {
+		if ok && usableAuctionState(state) {
 			applyStateToDetail(&detail, state, now)
 		}
 	}
@@ -987,6 +993,13 @@ func applyStateToDetail(d *dto.ItemDetailDTO, state *itemcache.AuctionState, now
 	d.EndReason = state.EndReason
 	d.IsExtended = state.IsExtended
 	d.RemainingMS = stateRemainingMS(state, now)
+}
+
+func usableAuctionState(state *itemcache.AuctionState) bool {
+	if state == nil || state.AuthorityState == itemcache.AuthorityProtected {
+		return false
+	}
+	return state.CurrentPrice > 0
 }
 
 func applyStateToList(d *dto.ItemListDTO, state *itemcache.AuctionState, now time.Time) {

@@ -1466,6 +1466,43 @@ func TestGetItemRebuildsLocalRedisStateFromMySQLBidLogs(t *testing.T) {
 	}
 }
 
+func TestGetItemRebuildsProtectedLocalRedisStateFromMySQLBidLogs(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	svc := NewService(store, testPolicy, fc, nil, nil, nil)
+	endTime := time.Now().Add(5 * time.Minute)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 1000, 100, 0, endTime)
+	fc.states[itemID] = &itemcache.AuctionState{
+		AuthorityEpoch: 0,
+		AuthorityState: itemcache.AuthorityProtected,
+	}
+	store.bidLogsByEpoch[itemID+":0"] = []*itemmodel.BidLog{
+		{ID: "bid_1", ItemID: itemID, RoomID: "room_1", UserID: "user_1", Price: 1100, AuthorityEpoch: 0, AuctionVersion: 1},
+		{ID: "bid_3", ItemID: itemID, RoomID: "room_1", UserID: "user_2", Price: 1200, AuthorityEpoch: 0, AuctionVersion: 3},
+	}
+	store.bidLogs = append(store.bidLogs, store.bidLogsByEpoch[itemID+":0"]...)
+	svc.SetAvailabilitySnapshotForTest(availability.Snapshot{
+		Valid:       true,
+		Mode:        availability.ModeLocalRedisActive,
+		ActiveRedis: availability.RedisLocal,
+		MySQLState:  availability.MySQLHealthy,
+		UpdatedAt:   time.Now(),
+	})
+
+	detail, err := svc.GetItem(context.Background(), itemID)
+	if err != nil {
+		t.Fatalf("GetItem failed: %v", err)
+	}
+
+	if detail.CurrentPrice != 1200 || detail.DealPrice != 1200 || detail.LeaderUserID != "user_2" {
+		t.Fatalf("detail = %+v, want rebuilt live price from bid logs", detail)
+	}
+	state := fc.states[itemID]
+	if state.AuthorityState != itemcache.AuthorityReady || state.AuctionVersion != 3 {
+		t.Fatalf("state = %+v, want rebuilt ready authority at max durable version", state)
+	}
+}
+
 func TestAuctionSnapshotReturnsRedisOngoingState(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()

@@ -32,20 +32,19 @@ func verifyBidLogContinuity(logs []*itemmodel.BidLog, epoch int64) (continuityRe
 	sort.Slice(logs, func(i, j int) bool { return logs[i].AuctionVersion < logs[j].AuctionVersion })
 	var result continuityResult
 	bestByUser := make(map[string]int64)
-	for i, log := range logs {
-		wantVersion := int64(i + 1)
-		if log.AuthorityEpoch != epoch || log.AuctionVersion != wantVersion {
+	var prevVersion int64
+	for _, log := range logs {
+		if log.AuthorityEpoch != epoch || log.AuctionVersion <= prevVersion || log.Price < result.CurrentPrice {
 			return continuityResult{}, false
 		}
 		result.BidCount++
 		result.AuctionVersion = log.AuctionVersion
-		if log.Price >= result.CurrentPrice {
-			result.CurrentPrice = log.Price
-			result.LeaderUserID = log.UserID
-		}
+		result.CurrentPrice = log.Price
+		result.LeaderUserID = log.UserID
 		if log.UserID != "" && log.Price > bestByUser[log.UserID] {
 			bestByUser[log.UserID] = log.Price
 		}
+		prevVersion = log.AuctionVersion
 	}
 	result.ParticipantCount = len(bestByUser)
 	result.Ranking = make([]itemdto.BidderPrice, 0, len(bestByUser))
