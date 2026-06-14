@@ -60,8 +60,50 @@ type BidLogStreamReader struct {
 	consumer string
 }
 
+type BidLogStreamDrainChecker struct {
+	client *redis.Client
+}
+
 func NewBidLogStreamReader(client *redis.Client, consumer string) *BidLogStreamReader {
 	return &BidLogStreamReader{client: client, consumer: consumer}
+}
+
+func NewBidLogStreamDrainChecker(client *redis.Client) *BidLogStreamDrainChecker {
+	return &BidLogStreamDrainChecker{client: client}
+}
+
+func (c *BidLogStreamDrainChecker) Drained(ctx context.Context) (bool, error) {
+	if c == nil || c.client == nil {
+		return false, errActiveRedisUnavailable
+	}
+	if err := ensureBidLogGroup(ctx, c.client); err != nil {
+		return false, err
+	}
+
+	pending, err := c.client.XPending(ctx, BidLogStreamName, BidLogConsumerGroup).Result()
+	if err != nil {
+		if err == redis.Nil {
+			return true, nil
+		}
+		return false, err
+	}
+	if pending != nil && pending.Count > 0 {
+		return false, nil
+	}
+
+	groups, err := c.client.XInfoGroups(ctx, BidLogStreamName).Result()
+	if err != nil {
+		if err == redis.Nil {
+			return true, nil
+		}
+		return false, err
+	}
+	for _, group := range groups {
+		if group.Name == BidLogConsumerGroup {
+			return group.Pending == 0 && group.Lag == 0, nil
+		}
+	}
+	return true, nil
 }
 
 func (r *BidLogStreamReader) EnsureGroup(ctx context.Context) error {

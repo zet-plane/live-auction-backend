@@ -1533,13 +1533,16 @@ func TestPrewarmFailbackRedisRebuildsCloudCacheAndMarksReady(t *testing.T) {
 		},
 	}
 
-	err := svc.PrewarmCloudRedisForFailback(context.Background(), cloudCache, rt)
+	err := svc.PrewarmCloudRedisForFailback(context.Background(), cloudCache, &fakeBidLogDrainChecker{drained: []bool{true, true}}, rt)
 	if err != nil {
 		t.Fatalf("PrewarmCloudRedisForFailback failed: %v", err)
 	}
 
 	if !rt.marked {
 		t.Fatal("expected failback runtime marked ready")
+	}
+	if rt.refreshes != 1 {
+		t.Fatalf("refreshes = %d, want 1", rt.refreshes)
 	}
 	state := cloudCache.states[itemID]
 	if state == nil || state.CurrentPrice != 1200 || state.LeaderUserID != "user_2" || state.AuthorityState != itemcache.AuthorityReady {
@@ -1551,13 +1554,95 @@ func TestPrewarmFailbackRedisRebuildsCloudCacheAndMarksReady(t *testing.T) {
 }
 
 type fakeFailbackRuntime struct {
-	snapshot availability.Snapshot
-	marked   bool
+	snapshot  availability.Snapshot
+	marked    bool
+	refreshes int
 }
 
 func (f *fakeFailbackRuntime) Snapshot() availability.Snapshot { return f.snapshot }
 
 func (f *fakeFailbackRuntime) MarkCloudFailbackReady() { f.marked = true }
+
+func (f *fakeFailbackRuntime) Refresh(context.Context) { f.refreshes++ }
+
+func TestPrewarmFailbackRedisWaitsForBidLogDrainBeforeRebuild(t *testing.T) {
+	store := newFakeStore()
+	activeCache := newFakeCache()
+	cloudCache := newFakeCache()
+	svc := NewService(store, testPolicy, activeCache, nil, nil, nil)
+	endTime := time.Now().Add(5 * time.Minute)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 1000, 100, 0, endTime)
+	store.bidLogsByEpoch[itemID+":0"] = []*itemmodel.BidLog{
+		{ID: "bid_1", ItemID: itemID, RoomID: "room_1", UserID: "user_1", Price: 1100, AuthorityEpoch: 0, AuctionVersion: 1},
+	}
+	store.bidLogs = append(store.bidLogs, store.bidLogsByEpoch[itemID+":0"]...)
+	rt := newReadyFailbackRuntime()
+
+	err := svc.PrewarmCloudRedisForFailback(context.Background(), cloudCache, &fakeBidLogDrainChecker{drained: []bool{false}}, rt)
+	if err != nil {
+		t.Fatalf("PrewarmCloudRedisForFailback failed: %v", err)
+	}
+
+	if rt.marked {
+		t.Fatal("expected failback runtime to stay unmarked while bid log has lag")
+	}
+	if cloudCache.states[itemID] != nil {
+		t.Fatal("expected cloud cache not to rebuild before bid log drains")
+	}
+}
+
+func TestPrewarmFailbackRedisWaitsForBidLogDrainAfterRebuild(t *testing.T) {
+	store := newFakeStore()
+	activeCache := newFakeCache()
+	cloudCache := newFakeCache()
+	svc := NewService(store, testPolicy, activeCache, nil, nil, nil)
+	endTime := time.Now().Add(5 * time.Minute)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 1000, 100, 0, endTime)
+	store.bidLogsByEpoch[itemID+":0"] = []*itemmodel.BidLog{
+		{ID: "bid_1", ItemID: itemID, RoomID: "room_1", UserID: "user_1", Price: 1100, AuthorityEpoch: 0, AuctionVersion: 1},
+	}
+	store.bidLogs = append(store.bidLogs, store.bidLogsByEpoch[itemID+":0"]...)
+	rt := newReadyFailbackRuntime()
+
+	err := svc.PrewarmCloudRedisForFailback(context.Background(), cloudCache, &fakeBidLogDrainChecker{drained: []bool{true, false}}, rt)
+	if err != nil {
+		t.Fatalf("PrewarmCloudRedisForFailback failed: %v", err)
+	}
+
+	if rt.marked {
+		t.Fatal("expected failback runtime to stay unmarked when bid log gets new lag during rebuild")
+	}
+	if state := cloudCache.states[itemID]; state == nil || state.CurrentPrice != 1100 {
+		t.Fatalf("cloud state = %+v, want rebuilt but not promoted", state)
+	}
+}
+
+func newReadyFailbackRuntime() *fakeFailbackRuntime {
+	return &fakeFailbackRuntime{
+		snapshot: availability.Snapshot{
+			Valid:       true,
+			Mode:        availability.ModeLocalRedisActive,
+			ActiveRedis: availability.RedisLocal,
+			CloudRedis:  availability.DependencyStatus{Healthy: true},
+			LocalRedis:  availability.DependencyStatus{Healthy: true},
+			MySQLState:  availability.MySQLHealthy,
+		},
+	}
+}
+
+type fakeBidLogDrainChecker struct {
+	drained []bool
+	calls   int
+}
+
+func (f *fakeBidLogDrainChecker) Drained(context.Context) (bool, error) {
+	if f.calls >= len(f.drained) {
+		return false, nil
+	}
+	drained := f.drained[f.calls]
+	f.calls++
+	return drained, nil
+}
 
 func TestAuctionSnapshotReturnsRedisOngoingState(t *testing.T) {
 	store := newFakeStore()

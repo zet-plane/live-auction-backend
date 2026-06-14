@@ -103,10 +103,16 @@ func (i *Item) Load(engine *kernel.Engine) error {
 	if engine.Availability != nil {
 		reader := cache.NewActiveBidLogStreamReader(engine.Availability, leaseOwner)
 		svc.StartBidLogWorker(engine.Context, reader)
-		if engine.CloudRedis != nil {
+		if engine.CloudRedis != nil && engine.LocalRedis != nil {
 			failbackCtx, cancel := context.WithCancel(engine.Context)
 			i.failbackCancel = cancel
-			go runCloudFailbackPrewarm(failbackCtx, svc, cache.NewRedisCache(engine.CloudRedis), engine.Availability)
+			go runCloudFailbackPrewarm(
+				failbackCtx,
+				svc,
+				cache.NewRedisCache(engine.CloudRedis),
+				cache.NewBidLogStreamDrainChecker(engine.LocalRedis),
+				engine.Availability,
+			)
 		}
 	} else if engine.Cache != nil {
 		reader := cache.NewBidLogStreamReader(engine.Cache, leaseOwner)
@@ -118,7 +124,7 @@ func (i *Item) Load(engine *kernel.Engine) error {
 	return nil
 }
 
-func runCloudFailbackPrewarm(ctx context.Context, svc *service.Service, cloudCache cache.Cache, rt *availability.Runtime) {
+func runCloudFailbackPrewarm(ctx context.Context, svc *service.Service, cloudCache cache.Cache, bidLogDrain service.BidLogDrainChecker, rt *availability.Runtime) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	for {
@@ -126,7 +132,7 @@ func runCloudFailbackPrewarm(ctx context.Context, svc *service.Service, cloudCac
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			_ = svc.PrewarmCloudRedisForFailback(ctx, cloudCache, rt)
+			_ = svc.PrewarmCloudRedisForFailback(ctx, cloudCache, bidLogDrain, rt)
 		}
 	}
 }
