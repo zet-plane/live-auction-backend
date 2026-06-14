@@ -223,10 +223,8 @@ func (s *Service) ListItems(ctx context.Context, query dto.ListItemsInput) (resu
 	for _, iwr := range items {
 		d := dto.NewItemListDTO(iwr.Item, iwr.Rule, s.policy, now)
 		if iwr.Item.Status == model.ItemOngoing && s.cache != nil {
-			if state, ok, _ := s.cache.GetAuctionState(ctx, iwr.Item.ID); ok {
-				if usableAuctionState(state) {
-					applyStateToList(&d, state, now)
-				}
+			if state, ok := s.auctionStateForRead(ctx, iwr.Item.ID); ok {
+				applyStateToList(&d, state, now)
 			}
 		}
 		list = append(list, d)
@@ -267,10 +265,8 @@ func (s *Service) ListItemsByIDs(ctx context.Context, itemIDs []string) (result 
 	for _, iwr := range items {
 		d := dto.NewItemListDTO(iwr.Item, iwr.Rule, s.policy, now)
 		if iwr.Item.Status == model.ItemOngoing && s.cache != nil {
-			if state, ok, _ := s.cache.GetAuctionState(ctx, iwr.Item.ID); ok {
-				if usableAuctionState(state) {
-					applyStateToList(&d, state, now)
-				}
+			if state, ok := s.auctionStateForRead(ctx, iwr.Item.ID); ok {
+				applyStateToList(&d, state, now)
 			}
 		}
 		list = append(list, d)
@@ -328,18 +324,42 @@ func (s *Service) GetItem(ctx context.Context, itemID string) (result *dto.ItemD
 	now := s.now()
 	detail := dto.NewItemDetailDTO(item, rule, s.policy, now)
 	if item.Status == model.ItemOngoing && s.cache != nil {
-		state, ok, _ := s.cache.GetAuctionState(ctx, item.ID)
-		snapshot := s.availabilitySnapshot()
-		if (!ok || !usableAuctionState(state)) && snapshot.Valid && redisWritableForBids(snapshot) {
-			if rebuildErr := s.rebuildAuctionState(ctx, item.ID, 0); rebuildErr == nil {
-				state, ok, _ = s.cache.GetAuctionState(ctx, item.ID)
-			}
-		}
-		if ok && usableAuctionState(state) {
+		if state, ok := s.auctionStateForRead(ctx, item.ID); ok {
 			applyStateToDetail(&detail, state, now)
 		}
 	}
 	return &detail, nil
+}
+
+func (s *Service) auctionStateForRead(ctx context.Context, itemID string) (*itemcache.AuctionState, bool) {
+	if s.cache == nil {
+		return nil, false
+	}
+	state, ok, err := s.cache.GetAuctionState(ctx, itemID)
+	if err != nil {
+		logx.Warnw("item get auction state for read failed", "item_id", itemID, "err", err)
+		return nil, false
+	}
+	if ok && usableAuctionState(state) {
+		return state, true
+	}
+	snapshot := s.availabilitySnapshot()
+	if !snapshot.Valid || !redisWritableForBids(snapshot) {
+		return nil, false
+	}
+	if rebuildErr := s.rebuildAuctionState(ctx, itemID, 0); rebuildErr != nil {
+		logx.Warnw("item rebuild auction state for read failed", "item_id", itemID, "err", rebuildErr)
+		return nil, false
+	}
+	state, ok, err = s.cache.GetAuctionState(ctx, itemID)
+	if err != nil {
+		logx.Warnw("item get rebuilt auction state for read failed", "item_id", itemID, "err", err)
+		return nil, false
+	}
+	if ok && usableAuctionState(state) {
+		return state, true
+	}
+	return nil, false
 }
 
 func (s *Service) getItemDetailSource(ctx context.Context, itemID string) (*model.AuctionItem, *model.AuctionRule, error) {

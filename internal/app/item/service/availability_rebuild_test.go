@@ -37,6 +37,24 @@ func TestVerifyBidLogContinuityAcceptsMonotonicVersionsWithGap(t *testing.T) {
 	}
 }
 
+func TestVerifyBidLogContinuityUsesHighestDurablePriceWhenLogsContainRestartedLowBids(t *testing.T) {
+	logs := []*itemmodel.BidLog{
+		{ID: "bid_1", ItemID: "item_1", UserID: "u1", Price: 1900, AuthorityEpoch: 0, AuctionVersion: 9, CreatedAt: time.Date(2026, 6, 14, 11, 30, 43, 0, time.UTC)},
+		{ID: "bid_2", ItemID: "item_1", UserID: "u1", Price: 2100, AuthorityEpoch: 0, AuctionVersion: 10, CreatedAt: time.Date(2026, 6, 14, 11, 30, 45, 0, time.UTC)},
+		{ID: "bid_3", ItemID: "item_1", UserID: "u1", Price: 300, AuthorityEpoch: 0, AuctionVersion: 1, CreatedAt: time.Date(2026, 6, 14, 12, 42, 10, 0, time.UTC)},
+		{ID: "bid_4", ItemID: "item_1", UserID: "u1", Price: 500, AuthorityEpoch: 0, AuctionVersion: 2, CreatedAt: time.Date(2026, 6, 14, 12, 42, 13, 0, time.UTC)},
+		{ID: "bid_5", ItemID: "item_1", UserID: "u1", Price: 700, AuthorityEpoch: 0, AuctionVersion: 3, CreatedAt: time.Date(2026, 6, 14, 12, 42, 56, 0, time.UTC)},
+	}
+
+	result, ok := verifyBidLogContinuity(logs, 0)
+	if !ok {
+		t.Fatal("expected rebuild to tolerate restarted low bid logs")
+	}
+	if result.CurrentPrice != 2100 || result.AuctionVersion != 10 || result.LeaderUserID != "u1" {
+		t.Fatalf("result = %+v, want highest durable price/version 2100/10", result)
+	}
+}
+
 func TestRebuildProtectsItemWhenContinuityFails(t *testing.T) {
 	store := newFakeStore()
 	cache := newFakeCache()

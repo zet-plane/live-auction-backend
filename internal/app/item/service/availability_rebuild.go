@@ -42,15 +42,14 @@ func verifyBidLogContinuity(logs []*itemmodel.BidLog, epoch int64) (continuityRe
 	var result continuityResult
 	bestByUser := make(map[string]int64)
 	for _, log := range logs {
-		if log.Price < result.CurrentPrice {
-			return continuityResult{}, false
-		}
 		result.BidCount++
 		if log.AuctionVersion > result.AuctionVersion {
 			result.AuctionVersion = log.AuctionVersion
 		}
-		result.CurrentPrice = log.Price
-		result.LeaderUserID = log.UserID
+		if log.Price >= result.CurrentPrice {
+			result.CurrentPrice = log.Price
+			result.LeaderUserID = log.UserID
+		}
 		if log.UserID != "" && log.Price > bestByUser[log.UserID] {
 			bestByUser[log.UserID] = log.Price
 		}
