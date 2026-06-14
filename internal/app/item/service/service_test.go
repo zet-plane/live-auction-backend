@@ -1510,6 +1510,55 @@ func TestGetItemRebuildsProtectedLocalRedisStateFromMySQLBidLogs(t *testing.T) {
 	}
 }
 
+func TestPrewarmFailbackRedisRebuildsCloudCacheAndMarksReady(t *testing.T) {
+	store := newFakeStore()
+	activeCache := newFakeCache()
+	cloudCache := newFakeCache()
+	svc := NewService(store, testPolicy, activeCache, nil, nil, nil)
+	endTime := time.Now().Add(5 * time.Minute)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 1000, 100, 0, endTime)
+	store.bidLogsByEpoch[itemID+":0"] = []*itemmodel.BidLog{
+		{ID: "bid_1", ItemID: itemID, RoomID: "room_1", UserID: "user_1", Price: 1100, AuthorityEpoch: 0, AuctionVersion: 1},
+		{ID: "bid_2", ItemID: itemID, RoomID: "room_1", UserID: "user_2", Price: 1200, AuthorityEpoch: 0, AuctionVersion: 2},
+	}
+	store.bidLogs = append(store.bidLogs, store.bidLogsByEpoch[itemID+":0"]...)
+	rt := &fakeFailbackRuntime{
+		snapshot: availability.Snapshot{
+			Valid:       true,
+			Mode:        availability.ModeLocalRedisActive,
+			ActiveRedis: availability.RedisLocal,
+			CloudRedis:  availability.DependencyStatus{Healthy: true},
+			LocalRedis:  availability.DependencyStatus{Healthy: true},
+			MySQLState:  availability.MySQLHealthy,
+		},
+	}
+
+	err := svc.PrewarmCloudRedisForFailback(context.Background(), cloudCache, rt)
+	if err != nil {
+		t.Fatalf("PrewarmCloudRedisForFailback failed: %v", err)
+	}
+
+	if !rt.marked {
+		t.Fatal("expected failback runtime marked ready")
+	}
+	state := cloudCache.states[itemID]
+	if state == nil || state.CurrentPrice != 1200 || state.LeaderUserID != "user_2" || state.AuthorityState != itemcache.AuthorityReady {
+		t.Fatalf("cloud state = %+v, want rebuilt current auction state", state)
+	}
+	if activeCache.states[itemID] == nil {
+		t.Fatal("expected active local cache to remain untouched only by seed data")
+	}
+}
+
+type fakeFailbackRuntime struct {
+	snapshot availability.Snapshot
+	marked   bool
+}
+
+func (f *fakeFailbackRuntime) Snapshot() availability.Snapshot { return f.snapshot }
+
+func (f *fakeFailbackRuntime) MarkCloudFailbackReady() { f.marked = true }
+
 func TestAuctionSnapshotReturnsRedisOngoingState(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()

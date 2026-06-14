@@ -18,6 +18,7 @@ import (
 	"github.com/zet-plane/live-auction-backend/internal/app/item/service"
 	orderapp "github.com/zet-plane/live-auction-backend/internal/app/order"
 	wsapp "github.com/zet-plane/live-auction-backend/internal/app/ws"
+	"github.com/zet-plane/live-auction-backend/internal/core/availability"
 	"github.com/zet-plane/live-auction-backend/internal/core/cronlease"
 	"github.com/zet-plane/live-auction-backend/internal/core/kernel"
 )
@@ -32,8 +33,9 @@ type Reader interface {
 var ItemReader Reader
 
 type Item struct {
-	Name string
-	svc  *service.Service
+	Name           string
+	svc            *service.Service
+	failbackCancel context.CancelFunc
 
 	app.UnimplementedModule
 }
@@ -101,6 +103,11 @@ func (i *Item) Load(engine *kernel.Engine) error {
 	if engine.Availability != nil {
 		reader := cache.NewActiveBidLogStreamReader(engine.Availability, leaseOwner)
 		svc.StartBidLogWorker(engine.Context, reader)
+		if engine.CloudRedis != nil {
+			failbackCtx, cancel := context.WithCancel(engine.Context)
+			i.failbackCancel = cancel
+			go runCloudFailbackPrewarm(failbackCtx, svc, cache.NewRedisCache(engine.CloudRedis), engine.Availability)
+		}
 	} else if engine.Cache != nil {
 		reader := cache.NewBidLogStreamReader(engine.Cache, leaseOwner)
 		if err := reader.EnsureGroup(engine.Context); err != nil {
@@ -109,6 +116,19 @@ func (i *Item) Load(engine *kernel.Engine) error {
 		svc.StartBidLogWorker(engine.Context, reader)
 	}
 	return nil
+}
+
+func runCloudFailbackPrewarm(ctx context.Context, svc *service.Service, cloudCache cache.Cache, rt *availability.Runtime) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			_ = svc.PrewarmCloudRedisForFailback(ctx, cloudCache, rt)
+		}
+	}
 }
 
 func bidLogConsumerName(hostname func() (string, error)) string {
@@ -123,6 +143,9 @@ func (i *Item) Stop(wg *sync.WaitGroup, _ context.Context) error {
 	defer wg.Done()
 	if i.svc != nil {
 		i.svc.StopBidLogWorker()
+	}
+	if i.failbackCancel != nil {
+		i.failbackCancel()
 	}
 	return nil
 }

@@ -44,6 +44,7 @@ type Runtime struct {
 	cloudDownSince          time.Time
 	mysqlDownSince          time.Time
 	localAuthorityActivated bool
+	cloudFailbackReady      bool
 }
 
 func NewRuntime(cloudRedis, localRedis *redis.Client, db *gorm.DB, opts Options) *Runtime {
@@ -134,7 +135,13 @@ func (r *Runtime) Refresh(ctx context.Context) {
 	}
 
 	if r.localAuthorityActivated {
-		if local.Healthy {
+		if cloud.Healthy && r.cloudFailbackReady {
+			mode = ModeNormalCloud
+			active = RedisCloud
+			reason = "cloud_redis_failback_ready"
+			r.localAuthorityActivated = false
+			r.cloudFailbackReady = false
+		} else if local.Healthy {
 			mode = ModeLocalRedisActive
 			active = RedisLocal
 			reason = "local_sticky"
@@ -185,6 +192,15 @@ func (r *Runtime) Refresh(ctx context.Context) {
 		UpdatedAt:                   now,
 		Reason:                      reason,
 	})
+}
+
+func (r *Runtime) MarkCloudFailbackReady() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cloudFailbackReady = true
 }
 
 func (r *Runtime) probeCloud(ctx context.Context) DependencyStatus {

@@ -79,6 +79,39 @@ func TestRuntimeKeepsLocalStickyWhenCloudRecovers(t *testing.T) {
 	}
 }
 
+func TestRuntimeSwitchesBackToCloudOnlyAfterFailbackReady(t *testing.T) {
+	now := time.UnixMilli(1710000000000)
+	cloudHealthy := false
+	rt := NewRuntime(nil, nil, nil, Options{
+		Now:           func() time.Time { return now },
+		FailoverAfter: time.Second,
+		Probe: Probe{
+			CloudRedis: func(context.Context) DependencyStatus { return DependencyStatus{Healthy: cloudHealthy} },
+			LocalRedis: func(context.Context) DependencyStatus { return DependencyStatus{Healthy: true} },
+			MySQL:      func(context.Context) DependencyStatus { return DependencyStatus{Healthy: true} },
+		},
+	})
+
+	rt.Refresh(context.Background())
+	now = now.Add(2 * time.Second)
+	rt.Refresh(context.Background())
+	cloudHealthy = true
+	now = now.Add(2 * time.Second)
+	rt.Refresh(context.Background())
+	if s := rt.Snapshot(); s.Mode != ModeLocalRedisActive || s.ActiveRedis != RedisLocal {
+		t.Fatalf("snapshot before ready = %+v, want sticky local", s)
+	}
+
+	rt.MarkCloudFailbackReady()
+	now = now.Add(time.Second)
+	rt.Refresh(context.Background())
+
+	s := rt.Snapshot()
+	if s.Mode != ModeNormalCloud || s.ActiveRedis != RedisCloud || s.Reason != "cloud_redis_failback_ready" {
+		t.Fatalf("snapshot after ready = %+v, want cloud failback", s)
+	}
+}
+
 func TestRuntimeKeepsRedisActiveWhenMySQLRemainsDown(t *testing.T) {
 	now := time.UnixMilli(1710000000000)
 	rt := NewRuntime(nil, nil, nil, Options{
