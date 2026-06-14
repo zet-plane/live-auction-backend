@@ -403,8 +403,17 @@ func (s *Service) bidHotConfig(ctx context.Context, itemID string) (*itemcache.A
 		existing.AuthorityState = itemcache.AuthorityReady
 	}
 
-	if snapshot.Valid && snapshot.ActiveRedis == availability.RedisLocal && existing == nil {
-		if rebuildErr := s.rebuildLocalAuctionState(ctx, itemID, 0); rebuildErr != nil {
+	if snapshot.Valid && redisWritableForBids(snapshot) && existing == nil {
+		item, _, err := s.getItemDetailSource(ctx, itemID)
+		if err != nil {
+			result = "error"
+			return nil, err
+		}
+		if item.Status != model.ItemOngoing {
+			result = "rejected"
+			return nil, errorx.ErrInvalidRequest
+		}
+		if rebuildErr := s.rebuildAuctionState(ctx, itemID, 0); rebuildErr != nil {
 			result = "rejected"
 			return nil, rebuildErr
 		}
@@ -615,7 +624,7 @@ func (s *Service) ensureLocalAuctionState(ctx context.Context, itemID string) er
 	if err != nil || (ok && usableAuctionState(state)) {
 		return err
 	}
-	return s.rebuildLocalAuctionState(ctx, itemID, 0)
+	return s.rebuildAuctionState(ctx, itemID, 0)
 }
 
 func (s *Service) rebuildRankingOnce(ctx context.Context, itemID string, limit int) ([]dto.BidderPrice, error) {
@@ -666,7 +675,7 @@ func (s *Service) rebuildRankingOnce(ctx context.Context, itemID string, limit i
 	return entries, nil
 }
 
-func (s *Service) rebuildLocalAuctionState(ctx context.Context, itemID string, epoch int64) error {
+func (s *Service) rebuildAuctionState(ctx context.Context, itemID string, epoch int64) error {
 	_, err, _ := s.rankingRebuilds.Do("availability-rebuild:"+itemID+":"+strconv.FormatInt(epoch, 10), func() (any, error) {
 		worker := newAvailabilityRebuildWorker(s.store, s.cache, availabilityRebuildConfig{BatchSize: 1, Policy: s.policy})
 		switch worker.rebuildItem(ctx, itemID, epoch) {

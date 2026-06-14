@@ -330,7 +330,7 @@ func (s *Service) GetItem(ctx context.Context, itemID string) (result *dto.ItemD
 	if item.Status == model.ItemOngoing && s.cache != nil {
 		state, ok, _ := s.cache.GetAuctionState(ctx, item.ID)
 		if (!ok || !usableAuctionState(state)) && s.availabilitySnapshot().ActiveRedis == availability.RedisLocal {
-			if rebuildErr := s.rebuildLocalAuctionState(ctx, item.ID, 0); rebuildErr == nil {
+			if rebuildErr := s.rebuildAuctionState(ctx, item.ID, 0); rebuildErr == nil {
 				state, ok, _ = s.cache.GetAuctionState(ctx, item.ID)
 			}
 		}

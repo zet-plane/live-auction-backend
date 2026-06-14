@@ -534,6 +534,93 @@ func TestPlaceBidUsesHotStateWithoutStoreLookup(t *testing.T) {
 	}
 }
 
+func TestPlaceBidRebuildsMissingRedisStateFromMySQLBidLogs(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	now := time.Date(2026, 6, 14, 10, 0, 0, 0, time.UTC)
+	svc := NewService(store, testPolicy, fc, nil, nil, nil)
+	svc.now = func() time.Time { return now }
+	endTime := now.Add(5 * time.Minute)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 1000, 100, 0, endTime)
+	fc.states = map[string]*itemcache.AuctionState{}
+	fc.ranking = map[string]map[string]int64{}
+	fc.bidderNames = map[string]map[string]string{}
+	fc.ending = map[string]int64{}
+	store.bidLogsByEpoch[itemID+":0"] = []*itemmodel.BidLog{
+		{ID: "bid_1", ItemID: itemID, RoomID: "room_1", UserID: "user_2", Price: 1100, AuthorityEpoch: 0, AuctionVersion: 1, CreatedAt: now.Add(-2 * time.Minute)},
+		{ID: "bid_2", ItemID: itemID, RoomID: "room_1", UserID: "user_3", Price: 1200, AuthorityEpoch: 0, AuctionVersion: 2, CreatedAt: now.Add(-time.Minute)},
+	}
+
+	result, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
+		Price:          1300,
+		IdempotencyKey: "rebuild_from_bid_logs",
+		UserName:       "Alice",
+	})
+	if err != nil {
+		t.Fatalf("PlaceBid failed after rebuilding Redis state: %v", err)
+	}
+	if result.CurrentPrice != 1300 || result.LeaderUserID != "user_1" {
+		t.Fatalf("result = %+v, want current_price 1300 leader user_1", result)
+	}
+	state := fc.states[itemID]
+	if state == nil {
+		t.Fatal("expected Redis auction state to be rebuilt")
+	}
+	if state.BidCount != 3 || state.AuctionVersion != 3 || state.CurrentPrice != 1300 {
+		t.Fatalf("state = %+v, want bid_count/version/current_price 3/3/1300", state)
+	}
+	if len(fc.bidLogEvents) != 1 || fc.bidLogEvents[0].AuctionVersion != 3 {
+		t.Fatalf("bid log events = %+v, want one event at auction_version 3", fc.bidLogEvents)
+	}
+	ranking, err := fc.GetRanking(context.Background(), itemID, 0, 10)
+	if err != nil {
+		t.Fatalf("GetRanking failed: %v", err)
+	}
+	if len(ranking) != 3 || ranking[0].UserID != "user_1" || ranking[0].Price != 1300 {
+		t.Fatalf("ranking = %+v, want rebuilt history plus new leader", ranking)
+	}
+}
+
+func TestPlaceBidRejectsRestartPriceAfterRedisFlushWhenMySQLHasBidLogs(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	now := time.Date(2026, 6, 14, 11, 0, 0, 0, time.UTC)
+	svc := NewService(store, testPolicy, fc, nil, nil, nil)
+	svc.now = func() time.Time { return now }
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 0, 1, 0, now.Add(5*time.Minute))
+
+	store.bidLogsByEpoch[itemID+":0"] = []*itemmodel.BidLog{
+		{ID: "bid_1", ItemID: itemID, RoomID: "room_1", UserID: "user_2", Price: 1, AuthorityEpoch: 0, AuctionVersion: 1, CreatedAt: now.Add(-3 * time.Minute)},
+		{ID: "bid_2", ItemID: itemID, RoomID: "room_1", UserID: "user_3", Price: 2, AuthorityEpoch: 0, AuctionVersion: 2, CreatedAt: now.Add(-2 * time.Minute)},
+		{ID: "bid_3", ItemID: itemID, RoomID: "room_1", UserID: "user_4", Price: 3, AuthorityEpoch: 0, AuctionVersion: 3, CreatedAt: now.Add(-time.Minute)},
+	}
+	fc.states = map[string]*itemcache.AuctionState{}
+	fc.ranking = map[string]map[string]int64{}
+	fc.bidderNames = map[string]map[string]string{}
+	fc.ending = map[string]int64{}
+
+	_, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
+		Price:          1,
+		IdempotencyKey: "restart_after_redis_flush",
+		UserName:       "Alice",
+	})
+
+	var ce *errorx.CodeError
+	if !errors.As(err, &ce) || ce.Code != 40003 {
+		t.Fatalf("expected price_too_low after rebuilding from MySQL, got %v", err)
+	}
+	state := fc.states[itemID]
+	if state == nil {
+		t.Fatal("expected Redis auction state to be rebuilt from MySQL bid logs")
+	}
+	if state.CurrentPrice != 3 || state.BidCount != 3 || state.AuctionVersion != 3 {
+		t.Fatalf("state = %+v, want rebuilt historical price/count/version 3/3/3", state)
+	}
+	if len(fc.bidLogEvents) != 0 {
+		t.Fatalf("expected rejected bid not to append log event, got %+v", fc.bidLogEvents)
+	}
+}
+
 func TestPlaceBidSuccessfulBidAppendsBidLogEvent(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()
