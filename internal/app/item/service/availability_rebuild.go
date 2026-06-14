@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"sort"
+	"time"
 
 	itemcache "github.com/zet-plane/live-auction-backend/internal/app/item/cache"
 	itemdto "github.com/zet-plane/live-auction-backend/internal/app/item/dto"
@@ -29,22 +30,30 @@ func verifyBidLogContinuity(logs []*itemmodel.BidLog, epoch int64) (continuityRe
 	if len(logs) == 0 {
 		return continuityResult{}, false
 	}
-	sort.Slice(logs, func(i, j int) bool { return logs[i].AuctionVersion < logs[j].AuctionVersion })
+	sort.Slice(logs, func(i, j int) bool {
+		if hasCreatedAt(logs[i]) && hasCreatedAt(logs[j]) && !logs[i].CreatedAt.Equal(logs[j].CreatedAt) {
+			return logs[i].CreatedAt.Before(logs[j].CreatedAt)
+		}
+		if logs[i].AuthorityEpoch != logs[j].AuthorityEpoch {
+			return logs[i].AuthorityEpoch < logs[j].AuthorityEpoch
+		}
+		return logs[i].AuctionVersion < logs[j].AuctionVersion
+	})
 	var result continuityResult
 	bestByUser := make(map[string]int64)
-	var prevVersion int64
 	for _, log := range logs {
-		if log.AuthorityEpoch != epoch || log.AuctionVersion <= prevVersion || log.Price < result.CurrentPrice {
+		if log.Price < result.CurrentPrice {
 			return continuityResult{}, false
 		}
 		result.BidCount++
-		result.AuctionVersion = log.AuctionVersion
+		if log.AuctionVersion > result.AuctionVersion {
+			result.AuctionVersion = log.AuctionVersion
+		}
 		result.CurrentPrice = log.Price
 		result.LeaderUserID = log.UserID
 		if log.UserID != "" && log.Price > bestByUser[log.UserID] {
 			bestByUser[log.UserID] = log.Price
 		}
-		prevVersion = log.AuctionVersion
 	}
 	result.ParticipantCount = len(bestByUser)
 	result.Ranking = make([]itemdto.BidderPrice, 0, len(bestByUser))
@@ -53,6 +62,10 @@ func verifyBidLogContinuity(logs []*itemmodel.BidLog, epoch int64) (continuityRe
 	}
 	sort.Slice(result.Ranking, func(i, j int) bool { return result.Ranking[i].Price > result.Ranking[j].Price })
 	return result, true
+}
+
+func hasCreatedAt(log *itemmodel.BidLog) bool {
+	return log != nil && !log.CreatedAt.IsZero() && !log.CreatedAt.Equal(time.Time{})
 }
 
 type availabilityRebuildStore interface {

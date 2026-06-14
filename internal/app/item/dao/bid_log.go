@@ -28,6 +28,12 @@ func (s *GormStore) ListBidLogsForItemEpoch(itemID string, authorityEpoch int64)
 	err := s.db.Where("item_id = ? AND authority_epoch = ?", itemID, authorityEpoch).
 		Order("auction_version ASC").
 		Find(&logs).Error
+	if err != nil || len(logs) > 0 {
+		return logs, err
+	}
+	err = s.db.Where("item_id = ?", itemID).
+		Order("created_at ASC, authority_epoch ASC, auction_version ASC").
+		Find(&logs).Error
 	return logs, err
 }
 

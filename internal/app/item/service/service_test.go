@@ -255,6 +255,13 @@ func (s *fakeStore) ListBidLogsForItemEpoch(itemID string, authorityEpoch int64)
 	s.findMu.Unlock()
 	key := itemID + ":" + strconv.FormatInt(authorityEpoch, 10)
 	logs := s.bidLogsByEpoch[key]
+	if len(logs) == 0 {
+		for _, log := range s.bidLogs {
+			if log.ItemID == itemID {
+				logs = append(logs, log)
+			}
+		}
+	}
 	result := make([]*itemmodel.BidLog, 0, len(logs))
 	for _, log := range logs {
 		cp := *log
@@ -1476,11 +1483,11 @@ func TestGetItemRebuildsProtectedLocalRedisStateFromMySQLBidLogs(t *testing.T) {
 		AuthorityEpoch: 0,
 		AuthorityState: itemcache.AuthorityProtected,
 	}
-	store.bidLogsByEpoch[itemID+":0"] = []*itemmodel.BidLog{
-		{ID: "bid_1", ItemID: itemID, RoomID: "room_1", UserID: "user_1", Price: 1100, AuthorityEpoch: 0, AuctionVersion: 1},
-		{ID: "bid_3", ItemID: itemID, RoomID: "room_1", UserID: "user_2", Price: 1200, AuthorityEpoch: 0, AuctionVersion: 3},
+	store.bidLogsByEpoch[itemID+":7"] = []*itemmodel.BidLog{
+		{ID: "bid_1", ItemID: itemID, RoomID: "room_1", UserID: "user_1", Price: 1100, AuthorityEpoch: 7, AuctionVersion: 1, CreatedAt: time.Now().Add(-time.Second)},
+		{ID: "bid_3", ItemID: itemID, RoomID: "room_1", UserID: "user_2", Price: 1200, AuthorityEpoch: 7, AuctionVersion: 3, CreatedAt: time.Now()},
 	}
-	store.bidLogs = append(store.bidLogs, store.bidLogsByEpoch[itemID+":0"]...)
+	store.bidLogs = append(store.bidLogs, store.bidLogsByEpoch[itemID+":7"]...)
 	svc.SetAvailabilitySnapshotForTest(availability.Snapshot{
 		Valid:       true,
 		Mode:        availability.ModeLocalRedisActive,
