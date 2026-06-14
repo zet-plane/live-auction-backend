@@ -259,7 +259,7 @@ func TestPlaceBidAllowsMySQLBufferingWithinWindow(t *testing.T) {
 	}
 }
 
-func TestPlaceBidRejectsPriceCapDuringMySQLBuffering(t *testing.T) {
+func TestPlaceBidAcceptsPriceCapDuringMySQLBufferingWithoutMySQLSettlement(t *testing.T) {
 	store := newFakeStore()
 	fc := newFakeCache()
 	svc := NewService(store, testPolicy, fc, nil, nil, nil)
@@ -275,16 +275,25 @@ func TestPlaceBidRejectsPriceCapDuringMySQLBuffering(t *testing.T) {
 		MySQLBufferingStartedUnixMS: now.Add(-5 * time.Second).UnixMilli(),
 	})
 
-	_, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
+	result, err := svc.PlaceBid(context.Background(), bidder, itemID, itemdto.PlaceBidInput{
 		Price:          1000,
 		UserName:       "Alice",
 		IdempotencyKey: "buffering-price-cap",
 	})
-	if !errors.Is(err, ErrAvailabilityUnavailable) {
-		t.Fatalf("err = %v, want availability unavailable", err)
+	if err != nil {
+		t.Fatalf("PlaceBid() error = %v", err)
 	}
-	if len(fc.bidLogEvents) != 0 {
-		t.Fatalf("bid log events = %d, want 0", len(fc.bidLogEvents))
+	if result.Status != "ended" {
+		t.Fatalf("status = %q, want ended", result.Status)
+	}
+	if len(fc.bidLogEvents) != 1 {
+		t.Fatalf("bid log events = %d, want 1", len(fc.bidLogEvents))
+	}
+	if got := fc.states[itemID]; got == nil || got.Status != "ended" || got.EndReason != "price_cap" {
+		t.Fatalf("redis state = %+v, want ended price_cap", got)
+	}
+	if got := store.items[itemID]; got.Status != itemmodel.ItemOngoing {
+		t.Fatalf("mysql item status = %q, want ongoing until mysql recovers", got.Status)
 	}
 }
 

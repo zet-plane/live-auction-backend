@@ -96,12 +96,6 @@ func (s *Service) PlaceBid(ctx context.Context, current *usermodel.User, itemID 
 			return nil, ErrDepositRequired
 		}
 	}
-	if snapshot.MySQLState == availability.MySQLBuffering && hot.PriceCap > 0 && input.Price >= hot.PriceCap {
-		bidResult = "rejected"
-		bidReason = "mysql_buffering_price_cap"
-		return nil, ErrAvailabilityUnavailable
-	}
-
 	bidID = "bid_" + snowflake.MakeUUID()
 	now := s.now()
 	streamStart := time.Now()
@@ -226,6 +220,41 @@ func (s *Service) PlaceBid(ctx context.Context, current *usermodel.User, itemID 
 
 	status = bidStatus(luaResult, "ongoing")
 	if luaResult.IsCapped {
+		if mysqlUnavailableForBids(snapshot) {
+			if s.cache != nil {
+				_ = s.cache.RemoveFromRoomQueue(ctx, hot.RoomID, hot.ItemID)
+				_ = s.cache.UnscheduleAuctionEnd(ctx, hot.ItemID)
+				_ = s.cache.ExpireAuctionState(ctx, hot.ItemID, itemcache.FinalSnapshotTTL)
+				_ = s.cache.ClearRoomCurrentItem(ctx, hot.RoomID, hot.ItemID)
+			}
+			status = bidStatus(luaResult, "ended")
+			if s.broadcaster != nil {
+				s.flushBidSuccessNow(hot.RoomID, hot.ItemID)
+				endedAtUnixMS := s.now().UnixMilli()
+				_ = s.broadcaster.Fanout(wsevent.RoomTopic(hot.RoomID), wsevent.Event{
+					Type: dto.EventAuctionEnded,
+					Payload: dto.AuctionEndedPayload{
+						ItemID:           hot.ItemID,
+						WinnerUserID:     current.ID,
+						LeaderUserID:     current.ID,
+						DealPrice:        input.Price,
+						ServerTimeUnixMS: endedAtUnixMS,
+						EndedAtUnixMS:    endedAtUnixMS,
+						EndReason:        "price_cap",
+						AuctionVersion:   luaResult.AuctionVersion,
+					},
+				})
+			}
+			return &dto.PlaceBidResult{
+				BidID:         luaResult.BidID,
+				CurrentPrice:  luaResult.CurrentPrice,
+				DealPrice:     luaResult.CurrentPrice,
+				LeaderUserID:  luaResult.LeaderUserID,
+				EndTime:       time.Unix(luaResult.EndTimeUnix, 0),
+				EndTimeUnixMS: bidEndTimeUnixMS(luaResult),
+				Status:        status,
+			}, nil
+		}
 		item, rule, err := s.store.FindItemWithRule(hot.ItemID)
 		if err != nil {
 			bidResult = "error"
