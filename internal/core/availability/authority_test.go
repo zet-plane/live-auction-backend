@@ -107,6 +107,43 @@ func TestRuntimeBuffersMySQLWithinWindowAndProtectsAfterExpiry(t *testing.T) {
 	}
 }
 
+func TestRuntimeMarksMySQLUnhealthyWhenFreshConnectionFails(t *testing.T) {
+	now := time.UnixMilli(1710000000000)
+	dialErr := errors.New("dial tcp mysql:3306: i/o timeout")
+	rt := NewRuntime(nil, nil, nil, Options{
+		Now:                  func() time.Time { return now },
+		MySQLDSN:             "user:pass@tcp(mysql:3306)/auction",
+		MySQLBufferingWindow: 10 * time.Second,
+		Probe: Probe{
+			CloudRedis: func(context.Context) DependencyStatus { return DependencyStatus{Healthy: true} },
+			LocalRedis: func(context.Context) DependencyStatus { return DependencyStatus{Healthy: true} },
+		},
+		mysqlDialContext: func(ctx context.Context, network, address string) error {
+			if network != "tcp" || address != "mysql:3306" {
+				t.Fatalf("dial target = %s/%s, want tcp/mysql:3306", network, address)
+			}
+			return dialErr
+		},
+		mysqlSelectOne: func(context.Context, string) error {
+			t.Fatal("SELECT 1 should not run after fresh dial failure")
+			return nil
+		},
+	})
+
+	rt.Refresh(context.Background())
+
+	s := rt.Snapshot()
+	if s.MySQL.Healthy {
+		t.Fatalf("mysql status = %+v, want unhealthy", s.MySQL)
+	}
+	if s.MySQL.Error != dialErr.Error() {
+		t.Fatalf("mysql error = %q, want %q", s.MySQL.Error, dialErr.Error())
+	}
+	if s.MySQLState != MySQLBuffering || s.Mode != ModeMySQLBuffering {
+		t.Fatalf("snapshot = %+v, want mysql buffering", s)
+	}
+}
+
 func TestRuntimeActiveRedisReturnsConfiguredClient(t *testing.T) {
 	local := redis.NewClient(&redis.Options{Addr: "local:6379"})
 	rt := NewRuntime(nil, local, nil, Options{

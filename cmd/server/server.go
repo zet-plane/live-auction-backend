@@ -122,6 +122,7 @@ var StartCmd = &cobra.Command{
 			ProbeInterval:        cfg.AvailabilityRedisProbeInterval(),
 			FailoverAfter:        cfg.AvailabilityRedisFailoverThreshold(),
 			MySQLBufferingWindow: cfg.MySQLBufferingWindow(),
+			MySQLDSN:             cfg.Database.DSN,
 		})
 
 		engine, err := buildEngine(cfg, db, cloudRedis, localRedis, availabilityRuntime)

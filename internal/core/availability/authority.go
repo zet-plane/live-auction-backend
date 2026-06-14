@@ -2,10 +2,13 @@ package availability
 
 import (
 	"context"
+	"database/sql"
+	"net"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	drivermysql "github.com/go-sql-driver/mysql"
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 )
@@ -23,7 +26,11 @@ type Options struct {
 	ProbeInterval        time.Duration
 	FailoverAfter        time.Duration
 	MySQLBufferingWindow time.Duration
+	MySQLDSN             string
 	Probe                Probe
+
+	mysqlDialContext func(context.Context, string, string) error
+	mysqlSelectOne   func(context.Context, string) error
 }
 
 type Runtime struct {
@@ -205,6 +212,9 @@ func (r *Runtime) probeMySQL(ctx context.Context) DependencyStatus {
 	if r.opts.Probe.MySQL != nil {
 		return r.opts.Probe.MySQL(ctx)
 	}
+	if r.opts.MySQLDSN != "" {
+		return probeMySQLFresh(ctx, r.opts.MySQLDSN, r.opts.mysqlDialContext, r.opts.mysqlSelectOne)
+	}
 	return probeDB(ctx, r.db)
 }
 
@@ -228,6 +238,62 @@ func probeDB(ctx context.Context, db *gorm.DB) DependencyStatus {
 	start := time.Now()
 	err = sqlDB.PingContext(ctx)
 	return statusFromError(time.Since(start), err)
+}
+
+func probeMySQLFresh(ctx context.Context, dsn string, dial func(context.Context, string, string) error, selectOne func(context.Context, string) error) DependencyStatus {
+	if dsn == "" {
+		return DependencyStatus{Healthy: false, Error: "database dsn is required"}
+	}
+	if dial == nil {
+		dial = dialMySQL
+	}
+	if selectOne == nil {
+		selectOne = selectOneMySQL
+	}
+
+	probeCtx, cancel := mysqlProbeContext(ctx)
+	defer cancel()
+
+	start := time.Now()
+	cfg, err := drivermysql.ParseDSN(dsn)
+	if err != nil {
+		return statusFromError(time.Since(start), err)
+	}
+	if err := dial(probeCtx, cfg.Net, cfg.Addr); err != nil {
+		return statusFromError(time.Since(start), err)
+	}
+	if err := selectOne(probeCtx, dsn); err != nil {
+		return statusFromError(time.Since(start), err)
+	}
+	return statusFromError(time.Since(start), nil)
+}
+
+func mysqlProbeContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if _, ok := ctx.Deadline(); ok {
+		return context.WithCancel(ctx)
+	}
+	return context.WithTimeout(ctx, 2*time.Second)
+}
+
+func dialMySQL(ctx context.Context, network, address string) error {
+	conn, err := (&net.Dialer{Timeout: time.Second}).DialContext(ctx, network, address)
+	if err != nil {
+		return err
+	}
+	return conn.Close()
+}
+
+func selectOneMySQL(ctx context.Context, dsn string) error {
+	db, err := sql.Open("mysql", dsn)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(0)
+
+	var one int
+	return db.QueryRowContext(ctx, "SELECT 1").Scan(&one)
 }
 
 func statusFromError(latency time.Duration, err error) DependencyStatus {
