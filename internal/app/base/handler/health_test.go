@@ -74,6 +74,39 @@ func TestReadyzReportsLocalRedisActiveAsDegradedOK(t *testing.T) {
 	if !strings.Contains(body, `"active_redis":{"status":"ok","value":"local"}`) {
 		t.Fatalf("readyz body missing active redis local value: %s", body)
 	}
+	if !strings.Contains(body, `"message":"service is using backup redis"`) {
+		t.Fatalf("readyz body missing failover message: %s", body)
+	}
+	if !strings.Contains(body, `"readiness":{"status":"ok","value":"ready"}`) {
+		t.Fatalf("readyz body missing explicit readiness component: %s", body)
+	}
+}
+
+func TestReadyzReportsSwitchingToLocalRedisAsReady(t *testing.T) {
+	prevAvailability := availabilityRuntime
+	t.Cleanup(func() { availabilityRuntime = prevAvailability })
+	InitAvailabilityForTest(availability.Snapshot{
+		Valid:       true,
+		Mode:        availability.ModeLocalRedisSwitching,
+		ActiveRedis: availability.RedisLocal,
+		CloudRedis:  availability.DependencyStatus{Healthy: false, Error: "cloud down"},
+		LocalRedis:  availability.DependencyStatus{Healthy: true},
+		MySQL:       availability.DependencyStatus{Healthy: true},
+		MySQLState:  availability.MySQLHealthy,
+		Reason:      "cloud_redis_failover",
+		UpdatedAt:   time.Now(),
+	})
+
+	status, body := requestReadyzForTest()
+	if status != http.StatusOK {
+		t.Fatalf("readyz status = %d, want 200; body=%s", status, body)
+	}
+	if !strings.Contains(body, `"active_redis":{"status":"ok","value":"local"}`) {
+		t.Fatalf("readyz body missing active redis local value: %s", body)
+	}
+	if !strings.Contains(body, `"message":"service is switching to backup redis"`) {
+		t.Fatalf("readyz body missing switching message: %s", body)
+	}
 }
 
 func TestReadyzReportsOKWhenMySQLExpiredButRedisHealthy(t *testing.T) {
@@ -124,6 +157,36 @@ func TestReadyzReturns503WhenAuctionProtected(t *testing.T) {
 	}
 	if !strings.Contains(body, `"status":"degraded"`) {
 		t.Fatalf("readyz body missing degraded status: %s", body)
+	}
+}
+
+func TestReadyzReportsWaitingForBackupRedisAsReady(t *testing.T) {
+	prevAvailability := availabilityRuntime
+	t.Cleanup(func() { availabilityRuntime = prevAvailability })
+	InitAvailabilityForTest(availability.Snapshot{
+		Valid:       true,
+		Mode:        availability.ModeAuctionProtected,
+		ActiveRedis: availability.RedisNone,
+		CloudRedis:  availability.DependencyStatus{Healthy: false, Error: "cloud down"},
+		LocalRedis:  availability.DependencyStatus{Healthy: true},
+		MySQL:       availability.DependencyStatus{Healthy: true},
+		MySQLState:  availability.MySQLHealthy,
+		Reason:      "cloud_redis_failover_threshold",
+		UpdatedAt:   time.Now(),
+	})
+
+	status, body := requestReadyzForTest()
+	if status != http.StatusOK {
+		t.Fatalf("readyz status = %d, want 200; body=%s", status, body)
+	}
+	if !strings.Contains(body, `"message":"service is waiting to switch to backup redis"`) {
+		t.Fatalf("readyz body missing wait-for-backup message: %s", body)
+	}
+	if !strings.Contains(body, `"local_redis":{"status":"ok"`) {
+		t.Fatalf("readyz body missing healthy local redis: %s", body)
+	}
+	if !strings.Contains(body, `"readiness":{"status":"ok","value":"ready"}`) {
+		t.Fatalf("readyz body missing ready component: %s", body)
 	}
 }
 

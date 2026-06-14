@@ -56,8 +56,12 @@ type componentStatus struct {
 }
 
 type healthData struct {
-	Status     string                     `json:"status"`
-	Components map[string]componentStatus `json:"components"`
+	Status      string                     `json:"status"`
+	Message     string                     `json:"message,omitempty"`
+	Mode        string                     `json:"mode,omitempty"`
+	ActiveRedis string                     `json:"active_redis,omitempty"`
+	Reason      string                     `json:"reason,omitempty"`
+	Components  map[string]componentStatus `json:"components"`
 }
 
 func Livez(r flamego.Render) {
@@ -225,8 +229,15 @@ func availabilityHealthData() (healthData, bool) {
 	components := make(map[string]componentStatus)
 	if !snapshot.Valid {
 		components["availability_mode"] = componentStatus{Status: "error", Error: snapshot.Error}
+		components["readiness"] = componentStatus{Status: "error", Value: "not_ready", Error: snapshot.Error}
 		observability.DefaultRecorder().Availability(context.Background(), observability.AvailabilityMetric{Result: "invalid"})
-		return healthData{Status: "degraded", Components: components}, false
+		return healthData{
+			Status:     "degraded",
+			Message:    "availability state is invalid",
+			Mode:       string(snapshot.Mode),
+			Reason:     snapshot.Reason,
+			Components: components,
+		}, false
 	}
 
 	components["availability_mode"] = componentStatus{Status: "ok", Value: string(snapshot.Mode)}
@@ -240,27 +251,83 @@ func availabilityHealthData() (healthData, bool) {
 
 	overall := "ok"
 	ready := true
+	message := "service is ready"
 	switch snapshot.Mode {
 	case availability.ModeLocalRedisActive, availability.ModeLocalRedisSwitching, availability.ModeMySQLBuffering:
 		overall = "degraded"
+		message = availabilityReadyMessage(snapshot)
 	case availability.ModeAuctionProtected:
 		overall = "degraded"
-		ready = readyWithRedisDuringMySQLFailure(snapshot)
+		ready = readyDuringAuctionProtected(snapshot)
+		if ready {
+			message = availabilityReadyMessage(snapshot)
+		} else {
+			message = "service is protected because redis authority is unavailable"
+		}
 	}
+	components["readiness"] = componentStatus{Status: statusOK(ready), Value: readinessValue(ready), Error: readinessError(ready, snapshot)}
 
 	observability.DefaultRecorder().Availability(context.Background(), observability.AvailabilityMetric{
 		Mode:        string(snapshot.Mode),
 		ActiveRedis: string(snapshot.ActiveRedis),
 		Result:      overall,
 	})
-	return healthData{Status: overall, Components: components}, ready
+	return healthData{
+		Status:      overall,
+		Message:     message,
+		Mode:        string(snapshot.Mode),
+		ActiveRedis: string(snapshot.ActiveRedis),
+		Reason:      snapshot.Reason,
+		Components:  components,
+	}, ready
 }
 
-func readyWithRedisDuringMySQLFailure(snapshot availability.Snapshot) bool {
+func readyDuringAuctionProtected(snapshot availability.Snapshot) bool {
 	if snapshot.MySQL.Healthy {
-		return false
+		return snapshot.LocalRedis.Healthy && (snapshot.Reason == "cloud_redis_failover_threshold" || snapshot.Reason == "cloud_redis_failover")
 	}
 	return snapshot.CloudRedis.Healthy || snapshot.LocalRedis.Healthy
+}
+
+func availabilityReadyMessage(snapshot availability.Snapshot) string {
+	switch snapshot.Mode {
+	case availability.ModeLocalRedisSwitching:
+		if snapshot.ActiveRedis == availability.RedisLocal {
+			return "service is switching to backup redis"
+		}
+	case availability.ModeLocalRedisActive:
+		if snapshot.ActiveRedis == availability.RedisLocal {
+			return "service is using backup redis"
+		}
+	case availability.ModeMySQLBuffering:
+		if snapshot.ActiveRedis == availability.RedisLocal {
+			return "service is using backup redis; mysql writes are buffering"
+		}
+		return "service is ready; mysql writes are buffering"
+	case availability.ModeAuctionProtected:
+		if snapshot.MySQL.Healthy && snapshot.LocalRedis.Healthy {
+			return "service is waiting to switch to backup redis"
+		}
+		return "service is degraded but redis is still reachable"
+	}
+	return "service is ready"
+}
+
+func readinessValue(ready bool) string {
+	if ready {
+		return "ready"
+	}
+	return "not_ready"
+}
+
+func readinessError(ready bool, snapshot availability.Snapshot) string {
+	if ready {
+		return ""
+	}
+	if snapshot.Reason != "" {
+		return snapshot.Reason
+	}
+	return snapshot.Error
 }
 
 func dependencyComponent(status availability.DependencyStatus) componentStatus {
