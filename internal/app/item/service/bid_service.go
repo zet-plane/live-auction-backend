@@ -487,6 +487,9 @@ func (s *Service) GetRanking(ctx context.Context, itemID string, page, pageSize 
 
 	var entries []dto.BidderPrice
 	if s.cache != nil {
+		if err := s.ensureLocalAuctionState(ctx, itemID); err != nil {
+			return nil, err
+		}
 		var err error
 		entries, err = s.cache.GetRanking(ctx, itemID, offset, pageSize)
 		if err != nil {
@@ -551,6 +554,16 @@ func (s *Service) shouldRebuildRanking(ctx context.Context, itemID string) bool 
 		return true
 	}
 	return !ok || state.BidCount > 0
+}
+
+func (s *Service) ensureLocalAuctionState(ctx context.Context, itemID string) error {
+	if s.cache == nil || s.availabilitySnapshot().ActiveRedis != availability.RedisLocal {
+		return nil
+	}
+	if _, ok, err := s.cache.GetAuctionState(ctx, itemID); err != nil || ok {
+		return err
+	}
+	return s.rebuildLocalAuctionState(ctx, itemID, 0)
 }
 
 func (s *Service) rebuildRankingOnce(ctx context.Context, itemID string, limit int) ([]dto.BidderPrice, error) {

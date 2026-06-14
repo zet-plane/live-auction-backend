@@ -17,10 +17,12 @@ const (
 )
 
 type continuityResult struct {
-	BidCount       int
-	CurrentPrice   int64
-	LeaderUserID   string
-	AuctionVersion int64
+	BidCount         int
+	ParticipantCount int
+	CurrentPrice     int64
+	LeaderUserID     string
+	AuctionVersion   int64
+	Ranking          []itemdto.BidderPrice
 }
 
 func verifyBidLogContinuity(logs []*itemmodel.BidLog, epoch int64) (continuityResult, bool) {
@@ -29,6 +31,7 @@ func verifyBidLogContinuity(logs []*itemmodel.BidLog, epoch int64) (continuityRe
 	}
 	sort.Slice(logs, func(i, j int) bool { return logs[i].AuctionVersion < logs[j].AuctionVersion })
 	var result continuityResult
+	bestByUser := make(map[string]int64)
 	for i, log := range logs {
 		wantVersion := int64(i + 1)
 		if log.AuthorityEpoch != epoch || log.AuctionVersion != wantVersion {
@@ -40,7 +43,16 @@ func verifyBidLogContinuity(logs []*itemmodel.BidLog, epoch int64) (continuityRe
 			result.CurrentPrice = log.Price
 			result.LeaderUserID = log.UserID
 		}
+		if log.UserID != "" && log.Price > bestByUser[log.UserID] {
+			bestByUser[log.UserID] = log.Price
+		}
 	}
+	result.ParticipantCount = len(bestByUser)
+	result.Ranking = make([]itemdto.BidderPrice, 0, len(bestByUser))
+	for userID, price := range bestByUser {
+		result.Ranking = append(result.Ranking, itemdto.BidderPrice{UserID: userID, Price: price})
+	}
+	sort.Slice(result.Ranking, func(i, j int) bool { return result.Ranking[i].Price > result.Ranking[j].Price })
 	return result, true
 }
 
@@ -53,6 +65,10 @@ type availabilityRebuildStore interface {
 type availabilityRebuildCache interface {
 	InitAuctionState(ctx context.Context, itemID string, state itemcache.AuctionState) error
 	SetItemAuthority(ctx context.Context, itemID string, epoch int64, state string) error
+	SetItemDetail(ctx context.Context, itemID string, detail itemcache.ItemDetailCache) error
+	SetRanking(ctx context.Context, itemID string, entries []itemdto.BidderPrice) error
+	ScheduleAuctionEnd(ctx context.Context, itemID string, endUnixMS int64) error
+	SetRoomCurrentItem(ctx context.Context, roomID, itemID string) error
 }
 
 type availabilityRebuildConfig struct {
@@ -95,13 +111,18 @@ func (w *availabilityRebuildWorker) rebuildActiveItems(ctx context.Context, epoc
 }
 
 func (w *availabilityRebuildWorker) rebuildItem(ctx context.Context, itemID string, epoch int64) rebuildResult {
+	item, rule, err := w.store.FindItemWithRule(itemID)
+	if err != nil || item == nil || rule == nil || item.Status != itemmodel.ItemOngoing {
+		_ = w.cache.SetItemAuthority(ctx, itemID, epoch, itemcache.AuthorityProtected)
+		return rebuildProtected
+	}
 	logs, err := w.store.ListBidLogsForItemEpoch(itemID, epoch)
 	if err != nil {
 		_ = w.cache.SetItemAuthority(ctx, itemID, epoch, itemcache.AuthorityProtected)
 		return rebuildProtected
 	}
 	if len(logs) == 0 {
-		return w.rebuildNoBidItem(ctx, itemID, epoch)
+		return w.rebuildNoBidItem(ctx, item, rule, epoch)
 	}
 	continuity, ok := verifyBidLogContinuity(logs, epoch)
 	if !ok {
@@ -109,15 +130,43 @@ func (w *availabilityRebuildWorker) rebuildItem(ctx context.Context, itemID stri
 		return rebuildProtected
 	}
 	state := itemcache.AuctionState{
-		AuthorityEpoch: epoch,
-		AuthorityState: itemcache.AuthorityReady,
-		AuctionVersion: continuity.AuctionVersion,
-		CurrentPrice:   continuity.CurrentPrice,
-		DealPrice:      continuity.CurrentPrice,
-		LeaderUserID:   continuity.LeaderUserID,
-		BidCount:       continuity.BidCount,
+		AuthorityEpoch:    epoch,
+		AuthorityState:    itemcache.AuthorityReady,
+		AuctionVersion:    continuity.AuctionVersion,
+		Status:            string(item.Status),
+		RoomID:            item.RoomID,
+		CurrentPrice:      continuity.CurrentPrice,
+		DealPrice:         continuity.CurrentPrice,
+		LeaderUserID:      continuity.LeaderUserID,
+		EndTime:           rule.EndTime,
+		EndTimeUnixMS:     rule.EndTime.UnixMilli(),
+		BidIncrement:      rule.BidIncrement,
+		PriceCap:          rule.PriceCap,
+		DepositAmount:     rule.DepositAmount,
+		ExtendTriggerSec:  w.cfg.Policy.ExtendTriggerSec,
+		AutoExtendSec:     w.cfg.Policy.AutoExtendSec,
+		MaxExtendCount:    w.cfg.Policy.MaxExtendCount,
+		MaxTotalExtendSec: w.cfg.Policy.MaxTotalExtendSec,
+		BidCount:          continuity.BidCount,
+		ParticipantCount:  continuity.ParticipantCount,
 	}
 	if err := w.cache.InitAuctionState(ctx, itemID, state); err != nil {
+		_ = w.cache.SetItemAuthority(ctx, itemID, epoch, itemcache.AuthorityProtected)
+		return rebuildProtected
+	}
+	if err := w.cache.SetItemDetail(ctx, itemID, itemcache.ItemDetailCache{Item: item, Rule: rule}); err != nil {
+		_ = w.cache.SetItemAuthority(ctx, itemID, epoch, itemcache.AuthorityProtected)
+		return rebuildProtected
+	}
+	if err := w.cache.SetRanking(ctx, itemID, continuity.Ranking); err != nil {
+		_ = w.cache.SetItemAuthority(ctx, itemID, epoch, itemcache.AuthorityProtected)
+		return rebuildProtected
+	}
+	if err := w.cache.ScheduleAuctionEnd(ctx, itemID, rule.EndTime.UnixMilli()); err != nil {
+		_ = w.cache.SetItemAuthority(ctx, itemID, epoch, itemcache.AuthorityProtected)
+		return rebuildProtected
+	}
+	if err := w.cache.SetRoomCurrentItem(ctx, item.RoomID, itemID); err != nil {
 		_ = w.cache.SetItemAuthority(ctx, itemID, epoch, itemcache.AuthorityProtected)
 		return rebuildProtected
 	}
@@ -125,12 +174,8 @@ func (w *availabilityRebuildWorker) rebuildItem(ctx context.Context, itemID stri
 	return rebuildReady
 }
 
-func (w *availabilityRebuildWorker) rebuildNoBidItem(ctx context.Context, itemID string, epoch int64) rebuildResult {
-	item, rule, err := w.store.FindItemWithRule(itemID)
-	if err != nil || item == nil || rule == nil || item.Status != itemmodel.ItemOngoing {
-		_ = w.cache.SetItemAuthority(ctx, itemID, epoch, itemcache.AuthorityProtected)
-		return rebuildProtected
-	}
+func (w *availabilityRebuildWorker) rebuildNoBidItem(ctx context.Context, item *itemmodel.AuctionItem, rule *itemmodel.AuctionRule, epoch int64) rebuildResult {
+	itemID := item.ID
 	state := itemcache.AuctionState{
 		AuthorityEpoch:    epoch,
 		AuthorityState:    itemcache.AuthorityReady,
@@ -151,6 +196,22 @@ func (w *availabilityRebuildWorker) rebuildNoBidItem(ctx context.Context, itemID
 		BidCount:          0,
 	}
 	if err := w.cache.InitAuctionState(ctx, itemID, state); err != nil {
+		_ = w.cache.SetItemAuthority(ctx, itemID, epoch, itemcache.AuthorityProtected)
+		return rebuildProtected
+	}
+	if err := w.cache.SetItemDetail(ctx, itemID, itemcache.ItemDetailCache{Item: item, Rule: rule}); err != nil {
+		_ = w.cache.SetItemAuthority(ctx, itemID, epoch, itemcache.AuthorityProtected)
+		return rebuildProtected
+	}
+	if err := w.cache.SetRanking(ctx, itemID, nil); err != nil {
+		_ = w.cache.SetItemAuthority(ctx, itemID, epoch, itemcache.AuthorityProtected)
+		return rebuildProtected
+	}
+	if err := w.cache.ScheduleAuctionEnd(ctx, itemID, rule.EndTime.UnixMilli()); err != nil {
+		_ = w.cache.SetItemAuthority(ctx, itemID, epoch, itemcache.AuthorityProtected)
+		return rebuildProtected
+	}
+	if err := w.cache.SetRoomCurrentItem(ctx, item.RoomID, itemID); err != nil {
 		_ = w.cache.SetItemAuthority(ctx, itemID, epoch, itemcache.AuthorityProtected)
 		return rebuildProtected
 	}

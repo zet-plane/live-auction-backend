@@ -1528,6 +1528,60 @@ func TestGetRankingRebuildsRedisRankingOnCacheMiss(t *testing.T) {
 	}
 }
 
+func TestGetRankingRebuildsLocalRedisStateFromMySQLBidLogs(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	svc := NewService(store, testPolicy, fc, nil, nil, nil)
+	endTime := time.Now().Add(5 * time.Minute)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 1000, 100, 0, endTime)
+	delete(fc.states, itemID)
+	delete(fc.ranking, itemID)
+
+	store.bidLogsByEpoch[itemID+":0"] = []*itemmodel.BidLog{
+		{ID: "bid_1", ItemID: itemID, RoomID: "room_1", UserID: "user_1", Price: 1100, AuthorityEpoch: 0, AuctionVersion: 1},
+		{ID: "bid_2", ItemID: itemID, RoomID: "room_1", UserID: "user_2", Price: 1200, AuthorityEpoch: 0, AuctionVersion: 2},
+	}
+	store.bidLogs = append(store.bidLogs, store.bidLogsByEpoch[itemID+":0"]...)
+	svc.SetAvailabilitySnapshotForTest(availability.Snapshot{
+		Valid:       true,
+		Mode:        availability.ModeLocalRedisActive,
+		ActiveRedis: availability.RedisLocal,
+		MySQLState:  availability.MySQLHealthy,
+		UpdatedAt:   time.Now(),
+	})
+
+	result, err := svc.GetRanking(context.Background(), itemID, 1, 10, &usermodel.User{ID: "user_2"})
+	if err != nil {
+		t.Fatalf("GetRanking failed: %v", err)
+	}
+
+	if len(result.List) != 2 {
+		t.Fatalf("expected 2 rebuilt ranking entries, got %d", len(result.List))
+	}
+	if result.List[0].UserID != "user_2" || result.List[0].Price != 1200 {
+		t.Fatalf("expected user_2/1200 at rank 1, got %+v", result.List[0])
+	}
+	if result.CurrentUser == nil || !result.CurrentUser.HasBid || result.CurrentUser.Rank != 1 || !result.CurrentUser.IsLeader {
+		t.Fatalf("expected current user ranking from rebuilt redis data, got %+v", result.CurrentUser)
+	}
+	state := fc.states[itemID]
+	if state == nil {
+		t.Fatal("expected local Redis auction state to be rebuilt")
+	}
+	if state.CurrentPrice != 1200 || state.DealPrice != 1200 || state.LeaderUserID != "user_2" {
+		t.Fatalf("state price fields = %+v, want rebuilt latest bid", state)
+	}
+	if state.RoomID != "room_1" || state.BidIncrement != 100 || state.BidCount != 2 || state.ParticipantCount != 2 {
+		t.Fatalf("state hot fields = %+v, want item/rule and bid log fields", state)
+	}
+	if store.listBidLogsCalls != 1 {
+		t.Fatalf("expected one bid-log rebuild, got %d", store.listBidLogsCalls)
+	}
+	if store.listBidRankingCalls != 0 {
+		t.Fatalf("expected no extra ranking rebuild after state rebuild, got %d", store.listBidRankingCalls)
+	}
+}
+
 func TestGetRankingCoalescesConcurrentRedisMissRebuild(t *testing.T) {
 	store := newFakeStore()
 	store.listBidRankingDelay = 20 * time.Millisecond

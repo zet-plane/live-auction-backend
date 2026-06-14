@@ -48,6 +48,7 @@ func TestRebuildProtectsItemWhenContinuityFails(t *testing.T) {
 func TestRebuildAcceptsDurableMySQLPointAsAuthority(t *testing.T) {
 	store := newFakeStore()
 	cache := newFakeCache()
+	seedRebuildItemRule(t, store, "item_1", "room_1")
 	store.bidLogsByEpoch["item_1:0"] = []*itemmodel.BidLog{
 		{ID: "bid_1", ItemID: "item_1", UserID: "u1", Price: 1000, AuthorityEpoch: 0, AuctionVersion: 1},
 		{ID: "bid_2", ItemID: "item_1", UserID: "u2", Price: 1200, AuthorityEpoch: 0, AuctionVersion: 2},
@@ -62,6 +63,16 @@ func TestRebuildAcceptsDurableMySQLPointAsAuthority(t *testing.T) {
 	state := cache.states["item_1"]
 	if state.CurrentPrice != 1200 || state.LeaderUserID != "u2" || state.AuctionVersion != 2 {
 		t.Fatalf("state = %+v", state)
+	}
+	if state.RoomID != "room_1" || state.BidIncrement != 100 || state.ParticipantCount != 2 {
+		t.Fatalf("state hot fields = %+v", state)
+	}
+	ranking, err := cache.GetRanking(context.Background(), "item_1", 0, 10)
+	if err != nil {
+		t.Fatalf("GetRanking failed: %v", err)
+	}
+	if len(ranking) != 2 || ranking[0].UserID != "u2" || ranking[0].Price != 1200 {
+		t.Fatalf("ranking = %+v", ranking)
 	}
 }
 
@@ -116,8 +127,8 @@ func TestRebuildSeedsNoBidOngoingItemFromDurableItemRule(t *testing.T) {
 func TestRebuildActiveItemsUsesConfiguredBatchSize(t *testing.T) {
 	store := newFakeStore()
 	cache := newFakeCache()
-	store.items["item_1"] = &itemmodel.AuctionItem{ID: "item_1", Status: itemmodel.ItemOngoing}
-	store.items["item_2"] = &itemmodel.AuctionItem{ID: "item_2", Status: itemmodel.ItemOngoing}
+	seedRebuildItemRule(t, store, "item_1", "room_1")
+	seedRebuildItemRule(t, store, "item_2", "room_2")
 	store.bidLogsByEpoch["item_1:4"] = []*itemmodel.BidLog{
 		{ID: "bid_1", ItemID: "item_1", UserID: "u1", Price: 1000, AuthorityEpoch: 4, AuctionVersion: 1},
 	}
@@ -134,5 +145,24 @@ func TestRebuildActiveItemsUsesConfiguredBatchSize(t *testing.T) {
 		if got != rebuildReady {
 			t.Fatalf("results = %+v", results)
 		}
+	}
+}
+
+func seedRebuildItemRule(t *testing.T, store *fakeStore, itemID, roomID string) {
+	t.Helper()
+	ruleID := "rule_" + itemID
+	endTime := time.Now().Add(5 * time.Minute).Truncate(time.Millisecond)
+	store.items[itemID] = &itemmodel.AuctionItem{
+		ID:     itemID,
+		RuleID: ruleID,
+		RoomID: roomID,
+		Status: itemmodel.ItemOngoing,
+	}
+	store.rules[ruleID] = &itemmodel.AuctionRule{
+		ID:           ruleID,
+		ItemID:       itemID,
+		StartPrice:   1000,
+		BidIncrement: 100,
+		EndTime:      endTime,
 	}
 }

@@ -26,6 +26,7 @@ type fakeStore struct {
 	rules                 map[string]*itemmodel.AuctionRule
 	roomCurrentItems      map[string]string
 	bidLogsByEpoch        map[string][]*itemmodel.BidLog
+	listBidLogsCalls      int
 	updateErr             error
 	setRoomCurrentErr     error
 	clearRoomCurrentErr   error
@@ -249,6 +250,9 @@ func (s *fakeStore) CreateBidLogs(logs []*itemmodel.BidLog) error {
 }
 
 func (s *fakeStore) ListBidLogsForItemEpoch(itemID string, authorityEpoch int64) ([]*itemmodel.BidLog, error) {
+	s.findMu.Lock()
+	s.listBidLogsCalls++
+	s.findMu.Unlock()
 	key := itemID + ":" + strconv.FormatInt(authorityEpoch, 10)
 	logs := s.bidLogsByEpoch[key]
 	result := make([]*itemmodel.BidLog, 0, len(logs))
@@ -1405,6 +1409,60 @@ func TestGetItemCachesStaticDetailAfterMySQLLoad(t *testing.T) {
 
 	if got := store.findItemCalls[itemID]; got != 1 {
 		t.Fatalf("expected GetItem to load item detail from MySQL once, got %d", got)
+	}
+}
+
+func TestGetItemRebuildsLocalRedisStateFromMySQLBidLogs(t *testing.T) {
+	store := newFakeStore()
+	fc := newFakeCache()
+	svc := NewService(store, testPolicy, fc, nil, nil, nil)
+	endTime := time.Now().Add(5 * time.Minute)
+	itemID := seedOngoingItem(t, svc, "merchant_1", "room_1", 1000, 100, 0, endTime)
+	delete(fc.states, itemID)
+	delete(fc.itemDetails, itemID)
+	store.bidLogsByEpoch[itemID+":0"] = []*itemmodel.BidLog{
+		{ID: "bid_1", ItemID: itemID, RoomID: "room_1", UserID: "user_1", Price: 1100, AuthorityEpoch: 0, AuctionVersion: 1},
+		{ID: "bid_2", ItemID: itemID, RoomID: "room_1", UserID: "user_2", Price: 1200, AuthorityEpoch: 0, AuctionVersion: 2},
+	}
+	store.bidLogs = append(store.bidLogs, store.bidLogsByEpoch[itemID+":0"]...)
+	svc.SetAvailabilitySnapshotForTest(availability.Snapshot{
+		Valid:       true,
+		Mode:        availability.ModeLocalRedisActive,
+		ActiveRedis: availability.RedisLocal,
+		MySQLState:  availability.MySQLHealthy,
+		UpdatedAt:   time.Now(),
+	})
+
+	detail, err := svc.GetItem(context.Background(), itemID)
+	if err != nil {
+		t.Fatalf("GetItem failed: %v", err)
+	}
+
+	if detail.CurrentPrice != 1200 || detail.DealPrice != 1200 || detail.LeaderUserID != "user_2" {
+		t.Fatalf("detail = %+v, want rebuilt live price from bid logs", detail)
+	}
+	if detail.BidCount != 2 || detail.ParticipantCount != 2 {
+		t.Fatalf("detail counts = bid_count %d participant_count %d, want 2/2", detail.BidCount, detail.ParticipantCount)
+	}
+	state := fc.states[itemID]
+	if state == nil {
+		t.Fatal("expected local Redis state to be rebuilt")
+	}
+	if state.RoomID != "room_1" || state.BidIncrement != 100 || state.EndTimeUnixMS != endTime.UnixMilli() {
+		t.Fatalf("state hot fields = %+v, want item/rule fields", state)
+	}
+	if fc.ending[itemID] != endTime.UnixMilli() {
+		t.Fatalf("ending score = %d, want %d", fc.ending[itemID], endTime.UnixMilli())
+	}
+	ranking, err := fc.GetRanking(context.Background(), itemID, 0, 10)
+	if err != nil {
+		t.Fatalf("GetRanking from fake cache failed: %v", err)
+	}
+	if len(ranking) != 2 || ranking[0].UserID != "user_2" || ranking[0].Price != 1200 {
+		t.Fatalf("ranking = %+v, want rebuilt ranking from bid logs", ranking)
+	}
+	if _, ok := fc.itemDetails[itemID]; !ok {
+		t.Fatal("expected static detail cache to be rebuilt")
 	}
 }
 

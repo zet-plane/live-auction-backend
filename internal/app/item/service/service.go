@@ -322,7 +322,13 @@ func (s *Service) GetItem(ctx context.Context, itemID string) (result *dto.ItemD
 	now := s.now()
 	detail := dto.NewItemDetailDTO(item, rule, s.policy, now)
 	if item.Status == model.ItemOngoing && s.cache != nil {
-		if state, ok, _ := s.cache.GetAuctionState(ctx, item.ID); ok {
+		state, ok, _ := s.cache.GetAuctionState(ctx, item.ID)
+		if !ok && s.availabilitySnapshot().ActiveRedis == availability.RedisLocal {
+			if rebuildErr := s.rebuildLocalAuctionState(ctx, item.ID, 0); rebuildErr == nil {
+				state, ok, _ = s.cache.GetAuctionState(ctx, item.ID)
+			}
+		}
+		if ok {
 			applyStateToDetail(&detail, state, now)
 		}
 	}
