@@ -12,12 +12,19 @@ import (
 	usermodel "github.com/zet-plane/live-auction-backend/internal/app/user/model"
 	"github.com/zet-plane/live-auction-backend/internal/core/observability"
 	"github.com/zet-plane/live-auction-backend/pkg/errorx"
+	"github.com/zet-plane/live-auction-backend/pkg/logx"
 	"github.com/zet-plane/live-auction-backend/pkg/snowflake"
 )
 
 type Service struct {
 	store dao.Store
+	cache PaidDepositCache
 	now   func() time.Time
+}
+
+type PaidDepositCache interface {
+	MarkPaidDeposit(ctx context.Context, itemID, userID string, amount int64) error
+	HasPaidDeposit(ctx context.Context, itemID, userID string, requiredAmount int64) (bool, error)
 }
 
 type SettlementSummary struct {
@@ -26,8 +33,12 @@ type SettlementSummary struct {
 	Skipped   int
 }
 
-func NewService(store dao.Store) *Service {
-	return &Service{store: store, now: time.Now}
+func NewService(store dao.Store, caches ...PaidDepositCache) *Service {
+	var cache PaidDepositCache
+	if len(caches) > 0 {
+		cache = caches[0]
+	}
+	return &Service{store: store, cache: cache, now: time.Now}
 }
 
 func (s *Service) PayDeposit(ctx context.Context, current *usermodel.User, itemID string) (result *dto.DepositDetail, err error) {
@@ -51,6 +62,7 @@ func (s *Service) PayDeposit(ctx context.Context, current *usermodel.User, itemI
 	existing, err := s.store.FindDeposit(itemID, current.ID)
 	if err == nil {
 		if existing.Status == model.DepositPaid && existing.Amount >= amount {
+			s.cachePaidDeposit(ctx, existing.ItemID, existing.UserID, existing.Amount)
 			return dto.NewDepositDetail(existing), nil
 		}
 		if existing.Status == model.DepositRefunded || existing.Status == model.DepositForfeited {
@@ -63,6 +75,7 @@ func (s *Service) PayDeposit(ctx context.Context, current *usermodel.User, itemI
 		if err := s.store.UpdateDeposit(existing); err != nil {
 			return nil, err
 		}
+		s.cachePaidDeposit(ctx, existing.ItemID, existing.UserID, existing.Amount)
 		return dto.NewDepositDetail(existing), nil
 	}
 	if !errors.Is(err, errorx.ErrNotFound) {
@@ -81,6 +94,7 @@ func (s *Service) PayDeposit(ctx context.Context, current *usermodel.User, itemI
 	if err := s.store.CreateDeposit(deposit); err != nil {
 		return nil, err
 	}
+	s.cachePaidDeposit(ctx, deposit.ItemID, deposit.UserID, deposit.Amount)
 	return dto.NewDepositDetail(deposit), nil
 }
 
@@ -97,6 +111,9 @@ func (s *Service) GetMyDeposit(ctx context.Context, current *usermodel.User, ite
 	deposit, err := s.store.FindDeposit(itemID, current.ID)
 	if err != nil {
 		return nil, err
+	}
+	if deposit.Status == model.DepositPaid {
+		s.cachePaidDeposit(ctx, deposit.ItemID, deposit.UserID, deposit.Amount)
 	}
 	return dto.NewDepositDetail(deposit), nil
 }
@@ -121,9 +138,34 @@ func (s *Service) HasPaidDeposit(ctx context.Context, itemID, userID string, req
 		return false, nil
 	}
 	if err != nil {
+		if ok, cacheErr := s.hasCachedPaidDeposit(ctx, itemID, userID, requiredAmount); cacheErr == nil && ok {
+			return true, nil
+		} else if cacheErr != nil {
+			logx.Warnw("deposit cache check failed", "item_id", itemID, "user_id", userID, "err", cacheErr)
+		}
 		return false, err
 	}
-	return deposit.Status == model.DepositPaid && deposit.Amount >= requiredAmount, nil
+	paid := deposit.Status == model.DepositPaid && deposit.Amount >= requiredAmount
+	if paid {
+		s.cachePaidDeposit(ctx, deposit.ItemID, deposit.UserID, deposit.Amount)
+	}
+	return paid, nil
+}
+
+func (s *Service) cachePaidDeposit(ctx context.Context, itemID, userID string, amount int64) {
+	if s.cache == nil {
+		return
+	}
+	if err := s.cache.MarkPaidDeposit(ctx, itemID, userID, amount); err != nil {
+		logx.Warnw("deposit cache mark failed", "item_id", itemID, "user_id", userID, "err", err)
+	}
+}
+
+func (s *Service) hasCachedPaidDeposit(ctx context.Context, itemID, userID string, requiredAmount int64) (bool, error) {
+	if s.cache == nil {
+		return false, nil
+	}
+	return s.cache.HasPaidDeposit(ctx, itemID, userID, requiredAmount)
 }
 
 func (s *Service) RefundNonWinners(ctx context.Context, itemID, winnerUserID string) (summary SettlementSummary, err error) {

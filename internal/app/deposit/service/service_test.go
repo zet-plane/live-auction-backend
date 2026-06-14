@@ -12,9 +12,10 @@ import (
 )
 
 type fakeStore struct {
-	deposits map[string]*model.Deposit
-	amounts  map[string]int64
-	now      time.Time
+	deposits       map[string]*model.Deposit
+	amounts        map[string]int64
+	now            time.Time
+	findDepositErr error
 }
 
 func newFakeStore() *fakeStore {
@@ -38,6 +39,9 @@ func (s *fakeStore) FindRequiredAmount(itemID string) (int64, error) {
 }
 
 func (s *fakeStore) FindDeposit(itemID, userID string) (*model.Deposit, error) {
+	if s.findDepositErr != nil {
+		return nil, s.findDepositErr
+	}
 	d, ok := s.deposits[depositKey(itemID, userID)]
 	if !ok {
 		return nil, errorx.ErrNotFound
@@ -81,6 +85,34 @@ func (s *fakeStore) TransitionDepositStatus(itemID, userID string, from, to mode
 	return true, nil
 }
 
+type fakePaidDepositCache struct {
+	paid     map[string]int64
+	markErr  error
+	checkErr error
+	marks    int
+}
+
+func newFakePaidDepositCache() *fakePaidDepositCache {
+	return &fakePaidDepositCache{paid: map[string]int64{}}
+}
+
+func (c *fakePaidDepositCache) MarkPaidDeposit(_ context.Context, itemID, userID string, amount int64) error {
+	c.marks++
+	if c.markErr != nil {
+		return c.markErr
+	}
+	c.paid[depositKey(itemID, userID)] = amount
+	return nil
+}
+
+func (c *fakePaidDepositCache) HasPaidDeposit(_ context.Context, itemID, userID string, requiredAmount int64) (bool, error) {
+	if c.checkErr != nil {
+		return false, c.checkErr
+	}
+	amount, ok := c.paid[depositKey(itemID, userID)]
+	return ok && amount >= requiredAmount, nil
+}
+
 func TestPayDepositCreatesPaidDepositUsingRuleAmount(t *testing.T) {
 	store := newFakeStore()
 	store.amounts["item_1"] = 5000
@@ -105,6 +137,30 @@ func TestPayDepositCreatesPaidDepositUsingRuleAmount(t *testing.T) {
 	}
 	if result.PaidAt == nil {
 		t.Fatal("expected paid_at")
+	}
+}
+
+func TestPayDepositCachesPaidDeposit(t *testing.T) {
+	store := newFakeStore()
+	store.amounts["item_1"] = 5000
+	cache := newFakePaidDepositCache()
+	svc := NewService(store, cache)
+	svc.now = func() time.Time { return store.now }
+
+	_, err := svc.PayDeposit(context.Background(), &usermodel.User{ID: "user_1"}, "item_1")
+	if err != nil {
+		t.Fatalf("PayDeposit returned error: %v", err)
+	}
+
+	if cache.marks != 1 {
+		t.Fatalf("expected one cache mark, got %d", cache.marks)
+	}
+	ok, err := cache.HasPaidDeposit(context.Background(), "item_1", "user_1", 5000)
+	if err != nil {
+		t.Fatalf("cache HasPaidDeposit returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected paid deposit cached")
 	}
 }
 
@@ -261,5 +317,21 @@ func TestHasPaidDeposit(t *testing.T) {
 				t.Fatalf("expected %v, got %v", tt.want, got)
 			}
 		})
+	}
+}
+
+func TestHasPaidDepositFallsBackToCacheWhenStoreUnavailable(t *testing.T) {
+	store := newFakeStore()
+	store.findDepositErr = errors.New("dial tcp 172.31.20.91:3306: connect: connection refused")
+	cache := newFakePaidDepositCache()
+	cache.paid[depositKey("item_1", "user_1")] = 5000
+	svc := NewService(store, cache)
+
+	got, err := svc.HasPaidDeposit(context.Background(), "item_1", "user_1", 5000)
+	if err != nil {
+		t.Fatalf("HasPaidDeposit returned error: %v", err)
+	}
+	if !got {
+		t.Fatal("expected cached paid deposit to pass when store is unavailable")
 	}
 }

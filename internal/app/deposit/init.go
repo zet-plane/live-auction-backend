@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/zet-plane/live-auction-backend/internal/app"
+	depositcache "github.com/zet-plane/live-auction-backend/internal/app/deposit/cache"
 	"github.com/zet-plane/live-auction-backend/internal/app/deposit/dao"
 	"github.com/zet-plane/live-auction-backend/internal/app/deposit/handler"
 	"github.com/zet-plane/live-auction-backend/internal/app/deposit/router"
@@ -41,7 +42,13 @@ func (d *Deposit) PreInit(engine *kernel.Engine) error {
 
 func (d *Deposit) Load(engine *kernel.Engine) error {
 	store := dao.NewGormStore(engine.DB)
-	svc := service.NewService(store)
+	var c service.PaidDepositCache
+	if engine.Availability != nil {
+		c = depositcache.NewActiveRedisCache(engine.Availability)
+	} else if engine.Cache != nil {
+		c = depositcache.NewRedisCache(engine.Cache)
+	}
+	svc := service.NewService(store, c)
 	Svc = svc
 	if orderapp.Svc != nil {
 		orderapp.Svc.SetDepositSettler(svc)
