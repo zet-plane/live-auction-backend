@@ -76,6 +76,33 @@ func TestReadyzReportsLocalRedisActiveAsDegradedOK(t *testing.T) {
 	}
 }
 
+func TestReadyzReportsOKWhenMySQLExpiredButRedisHealthy(t *testing.T) {
+	prevAvailability := availabilityRuntime
+	t.Cleanup(func() { availabilityRuntime = prevAvailability })
+	InitAvailabilityForTest(availability.Snapshot{
+		Valid:       true,
+		Mode:        availability.ModeAuctionProtected,
+		ActiveRedis: availability.RedisNone,
+		CloudRedis:  availability.DependencyStatus{Healthy: true},
+		LocalRedis:  availability.DependencyStatus{Healthy: false, Error: "local down"},
+		MySQL:       availability.DependencyStatus{Healthy: false, Error: "dial tcp mysql:3306: i/o timeout"},
+		MySQLState:  availability.MySQLBuffering,
+		Reason:      "mysql_buffering_expired",
+		UpdatedAt:   time.Now(),
+	})
+
+	status, body := requestReadyzForTest()
+	if status != http.StatusOK {
+		t.Fatalf("readyz status = %d, want 200; body=%s", status, body)
+	}
+	if !strings.Contains(body, `"status":"degraded"`) {
+		t.Fatalf("readyz body missing degraded status: %s", body)
+	}
+	if !strings.Contains(body, `"mysql":{"status":"error"`) {
+		t.Fatalf("readyz body missing mysql error: %s", body)
+	}
+}
+
 func TestReadyzReturns503WhenAuctionProtected(t *testing.T) {
 	prevAvailability := availabilityRuntime
 	t.Cleanup(func() { availabilityRuntime = prevAvailability })

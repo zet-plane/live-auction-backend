@@ -245,7 +245,7 @@ func availabilityHealthData() (healthData, bool) {
 		overall = "degraded"
 	case availability.ModeAuctionProtected:
 		overall = "degraded"
-		ready = false
+		ready = readyWithRedisDuringMySQLFailure(snapshot)
 	}
 
 	observability.DefaultRecorder().Availability(context.Background(), observability.AvailabilityMetric{
@@ -254,6 +254,13 @@ func availabilityHealthData() (healthData, bool) {
 		Result:      overall,
 	})
 	return healthData{Status: overall, Components: components}, ready
+}
+
+func readyWithRedisDuringMySQLFailure(snapshot availability.Snapshot) bool {
+	if snapshot.MySQL.Healthy {
+		return false
+	}
+	return snapshot.CloudRedis.Healthy || snapshot.LocalRedis.Healthy
 }
 
 func dependencyComponent(status availability.DependencyStatus) componentStatus {
