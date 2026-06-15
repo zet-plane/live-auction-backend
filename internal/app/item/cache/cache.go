@@ -153,7 +153,6 @@ type Cache interface {
 	SetRoomCurrentItem(ctx context.Context, roomID, itemID string) error
 	GetRoomCurrentItem(ctx context.Context, roomID string) (string, bool, error)
 	ClearRoomCurrentItem(ctx context.Context, roomID, itemID string) error
-	AllowBidRate(ctx context.Context, itemID, userID string, refillRatePerSecond float64, burst int, nowUnixMS int64) (bool, error)
 	PlaceBidLua(ctx context.Context, itemID string, args BidLuaArgs) (*BidLuaResult, error)
 	AppendBidLogEvent(ctx context.Context, event BidLogEvent) error
 	GetRanking(ctx context.Context, itemID string, offset, limit int) ([]dto.BidderPrice, error)

@@ -848,10 +848,6 @@ func (c *fakeCache) ClearRoomCurrentItem(_ context.Context, roomID, itemID strin
 	return nil
 }
 
-func (c *fakeCache) AllowBidRate(_ context.Context, _, _ string, _ float64, _ int, _ int64) (bool, error) {
-	return true, nil
-}
-
 func (c *fakeCache) PlaceBidLua(_ context.Context, itemID string, args itemcache.BidLuaArgs) (*itemcache.BidLuaResult, error) {
 	if c.bidLuaErr != nil {
 		return nil, c.bidLuaErr

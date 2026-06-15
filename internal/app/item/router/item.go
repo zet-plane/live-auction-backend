@@ -9,18 +9,14 @@ import (
 	"github.com/zet-plane/live-auction-backend/internal/middleware/web"
 )
 
-func RegisterRoutes(f *flamego.Flame, bidRateLimit flamego.Handler) {
+func RegisterRoutes(f *flamego.Flame) {
 	auth := web.Authorization(userhandler.AuthenticateToken)
 	bidAuth := web.Authorization(userhandler.AuthenticateTokenClaims)
 
 	f.Get("/api/v1/items", handler.ListItems)
 	f.Get("/api/v1/items/{item_id}", handler.GetItem)
 	f.Get("/api/v1/items/{item_id}/ranking", handler.GetRanking)
-	if bidRateLimit != nil {
-		f.Post("/api/v1/items/{item_id}/bids", bidAuth, bidRateLimit, binding.JSON(dto.PlaceBidRequest{}), handler.PlaceBid)
-	} else {
-		f.Post("/api/v1/items/{item_id}/bids", bidAuth, binding.JSON(dto.PlaceBidRequest{}), handler.PlaceBid)
-	}
+	f.Post("/api/v1/items/{item_id}/bids", bidAuth, binding.JSON(dto.PlaceBidRequest{}), handler.PlaceBid)
 	f.Group("/api/v1", func() {
 		f.Post("/items", binding.JSON(dto.CreateItemRequest{}), handler.CreateItem)
 		f.Get("/merchant/items", handler.ListMerchantItems)
